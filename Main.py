@@ -234,8 +234,10 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     line_close, = ax.plot([], [], label='Close', color='black', linewidth=2.5, marker='s', markersize=5)
     
     # Initialize ray lines (will be drawn at 9:38)
-    ray_max, = ax.plot([], [], 'b--', linewidth=2, label='Max Ray (-5°)', alpha=0.7)
-    ray_min, = ax.plot([], [], 'm--', linewidth=2, label='Min Ray (+5°)', alpha=0.7)
+    ray_max, = ax.plot([], [], 'orange', linewidth=2.5, label='Max Ray (-5°)', alpha=0.9)
+    ray_min, = ax.plot([], [], 'yellow', linewidth=2.5, label='Min Ray (+5°)', alpha=0.9)
+    ray_max_steep, = ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-65°)', alpha=0.9)
+    ray_min_steep, = ax.plot([], [], color='plum', linewidth=2.5, label='Min Ray (+65°)', alpha=0.9)
     
     # Set up plot formatting
     ax.set_ylabel('Price', fontsize=13, fontweight='bold')
@@ -253,8 +255,8 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     ax.set_xlim(data.index[0], data.index[-1])
     
     # Statistics box
-    stats_box = ax.text(0.02, 0.98, '', transform=ax.transAxes, fontsize=10, 
-                       verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    stats_box = ax.text(0.98, 0.98, '', transform=ax.transAxes, fontsize=10, 
+                       verticalalignment='top', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     # Current time display
     current_time_text = ax.text(0.5, 0.02, '', transform=ax.transAxes, fontsize=11, 
@@ -301,6 +303,16 @@ def plot_intraday_data(data, target_date, start_time, end_time):
             angle_rad_min = np.deg2rad(angle_deg_min)
             tan_angle_min = np.tan(angle_rad_min)  # ≈ +0.0875
             
+            # Calculate slope for -65 degrees (steep rays from both max and min)
+            angle_deg_steep = -65
+            angle_rad_steep = np.deg2rad(angle_deg_steep)
+            tan_angle_steep = np.tan(angle_rad_steep)  # ≈ -2.145
+            
+            # Calculate slope for +65 degrees (steep ray from min - light purple)
+            angle_deg_min_steep = 65
+            angle_rad_min_steep = np.deg2rad(angle_deg_min_steep)
+            tan_angle_min_steep = np.tan(angle_rad_min_steep)  # ≈ +2.145
+            
             # Get the last time in the data for the ray endpoint
             end_time = data.index[-1]
             
@@ -330,6 +342,8 @@ def plot_intraday_data(data, target_date, start_time, end_time):
             # For a true angle, we need: dy/dx in screen coordinates = tan(angle)
             slope_data_units_max = tan_angle_max * (y_per_inch / x_per_inch)
             slope_data_units_min = tan_angle_min * (y_per_inch / x_per_inch)
+            slope_data_units_steep = tan_angle_steep * (y_per_inch / x_per_inch)
+            slope_data_units_min_steep = tan_angle_min_steep * (y_per_inch / x_per_inch)
             
             # Calculate ray endpoints for max (downward at -5 degrees)
             time_diff_max = end_time_num - max_time_num
@@ -340,10 +354,20 @@ def plot_intraday_data(data, target_date, start_time, end_time):
             time_diff_min = end_time_num - min_time_num
             min_ray_end_price = min_low + slope_data_units_min * time_diff_min
             ray_min.set_data([min_idx, end_time], [min_low, min_ray_end_price])
+            
+            # Calculate steep ray from max (downward at -65 degrees)
+            max_steep_end_price = max_high + slope_data_units_steep * time_diff_max
+            ray_max_steep.set_data([max_idx, end_time], [max_high, max_steep_end_price])
+            
+            # Calculate steep ray from min (upward at +65 degrees - light purple)
+            min_steep_end_price = min_low + slope_data_units_min_steep * time_diff_min
+            ray_min_steep.set_data([min_idx, end_time], [min_low, min_steep_end_price])
         else:
             # Clear rays if before 9:38
             ray_max.set_data([], [])
             ray_min.set_data([], [])
+            ray_max_steep.set_data([], [])
+            ray_min_steep.set_data([], [])
         times = current_data.index
         line_high.set_data(times, current_data['High'])
         line_low.set_data(times, current_data['Low'])
