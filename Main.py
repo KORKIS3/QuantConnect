@@ -991,7 +991,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
 
 if __name__ == "__main__":
     # Fetch YM intraday data for specific date and time
-    target_date = "2026-01-07"
+    target_date = "2026-01-08"
    ## target_date = "2026-01-13" 
     start_time = "09:30"
     end_time = "10:00"
