@@ -287,7 +287,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
         snapshots_taken = set()  # Track which snapshots have been taken (e.g., '09:30', '09:45', '10:00')
         detected_sell_signals = {}  # Store detected sell signals permanently: {timestamp: price}
         detected_buy_signals = {}  # Store detected buy signals permanently: {timestamp: price}
-        position = None  # Track current position: None (can buy or sell), 'holding' (can only sell), 'sold' (can only buy)
+        position = None  # Track current position: None (can buy or sell), 'long' (can only sell), 'short' (can only buy)
     
     state = State()
     
@@ -401,12 +401,12 @@ def plot_intraday_data(data, target_date, start_time, end_time):
                     expected_purple_price = purple_max_high + adjusted_max_slope * time_diff
                     
                     # Check if close price crosses above the dark purple line (BUY SIGNAL)
-                    # Only generate BUY if we're not currently holding (i.e., we've sold or never bought)
+                    # Only generate BUY if we're not currently long (i.e., we're flat or short)
                     if current_close > expected_purple_price and current_idx > cutoff_time:
-                        # Store this buy signal permanently if not already stored AND we're not holding
-                        if current_idx not in state.detected_buy_signals and state.position != 'holding':
+                        # Store this buy signal permanently if not already stored AND we're not long
+                        if current_idx not in state.detected_buy_signals and state.position != 'long':
                             state.detected_buy_signals[current_idx] = current_close
-                            state.position = 'holding'  # Update position to holding after buy
+                            state.position = 'long'  # Update position to long after buy
                 
                 # Now check if we need to move or adjust the purple line
                 # First check: if this high is higher than the starting max, move to it
@@ -451,12 +451,12 @@ def plot_intraday_data(data, target_date, start_time, end_time):
                     expected_blue_price = purple_min_low + adjusted_min_slope * time_diff
                     
                     # CHECK: If close price crosses BELOW blue line, generate SELL signal (after 9:38 AM)
-                    # Only generate SELL if we're currently holding (i.e., we've bought)
+                    # Only generate SELL if we're not currently short (i.e., we're flat or long)
                     if current_close < expected_blue_price and current_idx > cutoff_time:
-                        # Store this sell signal permanently if not already stored AND we're holding
-                        if current_idx not in state.detected_sell_signals and state.position == 'holding':
+                        # Store this sell signal permanently if not already stored AND we're not short
+                        if current_idx not in state.detected_sell_signals and state.position != 'short':
                             state.detected_sell_signals[current_idx] = current_close
-                            state.position = 'sold'  # Update position to sold after sell
+                            state.position = 'short'  # Update position to short after sell
                 
                 # NOW check if we need to move or adjust the blue line
                 # First check: if this low is lower than the starting min, move to it
@@ -672,8 +672,8 @@ def plot_intraday_data(data, target_date, start_time, end_time):
         
         fig.canvas.draw_idle()
         
-        # Save snapshots at specific times (9:30, 9:45, 10:00)
-        snapshot_times = ['09:30', '09:45', '10:00']
+        # Save snapshots at specific times (9:31, 9:38, 9:45, 9:55, 10:00)
+        snapshot_times = ['09:31', '09:38', '09:45', '09:55', '10:00']
         current_time_hhmm = times[-1].strftime('%H:%M')
         
         if current_time_hhmm in snapshot_times and current_time_hhmm not in state.snapshots_taken:
@@ -991,7 +991,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
 
 if __name__ == "__main__":
     # Fetch YM intraday data for specific date and time
-    target_date = "2026-01-14"
+    target_date = "2026-01-07"
    ## target_date = "2026-01-13" 
     start_time = "09:30"
     end_time = "10:00"
