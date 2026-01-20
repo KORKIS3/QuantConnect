@@ -103,7 +103,7 @@ def get_ticker_info(ticker="YM=F"):
         print(f"Could not retrieve ticker info: {str(e)}")
 
 
-def get_ym_intraday(target_date="2026-01-14", start_time="09:30", end_time="10:00"):
+def get_ym_intraday(target_date="2026-01-14", start_time="09:30", end_time="10:00", use_csv=False):
     """
     Fetch intraday YM data for a specific date and time range
     
@@ -111,13 +111,61 @@ def get_ym_intraday(target_date="2026-01-14", start_time="09:30", end_time="10:0
     - target_date: Date in YYYY-MM-DD format
     - start_time: Start time in HH:MM format (EST)
     - end_time: End time in HH:MM format (EST)
+    - use_csv: If True, load data from existing CSV file instead of fetching from API
     """
     
     print("="*60)
-    print("Fetching Intraday YM Data from Yahoo Finance")
+    print("Fetching Intraday YM Data from Yahoo Finance" if not use_csv else "Loading Intraday YM Data from CSV")
     print("="*60)
     
     ticker = "YM=F"
+    
+    # If use_csv is True, try to load from CSV file
+    if use_csv:
+        filename = f"YM_intraday_{target_date}_{start_time.replace(':', '')}-{end_time.replace(':', '')}.csv"
+        try:
+            print(f"\nLoading data from: {filename}")
+            data = pd.read_csv(filename, index_col=0, parse_dates=True)
+            
+            # Convert index to timezone-aware if not already
+            if data.index.tz is None:
+                import pytz
+                est = pytz.timezone('US/Eastern')
+                data.index = pd.to_datetime(data.index).tz_localize(est)
+            
+            print(f"\n✓ Successfully loaded {len(data)} data points from CSV")
+            print(f"\nTime Range: {data.index[0]} to {data.index[-1]}")
+            print("\n" + "="*60)
+            print(f"YM Data for {target_date} ({start_time} - {end_time} EST):")
+            print("="*60)
+            print(data)
+            
+            print("\n" + "="*60)
+            print("Summary Statistics:")
+            print("="*60)
+            print(data.describe())
+            
+            # Price movement analysis
+            print("\n" + "="*60)
+            print("Price Movement Analysis:")
+            print("="*60)
+            print(f"Opening Price: {data['Open'].iloc[0]:,.2f}")
+            print(f"Closing Price: {data['Close'].iloc[-1]:,.2f}")
+            print(f"High: {data['High'].max():,.2f}")
+            print(f"Low: {data['Low'].min():,.2f}")
+            print(f"Price Change: {data['Close'].iloc[-1] - data['Open'].iloc[0]:,.2f}")
+            print(f"Total Volume: {data['Volume'].sum():,.0f}")
+            
+            print(f"\n✓ Data loaded from: {filename}")
+            
+            return data
+            
+        except FileNotFoundError:
+            print(f"\n✗ CSV file not found: {filename}")
+            print("Falling back to API fetch...")
+        except Exception as e:
+            print(f"\n✗ Error loading CSV: {str(e)}")
+            print("Falling back to API fetch...")
     
     try:
         ym = yf.Ticker(ticker)
@@ -227,9 +275,10 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     output_dir = "/Users/orkiskevin/Desktop/Trading/Temp"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create figure with extra space for buttons
-    fig = plt.figure(figsize=(14, 9))
+    # Create figure with extra space for buttons and legend
+    fig = plt.figure(figsize=(16, 9))
     ax = plt.subplot2grid((10, 1), (0, 0), rowspan=9)
+    fig.subplots_adjust(right=0.85)  # Make room for legend on the right
     fig.suptitle(f'YM Futures - {target_date} ({start_time} - {end_time} EST) - INTERACTIVE', 
                  fontsize=16, fontweight='bold')
     
@@ -259,7 +308,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     ax.set_ylabel('Price', fontsize=13, fontweight='bold')
     ax.set_xlabel('Time (EST)', fontsize=13, fontweight='bold')
     ax.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=20)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=11)
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
@@ -270,9 +319,9 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     ax.set_ylim(y_min, y_max)
     ax.set_xlim(data.index[0], data.index[-1])
     
-    # Statistics box
-    stats_box = ax.text(0.98, 0.98, '', transform=ax.transAxes, fontsize=10, 
-                       verticalalignment='top', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    # Statistics box - positioned outside the plot on the right
+    stats_box = ax.text(1.02, 0.98, '', transform=ax.transAxes, fontsize=10, 
+                       verticalalignment='top', horizontalalignment='left', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     # Current time display
     current_time_text = ax.text(0.5, 0.02, '', transform=ax.transAxes, fontsize=11, 
@@ -770,7 +819,8 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     plt.show()
     
     # Save final frame after closing
-    fig2, ax2 = plt.subplots(figsize=(14, 8))
+    fig2, ax2 = plt.subplots(figsize=(16, 8))
+    fig2.subplots_adjust(right=0.85)  # Make room for legend on the right
     fig2.suptitle(f'YM Futures - {target_date} ({start_time} - {end_time} EST)', 
                   fontsize=16, fontweight='bold')
     
@@ -931,7 +981,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     ax2.set_ylabel('Price', fontsize=13, fontweight='bold')
     ax2.set_xlabel('Time (EST)', fontsize=13, fontweight='bold')
     ax2.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=20)
-    ax2.legend(loc='best', fontsize=11)
+    ax2.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=11)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
@@ -956,8 +1006,8 @@ def plot_intraday_data(data, target_date, start_time, end_time):
         for sell_time, sell_price in sell_signals_found:
             stats_text += f"  {sell_time}: {sell_price:.0f}\n"
     
-    ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes, fontsize=10, 
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax2.text(1.02, 0.98, stats_text, transform=ax2.transAxes, fontsize=10, 
+            verticalalignment='top', horizontalalignment='left', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     plt.tight_layout()
     
@@ -991,12 +1041,13 @@ def plot_intraday_data(data, target_date, start_time, end_time):
 
 if __name__ == "__main__":
     # Fetch YM intraday data for specific date and time
-    target_date = "2026-01-08"
+    target_date = "2026-01-13"
    ## target_date = "2026-01-13" 
     start_time = "09:30"
     end_time = "10:00"
     
-    data = get_ym_intraday(target_date=target_date, start_time=start_time, end_time=end_time)
+    # Set use_csv=True to load from existing CSV file
+    data = get_ym_intraday(target_date=target_date, start_time=start_time, end_time=end_time, use_csv=True)
     
     # Create graphs
     if data is not None and not data.empty:
