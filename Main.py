@@ -307,11 +307,17 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     # Set up plot formatting
     ax.set_ylabel('Price', fontsize=13, fontweight='bold')
     ax.set_xlabel('Time (EST)', fontsize=13, fontweight='bold')
-    ax.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=20)
+    ax.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=35)
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=11)
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # Create top axis for profit/loss tracking
+    ax_top = ax.twiny()
+    ax_top.set_xlim(ax.get_xlim())
+    ax_top.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax_top.set_xlabel('P/L by Minute (after trade)', fontsize=11, fontweight='bold')
     
     # Set axis limits
     y_min = data['Low'].min() - 20
@@ -336,7 +342,10 @@ def plot_intraday_data(data, target_date, start_time, end_time):
         snapshots_taken = set()  # Track which snapshots have been taken (e.g., '09:30', '09:45', '10:00')
         detected_sell_signals = {}  # Store detected sell signals permanently: {timestamp: price}
         detected_buy_signals = {}  # Store detected buy signals permanently: {timestamp: price}
-        position = None  # Track current position: None (can buy or sell), 'long' (can only sell), 'short' (can only buy)
+        position = 'flat'  # Track current position: 'flat' (no position), 'long' (in buy), 'short' (in sell)
+        entry_price = None  # Track entry price of the trade
+        entry_time = None  # Track entry time of the trade
+        trade_type = None  # Track whether it's a 'buy' or 'sell' trade
     
     state = State()
     
@@ -441,22 +450,31 @@ def plot_intraday_data(data, target_date, start_time, end_time):
                 current_close = current_data['Close'].iloc[i]
                 current_idx = current_data.index[i]
                 current_time_num = mdates.date2num(current_idx)
-                
+
                 # Calculate expected purple line price at this time (before potentially moving the line)
                 purple_max_time_num = mdates.date2num(purple_max_idx)
                 time_diff = current_time_num - purple_max_time_num
-                
+
                 if time_diff > 0:
                     expected_purple_price = purple_max_high + adjusted_max_slope * time_diff
-                    
-                    # Check if close price crosses above the dark purple line (BUY SIGNAL)
-                    # Only generate BUY if we're not currently long (i.e., we're flat or short)
-                    if current_close > expected_purple_price and current_idx > cutoff_time:
-                        # Store this buy signal permanently if not already stored AND we're not long
-                        if current_idx not in state.detected_buy_signals and state.position != 'long':
-                            state.detected_buy_signals[current_idx] = current_close
-                            state.position = 'long'  # Update position to long after buy
-                
+
+                # Before moving the purple line, check if next minute's close crosses above current purple ray
+                if i+1 < len(current_data):
+                    next_close = current_data['Close'].iloc[i+1]
+                    next_idx = current_data.index[i+1]
+                    next_time_num = mdates.date2num(next_idx)
+                    next_time_diff = next_time_num - purple_max_time_num
+                    if next_time_diff > 0:
+                        next_expected_purple_price = purple_max_high + adjusted_max_slope * next_time_diff
+                        if next_close > next_expected_purple_price:
+                            # Trigger buy signal at next minute
+                            if next_idx not in state.detected_buy_signals and state.position != 'long':
+                                state.detected_buy_signals[next_idx] = next_close
+                                state.entry_price = next_close
+                                state.entry_time = next_idx
+                                state.trade_type = 'buy'
+                                state.position = 'long'
+
                 # Now check if we need to move or adjust the purple line
                 # First check: if this high is higher than the starting max, move to it
                 if current_high > purple_max_high:
@@ -498,14 +516,6 @@ def plot_intraday_data(data, target_date, start_time, end_time):
                 
                 if time_diff > 0:
                     expected_blue_price = purple_min_low + adjusted_min_slope * time_diff
-                    
-                    # CHECK: If close price crosses BELOW blue line, generate SELL signal (after 9:38 AM)
-                    # Only generate SELL if we're not currently short (i.e., we're flat or long)
-                    if current_close < expected_blue_price and current_idx > cutoff_time:
-                        # Store this sell signal permanently if not already stored AND we're not short
-                        if current_idx not in state.detected_sell_signals and state.position != 'short':
-                            state.detected_sell_signals[current_idx] = current_close
-                            state.position = 'short'  # Update position to short after sell
                 
                 # NOW check if we need to move or adjust the blue line
                 # First check: if this low is lower than the starting min, move to it
@@ -610,10 +620,21 @@ def plot_intraday_data(data, target_date, start_time, end_time):
             annotation.remove()
         buy_signal_annotations.clear()
         
-        # Check for sell signals after 9:38 AM (cutoff_time defined at start of function)
+        # Check for buy and sell signals after 9:38 AM (cutoff_time defined at start of function)
         # Only check if we have ray data and are past 9:38
         if state.current_frame >= 0 and len(current_data) > 0:
-            # Get the min_low point and calculate yellow ray values
+            # Get the max_high point and calculate orange ray values for BUY signals
+            max_high_val = current_data['High'].max()
+            max_idx_val = current_data['High'].idxmax()
+            max_time_num_val = mdates.date2num(max_idx_val)
+            
+            # Calculate slope for orange ray (-5 degrees) using same method as before
+            angle_deg_max = -5
+            angle_rad_max = np.deg2rad(angle_deg_max)
+            tan_angle_max = np.tan(angle_rad_max)
+            slope_data_units_max_val = tan_angle_max * (y_per_inch / x_per_inch)
+            
+            # Get the min_low point and calculate yellow ray values for SELL signals
             min_low_val = current_data['Low'].min()
             min_idx_val = current_data['Low'].idxmin()
             min_time_num_val = mdates.date2num(min_idx_val)
@@ -635,19 +656,143 @@ def plot_intraday_data(data, target_date, start_time, end_time):
             tan_angle_min = np.tan(angle_rad_min)
             slope_data_units_min_val = tan_angle_min * (y_per_inch / x_per_inch)
             
-            # Check each point after 9:38 AM
+            # Check each point after 9:38 AM for signals from ALL rays, processing chronologically
+            # This ensures we update position state correctly and don't get duplicate signals
+            prev_orange_ray_price = None
+            prev_yellow_ray_price = None
+            prev_purple_ray_price = None
+            prev_blue_ray_price = None
+            prev_close = None
+            
             for i, (time, row) in enumerate(current_data.iterrows()):
-                if time > cutoff_time:
-                    # Calculate expected yellow ray price at this time
-                    current_time_num = mdates.date2num(time)
-                    time_diff = current_time_num - min_time_num_val
-                    yellow_ray_price = min_low_val + slope_data_units_min_val * time_diff
+                # Calculate ray prices for all times to track previous values
+                # Calculate expected orange ray price at this time for BUY signals
+                current_time_num = mdates.date2num(time)
+                time_diff_max = current_time_num - max_time_num_val
+                orange_ray_price = max_high_val + slope_data_units_max_val * time_diff_max
+                
+                # Calculate expected yellow ray price at this time for SELL signals
+                time_diff_min = current_time_num - min_time_num_val
+                yellow_ray_price = min_low_val + slope_data_units_min_val * time_diff_min
+                
+                # Calculate purple ray price (steep -65° for BUY)
+                purple_ray_price = None
+                for j in range(len(current_data)):
+                    if current_data.index[j] >= time:
+                        break
+                    if j == 0:
+                        purple_max_h = current_data['High'].iloc[0]
+                        purple_max_i = current_data.index[0]
+                        adj_max_slope = slope_data_units_max_steep
+                    else:
+                        curr_h = current_data['High'].iloc[j]
+                        if curr_h > purple_max_h:
+                            purple_max_h = curr_h
+                            purple_max_i = current_data.index[j]
+                            adj_max_slope = slope_data_units_max_steep
+                        else:
+                            t_diff_p = mdates.date2num(current_data.index[j]) - mdates.date2num(purple_max_i)
+                            if t_diff_p > 0:
+                                exp_purple_p = purple_max_h + adj_max_slope * t_diff_p
+                                if curr_h > exp_purple_p:
+                                    adj_max_slope = (curr_h - purple_max_h) / t_diff_p
+                if j > 0:
+                    t_diff_purple = current_time_num - mdates.date2num(purple_max_i)
+                    if t_diff_purple > 0:
+                        purple_ray_price = purple_max_h + adj_max_slope * t_diff_purple
+                
+                # Calculate blue ray price (steep +65° for SELL)
+                blue_ray_price = None
+                for j in range(len(current_data)):
+                    if current_data.index[j] >= time:
+                        break
+                    if j == 0:
+                        purple_min_l = current_data['Low'].iloc[0]
+                        purple_min_i = current_data.index[0]
+                        adj_min_slope = slope_data_units_min_steep
+                    else:
+                        curr_l = current_data['Low'].iloc[j]
+                        if curr_l < purple_min_l:
+                            purple_min_l = curr_l
+                            purple_min_i = current_data.index[j]
+                            adj_min_slope = slope_data_units_min_steep
+                        else:
+                            t_diff_p = mdates.date2num(current_data.index[j]) - mdates.date2num(purple_min_i)
+                            if t_diff_p > 0:
+                                exp_blue_p = purple_min_l + adj_min_slope * t_diff_p
+                                if curr_l < exp_blue_p:
+                                    adj_min_slope = (curr_l - purple_min_l) / t_diff_p
+                if j > 0:
+                    t_diff_blue = current_time_num - mdates.date2num(purple_min_i)
+                    if t_diff_blue > 0:
+                        blue_ray_price = purple_min_l + adj_min_slope * t_diff_blue
+                
+                # Only check for signals AFTER the cutoff time
+                if time >= cutoff_time:
                     
-                    # Check if close price is below yellow ray
-                    if row['Close'] < yellow_ray_price:
-                        # Store this sell signal permanently if not already stored
-                        if time not in state.detected_sell_signals:
+                    # Check for BUY signals (orange OR purple ray crossover)
+                    # Only buy if we're not already long
+                    if state.position != 'long' and time not in state.detected_buy_signals:
+                        buy_triggered = False
+                        
+                        # Check orange ray crossover (requires previous close below, current above)
+                        if prev_close is not None and prev_orange_ray_price is not None:
+                            if prev_close <= prev_orange_ray_price and row['Close'] > orange_ray_price:
+                                buy_triggered = True
+                        
+                        # Check purple ray crossover (requires previous close below, current above)
+                        if not buy_triggered and purple_ray_price is not None:
+                            if prev_close is not None and prev_purple_ray_price is not None:
+                                if prev_close <= prev_purple_ray_price and row['Close'] > purple_ray_price:
+                                    buy_triggered = True
+                        
+                        if buy_triggered:
+                            state.detected_buy_signals[time] = row['Close']
+                            state.entry_price = row['Close']
+                            state.entry_time = time
+                            state.trade_type = 'buy'
+                            state.position = 'long'
+                    
+                    # Check for SELL signals (yellow OR blue ray crossover)
+                    # Only sell if we're not already short
+                    elif state.position != 'short' and time not in state.detected_sell_signals:
+                        sell_triggered = False
+                        
+                        # Check yellow ray crossover (requires previous close above, current below)
+                        if prev_close is not None and prev_yellow_ray_price is not None:
+                            if prev_close >= prev_yellow_ray_price and row['Close'] < yellow_ray_price:
+                                sell_triggered = True
+                        
+                        # Check blue ray crossover (requires previous close above, current below)
+                        if not sell_triggered and blue_ray_price is not None:
+                            if prev_close is not None and prev_blue_ray_price is not None:
+                                if prev_close >= prev_blue_ray_price and row['Close'] < blue_ray_price:
+                                    sell_triggered = True
+                        
+                        if sell_triggered:
                             state.detected_sell_signals[time] = row['Close']
+                            state.entry_price = row['Close']
+                            state.entry_time = time
+                            state.trade_type = 'sell'
+                            state.position = 'short'
+                    
+                    # Debug output for 9:38 and 9:39
+                    if time.strftime('%H:%M') in ['09:38', '09:39']:
+                        print(f"\n{time.strftime('%H:%M')} - Close: {row['Close']:.2f}")
+                        print(f"  Orange ray: {orange_ray_price:.2f}")
+                        print(f"  Yellow ray: {yellow_ray_price:.2f}")
+                        print(f"  Purple ray: {purple_ray_price if purple_ray_price else 'None'}")
+                        print(f"  Blue ray: {blue_ray_price if blue_ray_price else 'None'}")
+                        print(f"  Prev close: {prev_close if prev_close else 'None'}")
+                        print(f"  Prev purple ray: {prev_purple_ray_price if prev_purple_ray_price else 'None'}")
+                        print(f"  Position: {state.position}")
+                    
+                    # Update previous values for next iteration
+                    prev_orange_ray_price = orange_ray_price
+                    prev_yellow_ray_price = yellow_ray_price
+                    prev_purple_ray_price = purple_ray_price
+                    prev_blue_ray_price = blue_ray_price
+                    prev_close = row['Close']
             
             # Draw all detected sell signals (they stay forever once detected)
             for sell_time, sell_price in state.detected_sell_signals.items():
@@ -714,6 +859,53 @@ def plot_intraday_data(data, target_date, start_time, end_time):
         stats_text += f"Range: {price_range:.0f} points"
         
         stats_box.set_text(stats_text)
+        
+        # Update top axis with profit/loss labels if a trade is engaged
+        ax_top.clear()
+        ax_top.set_xlim(ax.get_xlim())
+        ax_top.set_ylim(ax.get_ylim())
+        
+        if state.entry_time is not None and state.entry_price is not None:
+            # Calculate P/L for each minute after trade entry
+            pl_labels = []
+            pl_positions = []
+            
+            for i, time_point in enumerate(current_data.index):
+                if time_point > state.entry_time:
+                    current_close = current_data['Close'].iloc[i]
+                    
+                    # Calculate P/L based on trade type
+                    if state.trade_type == 'buy':
+                        pl = current_close - state.entry_price
+                    else:  # sell
+                        pl = state.entry_price - current_close
+                    
+                    # Add label for this time point
+                    pl_labels.append(f"{pl:+.0f}")
+                    pl_positions.append(time_point)
+            
+            # Set labels on top axis - show every 2nd or 3rd label to avoid crowding
+            if pl_positions:
+                # Determine interval based on number of positions
+                interval = max(1, len(pl_positions) // 10) if len(pl_positions) > 10 else 1
+                
+                display_positions = pl_positions[::interval]
+                display_labels = pl_labels[::interval]
+                
+                ax_top.set_xticks(display_positions)
+                ax_top.set_xticklabels(display_labels, fontsize=9, rotation=0, ha='center', fontweight='bold')
+                
+                # Color code the labels
+                for i, label in enumerate(ax_top.get_xticklabels()):
+                    pl_value = float(pl_labels[i])
+                    if pl_value > 0:
+                        label.set_color('green')
+                    elif pl_value < 0:
+                        label.set_color('red')
+        
+        ax_top.set_xlabel('P/L by Minute (after trade)', fontsize=11, fontweight='bold')
+        ax_top.xaxis.set_label_position('top')
+        ax_top.tick_params(axis='x', which='both', top=True, bottom=False, labeltop=True, labelbottom=False)
         
         # Update navigation info
         current_time_display = times[-1].strftime('%H:%M:%S')
@@ -862,6 +1054,10 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     min_idx_chart = data['Low'].idxmin()
     end_time_chart = data.index[-1]
     
+    # Also add orange ray (Max Ray -5°) to saved chart for buy signals
+    max_high_chart = data['High'].max()
+    max_idx_chart = data['High'].idxmax()
+    
     # Calculate slope for yellow ray
     xlim = ax2.get_xlim()
     ylim = ax2.get_ylim()
@@ -879,23 +1075,53 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     tan_angle_min = np.tan(angle_rad_min)
     slope_data_units_min_chart = tan_angle_min * (y_per_inch / x_per_inch)
     
+    # Calculate slope for orange ray (-5 degrees)
+    angle_deg_max = -5
+    angle_rad_max = np.deg2rad(angle_deg_max)
+    tan_angle_max = np.tan(angle_rad_max)
+    slope_data_units_max_chart = tan_angle_max * (y_per_inch / x_per_inch)
+    
     min_time_num_chart = mdates.date2num(min_idx_chart)
+    max_time_num_chart = mdates.date2num(max_idx_chart)
     end_time_num_chart = mdates.date2num(end_time_chart)
     time_diff_chart = end_time_num_chart - min_time_num_chart
     min_ray_end_price_chart = min_low_chart + slope_data_units_min_chart * time_diff_chart
     ax2.plot([min_idx_chart, end_time_chart], [min_low_chart, min_ray_end_price_chart], 
              'yellow', linewidth=2.5, label='Min Ray (+5°)', alpha=0.9)
     
-    # Check for sell signals after 9:38 AM in saved chart
+    # Check for buy and sell signals after 9:38 AM in saved chart
     import pytz
     est = pytz.timezone('US/Eastern')
     cutoff_time = pd.Timestamp(f"{target_date} 09:38:00", tz=est)
     
+    buy_signals_found = []
     sell_signals_found = []
+    
     for i, (time, row) in enumerate(data.iterrows()):
         if time > cutoff_time:
-            # Calculate expected yellow ray price at this time
+            # Check for BUY signals (close crosses above orange ray)
             current_time_num = mdates.date2num(time)
+            time_diff_max = current_time_num - max_time_num_chart
+            orange_ray_price = max_high_chart + slope_data_units_max_chart * time_diff_max
+            
+            if row['Close'] > orange_ray_price:
+                # Mark this as a BUY SIGNAL
+                ax2.plot(time, row['Close'], marker='^', markersize=15, 
+                        color='green', markeredgecolor='darkgreen', markeredgewidth=2,
+                        zorder=10)
+                
+                # Add BUY annotation
+                buy_text = f"BUY\n{row['Close']:.0f}\n{time.strftime('%H:%M')}"
+                ax2.annotate(buy_text, xy=(time, row['Close']), 
+                           xytext=(0, 30), textcoords='offset points',
+                           ha='center', va='bottom', fontsize=8,
+                           color='white', fontweight='bold',
+                           bbox=dict(boxstyle='round,pad=0.5', facecolor='green', 
+                                    alpha=0.9, edgecolor='darkgreen', linewidth=2),
+                           arrowprops=dict(arrowstyle='->', color='green', lw=2))
+                buy_signals_found.append((time.strftime('%H:%M'), row['Close']))
+            
+            # Check for SELL signals (close crosses below yellow ray)
             time_diff = current_time_num - min_time_num_chart
             yellow_ray_price = min_low_chart + slope_data_units_min_chart * time_diff
             
@@ -980,11 +1206,56 @@ def plot_intraday_data(data, target_date, start_time, end_time):
     
     ax2.set_ylabel('Price', fontsize=13, fontweight='bold')
     ax2.set_xlabel('Time (EST)', fontsize=13, fontweight='bold')
-    ax2.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=20)
+    ax2.set_title('Price Movement by Minute', fontsize=14, fontweight='bold', pad=35)
     ax2.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=11)
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # Create top axis for profit/loss tracking on static chart
+    ax2_top = ax2.twiny()
+    ax2_top.set_xlim(ax2.get_xlim())
+    
+    # Add P/L labels if there's a trade signal
+    if state.entry_time is not None and state.entry_price is not None:
+        pl_labels = []
+        pl_positions = []
+        
+        for time, row in data.iterrows():
+            if time > state.entry_time:
+                current_close = row['Close']
+                
+                # Calculate P/L based on trade type
+                if state.trade_type == 'buy':
+                    pl = current_close - state.entry_price
+                else:  # sell
+                    pl = state.entry_price - current_close
+                
+                pl_labels.append(f"{pl:+.0f}")
+                pl_positions.append(time)
+        
+        if pl_positions:
+            # Determine interval based on number of positions
+            interval = max(1, len(pl_positions) // 10) if len(pl_positions) > 10 else 1
+            
+            display_positions = pl_positions[::interval]
+            display_labels = pl_labels[::interval]
+            
+            ax2_top.set_xticks(display_positions)
+            ax2_top.set_xticklabels(display_labels, fontsize=9, rotation=0, ha='center', fontweight='bold')
+            
+            # Color code the labels
+            for i, label in enumerate(ax2_top.get_xticklabels()):
+                pl_value = float(pl_labels[i])
+                if pl_value > 0:
+                    label.set_color('green')
+                elif pl_value < 0:
+                    label.set_color('red')
+    
+    ax2_top.set_xlabel('P/L by Minute (after trade)', fontsize=11, fontweight='bold')
+    ax2_top.xaxis.set_label_position('top')
+    ax2_top.tick_params(axis='x', which='both', top=True, bottom=False, labeltop=True, labelbottom=False)
+    ax2_top.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     
     price_range = data['High'].max() - data['Low'].min()
     price_change = data['Close'].iloc[-1] - data['Close'].iloc[0]
@@ -1041,7 +1312,7 @@ def plot_intraday_data(data, target_date, start_time, end_time):
 
 if __name__ == "__main__":
     # Fetch YM intraday data for specific date and time
-    target_date = "2026-01-13"
+    target_date = "2026-01-20"
    ## target_date = "2026-01-13" 
     start_time = "09:30"
     end_time = "10:00"
