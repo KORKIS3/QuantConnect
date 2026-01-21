@@ -670,6 +670,54 @@ def plot_intraday_data(data, target_date, start_time, end_time):
                                    color='black', fontweight='bold',
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.6, edgecolor='black'))
             annotations.append(ann_close)
+
+            # Only show angle labels for the current (latest) minute
+            if i == len(current_data) - 1:
+                current_time_num = mdates.date2num(time)
+
+                # Orange line: from max_idx, max_high, slope_data_units_max
+                max_time_num = mdates.date2num(max_idx)
+                time_diff_orange = current_time_num - max_time_num
+                orange_line_price = max_high + slope_data_units_max * time_diff_orange
+                orange_angle_deg = np.rad2deg(np.arctan(slope_data_units_max * (x_per_inch / y_per_inch)))
+                ann_orange_angle = ax.annotate(f"{orange_angle_deg:.2f}°", xy=(time, orange_line_price),
+                                              xytext=(0, -18), textcoords='offset points',
+                                              ha='center', va='top', fontsize=7, color='orange', fontweight='bold',
+                                              bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='orange'))
+                annotations.append(ann_orange_angle)
+
+                # Purple line: from purple_max_idx, purple_max_high, adjusted_max_slope
+                purple_max_time_num = mdates.date2num(purple_max_idx)
+                time_diff_purple = current_time_num - purple_max_time_num
+                purple_line_price = purple_max_high + adjusted_max_slope * time_diff_purple if time_diff_purple > 0 else purple_max_high
+                purple_angle_deg = np.rad2deg(np.arctan(adjusted_max_slope * (x_per_inch / y_per_inch)))
+                ann_purple_angle = ax.annotate(f"{purple_angle_deg:.2f}°", xy=(time, purple_line_price),
+                                               xytext=(0, 18), textcoords='offset points',
+                                               ha='center', va='bottom', fontsize=7, color='purple', fontweight='bold',
+                                               bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='purple'))
+                annotations.append(ann_purple_angle)
+
+                # Yellow line: from min_idx, min_low, slope_data_units_min
+                min_time_num = mdates.date2num(min_idx)
+                time_diff_yellow = current_time_num - min_time_num
+                yellow_line_price = min_low + slope_data_units_min * time_diff_yellow
+                yellow_angle_deg = np.rad2deg(np.arctan(slope_data_units_min * (x_per_inch / y_per_inch)))
+                ann_yellow_angle = ax.annotate(f"{yellow_angle_deg:.2f}°", xy=(time, yellow_line_price),
+                                              xytext=(0, -18), textcoords='offset points',
+                                              ha='center', va='top', fontsize=7, color='goldenrod', fontweight='bold',
+                                              bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='goldenrod'))
+                annotations.append(ann_yellow_angle)
+
+                # Blue line: from purple_min_idx, purple_min_low, adjusted_min_slope
+                purple_min_time_num = mdates.date2num(purple_min_idx)
+                time_diff_blue = current_time_num - purple_min_time_num
+                blue_line_price = purple_min_low + adjusted_min_slope * time_diff_blue if time_diff_blue > 0 else purple_min_low
+                blue_angle_deg = np.rad2deg(np.arctan(adjusted_min_slope * (x_per_inch / y_per_inch)))
+                ann_blue_angle = ax.annotate(f"{blue_angle_deg:.2f}°", xy=(time, blue_line_price),
+                                             xytext=(0, 18), textcoords='offset points',
+                                             ha='center', va='bottom', fontsize=7, color='blue', fontweight='bold',
+                                             bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='blue'))
+                annotations.append(ann_blue_angle)
         
         # Clear previous sell signal markers
         for marker in sell_signal_markers:
