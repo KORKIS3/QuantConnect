@@ -153,7 +153,8 @@ class RayManager:
             current_low = current_data['Low'].iloc[i]
             current_idx = current_data.index[i]
             
-            if current_low < self.blue_ray.start_price:
+            # Update if new minimum OR if equal to current minimum (move to latest occurrence)
+            if current_low <= self.blue_ray.start_price:
                 self.blue_ray.start_price = current_low
                 self.blue_ray.start_time = current_idx
                 blue_slope = self.blue_ray.calculate_slope(x_per_inch, y_per_inch)
