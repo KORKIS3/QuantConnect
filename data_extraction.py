@@ -122,11 +122,15 @@ def get_ym_intraday(target_date="2026-01-14", start_time="09:30", end_time="10:0
             print(f"\nLoading data from: {filename}")
             data = pd.read_csv(filename, index_col=0, parse_dates=True)
             
-            # Convert index to timezone-aware if not already
+            # Convert index to timezone-aware EST
+            import pytz
+            est = pytz.timezone('US/Eastern')
             if data.index.tz is None:
-                import pytz
-                est = pytz.timezone('US/Eastern')
+                # If no timezone, assume it's EST
                 data.index = pd.to_datetime(data.index).tz_localize(est)
+            else:
+                # If it has a timezone (e.g., UTC), convert to EST
+                data.index = pd.to_datetime(data.index).tz_convert(est)
             
             print(f"\n✓ Successfully loaded {len(data)} data points from CSV")
             print(f"\nTime Range: {data.index[0]} to {data.index[-1]}")
