@@ -83,13 +83,9 @@ class RayManager:
         
     def initialize_rays(self, current_data, x_per_inch, y_per_inch):
         """Initialize all rays from current data"""
-        max_high = current_data['High'].max()
-        max_idx = current_data['High'].idxmax()
-        min_low = current_data['Low'].min()
-        min_idx = current_data['Low'].idxmin()
-        
-        self.orange_ray = Ray(-5, max_high, max_idx, 'orange', 'Max Ray (-5°)')
-        self.yellow_ray = Ray(5, min_low, min_idx, 'yellow', 'Min Ray (+5°)')
+        # All rays now start from the first minute
+        self.orange_ray = Ray(-5, current_data['High'].iloc[0], current_data.index[0], 'orange', 'Max Ray (-5°)')
+        self.yellow_ray = Ray(5, current_data['Low'].iloc[0], current_data.index[0], 'yellow', 'Min Ray (+5°)')
         self.purple_ray = Ray(-65, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-65°)')
         self.blue_ray = Ray(65, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+65°)')
     
@@ -99,28 +95,23 @@ class RayManager:
         self.purple_ray_for_signals = copy.deepcopy(self.purple_ray)
         self.blue_ray_for_signals = copy.deepcopy(self.blue_ray)
     
-    def update_yellow_ray_for_new_min(self, current_data, cutoff_time, x_per_inch, y_per_inch):
-        """Update yellow ray if new minimum is found before cutoff (9:39)"""
-        if self.yellow_ray is None:
-            return
-        
-        data_before_cutoff = current_data[current_data.index <= cutoff_time]
-        
-        if len(data_before_cutoff) > 0:
-            current_min_low = data_before_cutoff['Low'].min()
-            current_min_idx = data_before_cutoff['Low'].idxmin()
-            
-            if current_min_low < self.yellow_ray.start_price or current_min_idx != self.yellow_ray.start_time:
-                self.yellow_ray.start_price = current_min_low
-                self.yellow_ray.start_time = current_min_idx
-        
-    def update_steep_rays(self, current_data, x_per_inch, y_per_inch):
-        """Update purple and blue rays for crossovers"""
-        if self.purple_ray is None or self.blue_ray is None:
+    def update_all_rays(self, current_data, x_per_inch, y_per_inch):
+        """Update all rays (orange, yellow, purple, blue) for crossovers"""
+        if self.orange_ray is None or self.yellow_ray is None or self.purple_ray is None or self.blue_ray is None:
             return
         
         # Reset to first minute if current_data starts from beginning
         if len(current_data) > 0 and current_data.index[0] == self.data.index[0]:
+            if len(current_data) == 1 or self.orange_ray.start_time != current_data.index[0]:
+                self.orange_ray.start_price = current_data['High'].iloc[0]
+                self.orange_ray.start_time = current_data.index[0]
+                self.orange_ray.adjusted_slope = None
+            
+            if len(current_data) == 1 or self.yellow_ray.start_time != current_data.index[0]:
+                self.yellow_ray.start_price = current_data['Low'].iloc[0]
+                self.yellow_ray.start_time = current_data.index[0]
+                self.yellow_ray.adjusted_slope = None
+            
             if len(current_data) == 1 or self.purple_ray.start_time != current_data.index[0]:
                 self.purple_ray.start_price = current_data['High'].iloc[0]
                 self.purple_ray.start_time = current_data.index[0]
@@ -131,8 +122,44 @@ class RayManager:
                 self.blue_ray.start_time = current_data.index[0]
                 self.blue_ray.adjusted_slope = None
         
+        orange_slope = self.orange_ray.calculate_slope(x_per_inch, y_per_inch)
+        yellow_slope = self.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
         purple_slope = self.purple_ray.calculate_slope(x_per_inch, y_per_inch)
         blue_slope = self.blue_ray.calculate_slope(x_per_inch, y_per_inch)
+        
+        # Update orange ray (tracks highs with -5° angle)
+        for i in range(1, len(current_data)):
+            current_high = current_data['High'].iloc[i]
+            current_idx = current_data.index[i]
+            
+            if current_high >= self.orange_ray.start_price:
+                self.orange_ray.start_price = current_high
+                self.orange_ray.start_time = current_idx
+                orange_slope = self.orange_ray.calculate_slope(x_per_inch, y_per_inch)
+            else:
+                expected_price = self.orange_ray.get_price_at_time(current_idx, orange_slope)
+                if current_high > expected_price:
+                    orange_slope = self.orange_ray.update_for_crossover(current_high, current_idx, orange_slope)
+        
+        self.orange_ray.adjusted_slope = orange_slope
+        
+        # Update yellow ray (tracks lows with +5° angle)
+        for i in range(1, len(current_data)):
+            current_low = current_data['Low'].iloc[i]
+            current_idx = current_data.index[i]
+            
+            if current_low <= self.yellow_ray.start_price:
+                self.yellow_ray.start_price = current_low
+                self.yellow_ray.start_time = current_idx
+                yellow_slope = self.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
+            else:
+                expected_price = self.yellow_ray.get_price_at_time(current_idx, yellow_slope)
+                if current_low < expected_price:
+                    yellow_slope = self.yellow_ray.update_for_crossover(current_low, current_idx, yellow_slope)
+        
+        self.yellow_ray.adjusted_slope = yellow_slope
+        
+        # Update purple ray (tracks highs with -65° angle)
         
         for i in range(1, len(current_data)):
             current_high = current_data['High'].iloc[i]
@@ -290,10 +317,7 @@ class ChartPlotter:
             print(f"   Purple: {self.ray_manager.purple_ray.start_price:.2f} @ {self.ray_manager.purple_ray.start_time.strftime('%H:%M')}")
             print(f"   Blue: {self.ray_manager.blue_ray.start_price:.2f} @ {self.ray_manager.blue_ray.start_time.strftime('%H:%M')}")
         
-        self.ray_manager.update_yellow_ray_for_new_min(full_data, self.yellow_adjustment_cutoff, x_per_inch, y_per_inch)
-        print(f"   Yellow (after update): {self.ray_manager.yellow_ray.start_price:.2f} @ {self.ray_manager.yellow_ray.start_time.strftime('%H:%M')}")
-        
-        # Initialize minute-by-minute tracking for purple and blue rays
+        # Initialize minute-by-minute tracking for all rays
         # These will be updated minute-by-minute to match what's displayed on the graph
         minute_purple_ray = Ray(-65, full_data['High'].iloc[0], full_data.index[0], 'darkviolet', 'Max Ray (-65°)')
         minute_blue_ray = Ray(65, full_data['Low'].iloc[0], full_data.index[0], 'blue', 'Min Ray (+65°)')
@@ -420,7 +444,7 @@ class ChartPlotter:
             current_data_so_far = full_data.iloc[:i + 1]
             self.ray_manager.purple_ray = minute_purple_ray
             self.ray_manager.blue_ray = minute_blue_ray
-            self.ray_manager.update_steep_rays(current_data_so_far, x_per_inch, y_per_inch)
+            self.ray_manager.update_all_rays(current_data_so_far, x_per_inch, y_per_inch)
             minute_purple_ray = self.ray_manager.purple_ray
             minute_blue_ray = self.ray_manager.blue_ray
         
@@ -459,8 +483,7 @@ class ChartPlotter:
             if self.ray_manager.orange_ray is None:
                 self.ray_manager.initialize_rays(current_data, x_per_inch, y_per_inch)
             
-            self.ray_manager.update_yellow_ray_for_new_min(current_data, self.yellow_adjustment_cutoff, x_per_inch, y_per_inch)
-            self.ray_manager.update_steep_rays(current_data, x_per_inch, y_per_inch)
+            self.ray_manager.update_all_rays(current_data, x_per_inch, y_per_inch)
         
         self.update_price_lines(current_data)
         self.update_ray_lines(current_data, x_per_inch, y_per_inch)
@@ -477,103 +500,63 @@ class ChartPlotter:
         self.lines['low'].set_data(times, current_data['Low'])
         self.lines['close'].set_data(times, current_data['Close'])
     
+    def update_single_ray_with_angle(self, ray, line_key, annotation_attr, current_end, end_time, 
+                                     x_per_inch, y_per_inch, color, edge_color, y_offset):
+        """Helper method to update a single ray line and its angle annotation"""
+        # Calculate slope (use adjusted_slope if available)
+        slope = ray.adjusted_slope if hasattr(ray, 'adjusted_slope') and ray.adjusted_slope else ray.calculate_slope(x_per_inch, y_per_inch)
+        
+        # Update line data
+        ray_end = ray.get_price_at_time(end_time, slope)
+        self.lines[line_key].set_data([ray.start_time, end_time], [ray.start_price, ray_end])
+        
+        # Calculate actual angle
+        actual_angle = np.rad2deg(np.arctan(slope * (x_per_inch / y_per_inch)))
+        
+        # Get current price at visible end
+        current_price = ray.get_price_at_time(current_end, slope)
+        
+        # Remove old annotation if exists
+        if hasattr(self, annotation_attr):
+            old_annotation = getattr(self, annotation_attr)
+            if old_annotation is not None:
+                old_annotation.remove()
+        
+        # Create new angle annotation
+        va = 'top' if y_offset < 0 else 'bottom'
+        annotation = self.ax.annotate(f"∠ {abs(actual_angle):.2f}°", 
+                                      xy=(current_end, current_price),
+                                      xytext=(10, y_offset), textcoords='offset points', 
+                                      ha='left', va=va,
+                                      fontsize=9, color=color, fontweight='bold',
+                                      bbox=dict(boxstyle='round,pad=0.4', facecolor='white', 
+                                               alpha=0.85, edgecolor=edge_color, linewidth=2))
+        setattr(self, annotation_attr, annotation)
+    
     def update_ray_lines(self, current_data, x_per_inch, y_per_inch):
         """Update all ray lines"""
         if self.ray_manager.orange_ray is None:
             return
         
         end_time = self.data.index[-1]
-        
-        orange_slope = self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
-        orange_end = self.ray_manager.orange_ray.get_price_at_time(end_time, orange_slope)
-        self.lines['ray_orange'].set_data([self.ray_manager.orange_ray.start_time, end_time],
-                                          [self.ray_manager.orange_ray.start_price, orange_end])
-        
-        # Calculate actual angle from slope
-        actual_angle = np.rad2deg(np.arctan(orange_slope * (x_per_inch / y_per_inch)))
-        
-        # Add angle annotation for orange line - place near the current end of visible data
         current_end = current_data.index[-1]
-        orange_current_price = self.ray_manager.orange_ray.get_price_at_time(current_end, orange_slope)
         
-        # Remove old angle annotation if it exists
-        if hasattr(self, 'orange_angle_annotation') and self.orange_angle_annotation is not None:
-            self.orange_angle_annotation.remove()
+        # Update each ray using the helper method
+        self.update_single_ray_with_angle(
+            self.ray_manager.orange_ray, 'ray_orange', 'orange_angle_annotation',
+            current_end, end_time, x_per_inch, y_per_inch, 'darkorange', 'orange', -15)
         
-        self.orange_angle_annotation = self.ax.annotate(f"∠ {abs(actual_angle):.2f}°", 
-                                  xy=(current_end, orange_current_price),
-                                  xytext=(10, -15), textcoords='offset points', ha='left', va='top',
-                                  fontsize=9, color='darkorange', fontweight='bold',
-                                  bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, 
-                                           edgecolor='orange', linewidth=2))
+        self.update_single_ray_with_angle(
+            self.ray_manager.yellow_ray, 'ray_yellow', 'yellow_angle_annotation',
+            current_end, end_time, x_per_inch, y_per_inch, 'gold', 'yellow', -15)
         
-        yellow_slope = self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
-        yellow_end = self.ray_manager.yellow_ray.get_price_at_time(end_time, yellow_slope)
-        self.lines['ray_yellow'].set_data([self.ray_manager.yellow_ray.start_time, end_time],
-                                          [self.ray_manager.yellow_ray.start_price, yellow_end])
+        self.update_single_ray_with_angle(
+            self.ray_manager.purple_ray, 'ray_purple', 'purple_angle_annotation',
+            current_end, end_time, x_per_inch, y_per_inch, 'darkviolet', 'darkviolet', 15)
         
-        # Calculate actual angle from slope for yellow line
-        yellow_actual_angle = np.rad2deg(np.arctan(yellow_slope * (x_per_inch / y_per_inch)))
-        
-        # Add angle annotation for yellow line - place near the current end of visible data
-        current_end = current_data.index[-1]
-        yellow_current_price = self.ray_manager.yellow_ray.get_price_at_time(current_end, yellow_slope)
-        
-        # Remove old angle annotation if it exists
-        if hasattr(self, 'yellow_angle_annotation') and self.yellow_angle_annotation is not None:
-            self.yellow_angle_annotation.remove()
-        
-        self.yellow_angle_annotation = self.ax.annotate(f"∠ {abs(yellow_actual_angle):.2f}°", 
-                                  xy=(current_end, yellow_current_price),
-                                  xytext=(10, -15), textcoords='offset points', ha='left', va='top',
-                                  fontsize=9, color='gold', fontweight='bold',
-                                  bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, 
-                                           edgecolor='yellow', linewidth=2))
-        
-        purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
-        purple_end = self.ray_manager.purple_ray.get_price_at_time(end_time, purple_slope)
-        self.lines['ray_purple'].set_data([self.ray_manager.purple_ray.start_time, end_time],
-                                          [self.ray_manager.purple_ray.start_price, purple_end])
-        
-        # Calculate actual angle from slope for purple line
-        purple_actual_angle = np.rad2deg(np.arctan(purple_slope * (x_per_inch / y_per_inch)))
-        
-        # Add angle annotation for purple line - place near the current end of visible data
-        current_end = current_data.index[-1]
-        purple_current_price = self.ray_manager.purple_ray.get_price_at_time(current_end, purple_slope)
-        
-        # Remove old angle annotation if it exists
-        if hasattr(self, 'purple_angle_annotation') and self.purple_angle_annotation is not None:
-            self.purple_angle_annotation.remove()
-        
-        self.purple_angle_annotation = self.ax.annotate(f"∠ {abs(purple_actual_angle):.2f}°", 
-                                  xy=(current_end, purple_current_price),
-                                  xytext=(10, 15), textcoords='offset points', ha='left', va='bottom',
-                                  fontsize=9, color='darkviolet', fontweight='bold',
-                                  bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, 
-                                           edgecolor='darkviolet', linewidth=2))
-        
-        blue_slope = self.ray_manager.blue_ray.adjusted_slope or self.ray_manager.blue_ray.calculate_slope(x_per_inch, y_per_inch)
-        blue_end = self.ray_manager.blue_ray.get_price_at_time(end_time, blue_slope)
-        self.lines['ray_blue'].set_data([self.ray_manager.blue_ray.start_time, end_time],
-                                        [self.ray_manager.blue_ray.start_price, blue_end])
-        
-        # Calculate actual angle from slope for blue line
-        blue_actual_angle = np.rad2deg(np.arctan(blue_slope * (x_per_inch / y_per_inch)))
-        
-        # Add angle annotation for blue line - place near the current end of visible data
-        blue_current_price = self.ray_manager.blue_ray.get_price_at_time(current_end, blue_slope)
-        
-        # Remove old angle annotation if it exists
-        if hasattr(self, 'blue_angle_annotation') and self.blue_angle_annotation is not None:
-            self.blue_angle_annotation.remove()
-        
-        self.blue_angle_annotation = self.ax.annotate(f"∠ {abs(blue_actual_angle):.2f}°", 
-                                  xy=(current_end, blue_current_price),
-                                  xytext=(10, -15), textcoords='offset points', ha='left', va='top',
-                                  fontsize=9, color='blue', fontweight='bold',
-                                  bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, 
-                                           edgecolor='blue', linewidth=2))
+        self.update_single_ray_with_angle(
+            self.ray_manager.blue_ray, 'ray_blue', 'blue_angle_annotation',
+            current_end, end_time, x_per_inch, y_per_inch, 'blue', 'blue', -15)
     
     def update_annotations(self, current_data, x_per_inch, y_per_inch):
         """Update all text annotations"""
