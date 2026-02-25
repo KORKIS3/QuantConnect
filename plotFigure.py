@@ -57,7 +57,9 @@ class TradingState:
         self.current_frame = 0
         self.is_playing = False
         self.timer = None
+        #creates and empty state 
         self.snapshots_taken = set()
+        #creates dictionaries 
         self.detected_sell_signals = {}
         self.detected_buy_signals = {}
         self.position = 'flat'
@@ -77,6 +79,8 @@ class RayManager:
         self.yellow_ray = None
         self.purple_ray = None
         self.blue_ray = None
+        self.dark_purple_ray = None
+        self.purple_intersections = 0
         # Store copies for signal detection
         self.purple_ray_for_signals = None
         self.blue_ray_for_signals = None
@@ -88,6 +92,8 @@ class RayManager:
         self.yellow_ray = Ray(5, current_data['Low'].iloc[0], current_data.index[0], 'yellow', 'Min Ray (+5°)')
         self.purple_ray = Ray(-65, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-65°)')
         self.blue_ray = Ray(65, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+65°)')
+        self.dark_purple_ray = None
+        self.purple_intersections = 0
     
     def save_steep_rays_for_signals(self):
         """Save current steep ray state for signal detection"""
@@ -173,9 +179,37 @@ class RayManager:
             else:
                 expected_price = self.purple_ray.get_price_at_time(current_idx, purple_slope)
                 if current_high > expected_price:
+                    self.purple_intersections += 1
                     purple_slope = self.purple_ray.update_for_crossover(current_high, current_idx, purple_slope)
+                elif self.purple_intersections >= 2 and self.dark_purple_ray is None:
+                    # Create new dark purple ray on second intersection
+                    self.dark_purple_ray = Ray(-65, current_high, current_idx, 'indigo', 'Dark Purple Ray (-65°)')
+                    print(f"  🟣 Dark Purple ray created @ {current_idx.strftime('%H:%M')}: {current_high:.2f}")
         
         self.purple_ray.adjusted_slope = purple_slope
+
+        # Update dark purple ray only after it has been created
+        if self.dark_purple_ray is not None:
+            dark_purple_slope = self.dark_purple_ray.adjusted_slope if self.dark_purple_ray.adjusted_slope else self.dark_purple_ray.calculate_slope(x_per_inch, y_per_inch)
+
+            for i in range(1, len(current_data)):
+                current_high = current_data['High'].iloc[i]
+                current_idx = current_data.index[i]
+
+                # Only update using data points at or after creation time
+                if current_idx <= self.dark_purple_ray.start_time:
+                    continue
+
+                if current_high >= self.dark_purple_ray.start_price:
+                    self.dark_purple_ray.start_price = current_high
+                    self.dark_purple_ray.start_time = current_idx
+                    dark_purple_slope = self.dark_purple_ray.calculate_slope(x_per_inch, y_per_inch)
+                else:
+                    expected_price = self.dark_purple_ray.get_price_at_time(current_idx, dark_purple_slope)
+                    if current_high > expected_price:
+                        dark_purple_slope = self.dark_purple_ray.update_for_crossover(current_high, current_idx, dark_purple_slope)
+
+            self.dark_purple_ray.adjusted_slope = dark_purple_slope
         
         for i in range(1, len(current_data)):
             current_low = current_data['Low'].iloc[i]
@@ -199,10 +233,12 @@ class ChartPlotter:
     
     def __init__(self, data, target_date, start_time, end_time, output_dir):
         self.data = data
+        #target_date is the date we are analyzing 
         self.target_date = target_date
         self.start_time = start_time
         self.end_time = end_time
         self.output_dir = output_dir
+        #Initializes the trading state and ray manager
         self.state = TradingState()
         self.ray_manager = RayManager(data)
         
@@ -238,6 +274,7 @@ class ChartPlotter:
         self.lines['ray_yellow'], = self.ax.plot([], [], 'yellow', linewidth=2.5, label='Min Ray (+5°)', alpha=0.9)
         self.lines['ray_purple'], = self.ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-65°)', alpha=0.9)
         self.lines['ray_blue'], = self.ax.plot([], [], color='blue', linewidth=2.5, label='Min Ray (+65°)', alpha=0.9)
+        self.lines['ray_dark_purple'], = self.ax.plot([], [], color='indigo', linewidth=2.5, label='Dark Purple Ray (-65°)', alpha=0.9)
         
         self.ax.set_ylabel('Price', fontsize=13, fontweight='bold')
         self.ax.set_xlabel('Time (EST)', fontsize=13, fontweight='bold')
@@ -266,19 +303,30 @@ class ChartPlotter:
     
     def get_aspect_ratio(self):
         """Calculate aspect ratio for proper angle calculations"""
+        # Get current x-axis limits (time range) from the plot
         xlim = self.ax.get_xlim()
+        # Get current y-axis limits (price range) from the plot
         ylim = self.ax.get_ylim()
+        # Compute total span of the x-axis in data units
         x_range = xlim[1] - xlim[0]
+        # Compute total span of the y-axis in data units
         y_range = ylim[1] - ylim[0]
         
+        # Get the figure size in inches (width, height)
         fig_width, fig_height = self.fig.get_size_inches()
+        # Get the axes bounding box as a fraction of the figure
         ax_bbox = self.ax.get_position()
+        # Convert axes width from figure fraction to inches
         ax_width_inches = fig_width * ax_bbox.width
+        # Convert axes height from figure fraction to inches
         ax_height_inches = fig_height * ax_bbox.height
         
+        # Compute x-axis data units per inch of screen space
         x_per_inch = x_range / ax_width_inches
+        # Compute y-axis data units per inch of screen space
         y_per_inch = y_range / ax_height_inches
         
+        # Return the scaling factors used for correct angle calculations
         return x_per_inch, y_per_inch
     
     def detect_all_signals_once(self):
@@ -557,6 +605,15 @@ class ChartPlotter:
         self.update_single_ray_with_angle(
             self.ray_manager.blue_ray, 'ray_blue', 'blue_angle_annotation',
             current_end, end_time, x_per_inch, y_per_inch, 'blue', 'blue', -15)
+        
+        # Update dark purple ray if it exists
+        if self.ray_manager.dark_purple_ray is not None:
+            self.update_single_ray_with_angle(
+                self.ray_manager.dark_purple_ray, 'ray_dark_purple', 'dark_purple_angle_annotation',
+                current_end, end_time, x_per_inch, y_per_inch, 'indigo', 'indigo', 15)
+        else:
+            # Clear the line if dark purple ray doesn't exist yet
+            self.lines['ray_dark_purple'].set_data([], [])
     
     def update_annotations(self, current_data, x_per_inch, y_per_inch):
         """Update all text annotations"""
