@@ -4,6 +4,7 @@ Contains all plotting and visualization classes
 """
 
 import matplotlib.pyplot as plt
+import copy
 import matplotlib.dates as mdates
 from matplotlib.widgets import Button
 import numpy as np
@@ -488,11 +489,11 @@ class ChartPlotter:
                             print(f"      Current close: {row['Close']:.2f}, Previous minute's yellow ray: {prev_yellow:.2f}")
                             sell_triggered = True
                     
-                    # SELL: Previous close was at/above previous blue, current close is below current blue
+                    # SELL: Previous close was at/above previous blue, current close is below previous-minute blue
                     if not sell_triggered and prev_close is not None and prev_blue is not None:
-                        if prev_close >= prev_blue and row['Close'] < blue_price:
-                            print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < current_blue {blue_price:.0f}")
-                            print(f"      Current close: {row['Close']:.2f}, Current blue ray: {blue_price:.2f}")
+                        if prev_close >= prev_blue and row['Close'] < prev_blue:
+                            print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < prev_blue {prev_blue:.0f}")
+                            print(f"      Current close: {row['Close']:.2f}, Previous minute's blue ray: {prev_blue:.2f}")
                             sell_triggered = True
                     
                     if sell_triggered:
@@ -613,10 +614,25 @@ class ChartPlotter:
         purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
         blue_slope = self.ray_manager.blue_ray.adjusted_slope or self.ray_manager.blue_ray.calculate_slope(x_per_inch, y_per_inch)
 
-        prev_orange = self.ray_manager.orange_ray.get_price_at_time(prev_time, orange_slope)
-        prev_yellow = self.ray_manager.yellow_ray.get_price_at_time(prev_time, yellow_slope)
-        prev_purple = self.ray_manager.purple_ray.get_price_at_time(prev_time, purple_slope)
-        prev_blue = self.ray_manager.blue_ray.get_price_at_time(prev_time, blue_slope)
+        # Compute "previous-minute" ray values using a frozen copy of the ray manager
+        # so comparisons use the ray state up to prev_time (before current-minute updates).
+        try:
+            prev_rm = copy.deepcopy(self.ray_manager)
+            # Update the copy using data up to prev_time (exclude current row)
+            prev_data = current_data.iloc[:-1]
+            if len(prev_data) > 0:
+                prev_rm.update_all_rays(prev_data, x_per_inch, y_per_inch)
+
+            prev_orange = prev_rm.orange_ray.get_price_at_time(prev_time, prev_rm.orange_ray.adjusted_slope or prev_rm.orange_ray.calculate_slope(x_per_inch, y_per_inch))
+            prev_yellow = prev_rm.yellow_ray.get_price_at_time(prev_time, prev_rm.yellow_ray.adjusted_slope or prev_rm.yellow_ray.calculate_slope(x_per_inch, y_per_inch))
+            prev_purple = prev_rm.purple_ray.get_price_at_time(prev_time, prev_rm.purple_ray.adjusted_slope or prev_rm.purple_ray.calculate_slope(x_per_inch, y_per_inch))
+            prev_blue = prev_rm.blue_ray.get_price_at_time(prev_time, prev_rm.blue_ray.adjusted_slope or prev_rm.blue_ray.calculate_slope(x_per_inch, y_per_inch))
+        except Exception:
+            # Fallback: use current ray_manager if deepcopy/update fails
+            prev_orange = self.ray_manager.orange_ray.get_price_at_time(prev_time, orange_slope)
+            prev_yellow = self.ray_manager.yellow_ray.get_price_at_time(prev_time, yellow_slope)
+            prev_purple = self.ray_manager.purple_ray.get_price_at_time(prev_time, purple_slope)
+            prev_blue = self.ray_manager.blue_ray.get_price_at_time(prev_time, blue_slope)
 
         curr_orange = self.ray_manager.orange_ray.get_price_at_time(time, orange_slope)
         curr_yellow = self.ray_manager.yellow_ray.get_price_at_time(time, yellow_slope)
@@ -702,8 +718,9 @@ class ChartPlotter:
             if prev_close >= prev_yellow and current_close < prev_yellow:
                 sell_triggered = True
 
-            if not sell_triggered and prev_close >= prev_blue and current_close < curr_blue:
-                sell_triggered = True
+            if not sell_triggered and prev_close is not None and prev_blue is not None:
+                if prev_close >= prev_blue and current_close < prev_blue:
+                    sell_triggered = True
 
             if sell_triggered:
                 self.state.detected_sell_signals[time] = current_close
