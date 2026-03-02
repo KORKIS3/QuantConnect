@@ -69,6 +69,9 @@ class TradingState:
         self.trade_type = None
         self.trades = []
         self.all_signals_detected = False  # Track if we've done full detection
+        self.trading_halted = False
+        self.halt_reason = None
+        self.halt_time = None
 
 
 class RayManager:
@@ -262,8 +265,8 @@ class ChartPlotter:
         self.ax = None
         self.lines = {}
         self.annotations = []
-        self.signal_markers = {'buy': [], 'sell': []}
-        self.signal_annotations = {'buy': [], 'sell': []}
+        self.signal_markers = {'buy': [], 'sell': [], 'halt': []}
+        self.signal_annotations = {'buy': [], 'sell': [], 'halt': []}
         self.orange_angle_annotation = None
         self.yellow_angle_annotation = None
         self.purple_angle_annotation = None
@@ -397,6 +400,8 @@ class ChartPlotter:
         print(f"\n📏 Fixed Slopes: Orange={orange_slope:.6f}, Yellow={yellow_slope:.6f}")
         
         temp_position = 'flat'
+        temp_entry_price = None
+        temp_entry_time = None
         
         print(f"\n🔎 Scanning for signals...")
         
@@ -448,7 +453,7 @@ class ChartPlotter:
                         print(f"   SELL(Yellow): {prev_close:.2f} >= {prev_yellow:.2f}? {sell_cond1}, {row['Close']:.2f} < {prev_yellow:.2f}? {sell_cond2}")
                         print(f"   BOTH? {sell_cond1 and sell_cond2}")
             
-            if time >= self.cutoff_time and i > 0:
+            if time >= self.cutoff_time and i > 0 and not self.state.trading_halted:
                 # BUY signals - Can trigger from flat or short (position reversal)
                 if temp_position != 'long' and time not in self.state.detected_buy_signals:
                     buy_triggered = False
@@ -459,15 +464,17 @@ class ChartPlotter:
                             print(f"  🟢 BUY (Orange) @ {time.strftime('%H:%M')}: {row['Close']:.0f} > prev_orange {prev_orange:.0f}")
                             buy_triggered = True
                     
-                    # BUY: Previous close was at/below previous purple, current close is above current purple
+                    # BUY: Previous close was at/below previous purple, current close is above previous purple (strict crossover)
                     if not buy_triggered and prev_close is not None and prev_purple is not None:
-                        if prev_close <= prev_purple and row['Close'] > purple_price:
-                            print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > current_purple {purple_price:.0f}")
+                        if prev_close <= prev_purple and row['Close'] > prev_purple:
+                            print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > prev_purple {prev_purple:.0f}")
                             buy_triggered = True
                     
                     if buy_triggered:
                         self.state.detected_buy_signals[time] = row['Close']
                         temp_position = 'long'
+                        temp_entry_price = row['Close']
+                        temp_entry_time = time
                         print(f"      ✅ Position: {temp_position}")
                 
                 # SELL signals - Can trigger from flat or long (position reversal)
@@ -491,7 +498,38 @@ class ChartPlotter:
                     if sell_triggered:
                         self.state.detected_sell_signals[time] = row['Close']
                         temp_position = 'short'
+                        temp_entry_price = row['Close']
+                        temp_entry_time = time
                         print(f"      ✅ Position: {temp_position}")
+
+                # Profit target liquidation
+                if not self.state.trading_halted and temp_position != 'flat' and temp_entry_price is not None:
+                    if temp_position == 'long':
+                        pl = row['Close'] - temp_entry_price
+                        if pl > 100:
+                            if time not in self.state.detected_sell_signals:
+                                self.state.detected_sell_signals[time] = row['Close']
+                            temp_position = 'flat'
+                            temp_entry_price = None
+                            temp_entry_time = None
+                            self.state.trading_halted = True
+                            self.state.halt_reason = 'profit_target'
+                            self.state.halt_time = time
+                            print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
+                            break
+                    else:  # short
+                        pl = temp_entry_price - row['Close']
+                        if pl > 100:
+                            if time not in self.state.detected_buy_signals:
+                                self.state.detected_buy_signals[time] = row['Close']
+                            temp_position = 'flat'
+                            temp_entry_price = None
+                            temp_entry_time = None
+                            self.state.trading_halted = True
+                            self.state.halt_reason = 'profit_target'
+                            self.state.halt_time = time
+                            print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
+                            break
             
             prev_close = row['Close']
             prev_orange = orange_price
@@ -553,6 +591,9 @@ class ChartPlotter:
         if len(current_data) < 2:
             return
 
+        if self.state.trading_halted:
+            return
+
         time = current_data.index[-1]
         prev_time = current_data.index[-2]
 
@@ -562,6 +603,11 @@ class ChartPlotter:
         prev_close = current_data.loc[prev_time, 'Close']
         current_close = current_data.loc[time, 'Close']
 
+        # Derive current position from detected signals up to this time
+        last_buy_time = max((t for t in self.state.detected_buy_signals.keys() if t <= time), default=None)
+        last_sell_time = max((t for t in self.state.detected_sell_signals.keys() if t <= time), default=None)
+
+        # Calculate ray values for current and previous points
         orange_slope = self.ray_manager.orange_ray.adjusted_slope or self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
         yellow_slope = self.ray_manager.yellow_ray.adjusted_slope or self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
         purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
@@ -572,8 +618,66 @@ class ChartPlotter:
         prev_purple = self.ray_manager.purple_ray.get_price_at_time(prev_time, purple_slope)
         prev_blue = self.ray_manager.blue_ray.get_price_at_time(prev_time, blue_slope)
 
-        current_purple = self.ray_manager.purple_ray.get_price_at_time(time, purple_slope)
-        current_blue = self.ray_manager.blue_ray.get_price_at_time(time, blue_slope)
+        curr_orange = self.ray_manager.orange_ray.get_price_at_time(time, orange_slope)
+        curr_yellow = self.ray_manager.yellow_ray.get_price_at_time(time, yellow_slope)
+        curr_purple = self.ray_manager.purple_ray.get_price_at_time(time, purple_slope)
+        curr_blue = self.ray_manager.blue_ray.get_price_at_time(time, blue_slope)
+
+
+        # Remove previous debug annotation if it exists
+        if hasattr(self, 'rays_debug_box') and self.rays_debug_box is not None:
+            self.rays_debug_box.remove()
+            self.rays_debug_box = None
+
+        # Prepare debug text
+        debug_text = (
+            f"Prev ({prev_time.strftime('%H:%M:%S')}):\n"
+            f"  Purple: {prev_purple:.2f}\n  Blue: {prev_blue:.2f}\n  Orange: {prev_orange:.2f}\n  Yellow: {prev_yellow:.2f}\n"
+            f"Curr ({time.strftime('%H:%M:%S')}):\n"
+            f"  Purple: {curr_purple:.2f}\n  Blue: {curr_blue:.2f}\n  Orange: {curr_orange:.2f}\n  Yellow: {curr_yellow:.2f}"
+        )
+
+        # Move annotation box outside the main XY axis to the right (in figure coordinates)
+        # Use self.fig.text instead of self.ax.annotate
+        if hasattr(self, 'rays_debug_box') and self.rays_debug_box is not None:
+            self.rays_debug_box.remove()
+            self.rays_debug_box = None
+
+        self.rays_debug_box = self.fig.text(
+            0.87, 0.15, debug_text,
+            ha='left', va='bottom', fontsize=9, color='navy', fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.85, edgecolor='navy', linewidth=2),
+            zorder=1000
+        )
+
+        if last_buy_time and (last_sell_time is None or last_buy_time > last_sell_time):
+            self.state.position = 'long'
+            self.state.entry_price = self.state.detected_buy_signals[last_buy_time]
+            self.state.entry_time = last_buy_time
+        elif last_sell_time and (last_buy_time is None or last_sell_time > last_buy_time):
+            self.state.position = 'short'
+            self.state.entry_price = self.state.detected_sell_signals[last_sell_time]
+            self.state.entry_time = last_sell_time
+        else:
+            self.state.position = 'flat'
+            self.state.entry_price = None
+            self.state.entry_time = None
+
+        # Debug print for 9:53 (keep original logic)
+        if time.strftime('%H:%M') == '09:53':
+            print(f"\n===== BUY SIGNAL DEBUG 09:53 =====")
+            print(f"prev_time: {prev_time.strftime('%H:%M')}, time: {time.strftime('%H:%M')}")
+            print(f"prev_close: {prev_close}")
+            print(f"current_close: {current_close}")
+            print(f"prev_orange: {prev_orange}")
+            print(f"prev_purple: {prev_purple}")
+            print(f"self.state.position before: {self.state.position}")
+            cond_orange = prev_close <= prev_orange and current_close > prev_orange
+            cond_purple = prev_close <= prev_purple and current_close > prev_purple
+            print(f"Condition (prev_close <= prev_orange and current_close > prev_orange): {cond_orange}")
+            print(f"Condition (prev_close <= prev_purple and current_close > prev_purple): {cond_purple}")
+            print(f"Already in detected_buy_signals? {time in self.state.detected_buy_signals}")
+            print(f"==================================\n")
 
         # BUY signals
         if self.state.position != 'long' and time not in self.state.detected_buy_signals:
@@ -582,12 +686,14 @@ class ChartPlotter:
             if prev_close <= prev_orange and current_close > prev_orange:
                 buy_triggered = True
 
-            if not buy_triggered and prev_close <= prev_purple and current_close > current_purple:
+            if not buy_triggered and prev_close <= prev_purple and current_close > prev_purple:
                 buy_triggered = True
 
             if buy_triggered:
                 self.state.detected_buy_signals[time] = current_close
                 self.state.position = 'long'
+                self.state.entry_price = current_close
+                self.state.entry_time = time
 
         # SELL signals
         if self.state.position != 'short' and time not in self.state.detected_sell_signals:
@@ -596,12 +702,39 @@ class ChartPlotter:
             if prev_close >= prev_yellow and current_close < prev_yellow:
                 sell_triggered = True
 
-            if not sell_triggered and prev_close >= prev_blue and current_close < current_blue:
+            if not sell_triggered and prev_close >= prev_blue and current_close < curr_blue:
                 sell_triggered = True
 
             if sell_triggered:
                 self.state.detected_sell_signals[time] = current_close
                 self.state.position = 'short'
+                self.state.entry_price = current_close
+                self.state.entry_time = time
+
+        # Profit target liquidation (minute-by-minute)
+        if self.state.position != 'flat' and self.state.entry_price is not None:
+            if self.state.position == 'long':
+                pl = current_close - self.state.entry_price
+                if pl > 100:
+                    if time not in self.state.detected_sell_signals:
+                        self.state.detected_sell_signals[time] = current_close
+                    self.state.position = 'flat'
+                    self.state.entry_price = None
+                    self.state.entry_time = None
+                    self.state.trading_halted = True
+                    self.state.halt_reason = 'profit_target'
+                    self.state.halt_time = time
+            else:  # short
+                pl = self.state.entry_price - current_close
+                if pl > 100:
+                    if time not in self.state.detected_buy_signals:
+                        self.state.detected_buy_signals[time] = current_close
+                    self.state.position = 'flat'
+                    self.state.entry_price = None
+                    self.state.entry_time = None
+                    self.state.trading_halted = True
+                    self.state.halt_reason = 'profit_target'
+                    self.state.halt_time = time
 
     def update_price_lines(self, current_data):
         """Update the price line data"""
@@ -706,15 +839,17 @@ class ChartPlotter:
     
     def update_signal_markers(self, current_data):
         """Update buy and sell signal markers"""
-        for marker in self.signal_markers['buy'] + self.signal_markers['sell']:
+        for marker in self.signal_markers['buy'] + self.signal_markers['sell'] + self.signal_markers['halt']:
             marker.remove()
-        for ann in self.signal_annotations['buy'] + self.signal_annotations['sell']:
+        for ann in self.signal_annotations['buy'] + self.signal_annotations['sell'] + self.signal_annotations['halt']:
             ann.remove()
         
-        self.signal_markers = {'buy': [], 'sell': []}
-        self.signal_annotations = {'buy': [], 'sell': []}
+        self.signal_markers = {'buy': [], 'sell': [], 'halt': []}
+        self.signal_annotations = {'buy': [], 'sell': [], 'halt': []}
         
         for buy_time, buy_price in self.state.detected_buy_signals.items():
+            if self.state.trading_halted and self.state.halt_time is not None and buy_time > self.state.halt_time:
+                continue
             if buy_time <= current_data.index[-1]:
                 marker, = self.ax.plot(buy_time, buy_price, marker='^', markersize=15,
                                       color='green', markeredgecolor='darkgreen', markeredgewidth=2, zorder=10)
@@ -729,6 +864,8 @@ class ChartPlotter:
                 self.signal_annotations['buy'].append(ann)
         
         for sell_time, sell_price in self.state.detected_sell_signals.items():
+            if self.state.trading_halted and self.state.halt_time is not None and sell_time > self.state.halt_time:
+                continue
             if sell_time <= current_data.index[-1]:
                 marker, = self.ax.plot(sell_time, sell_price, marker='v', markersize=15,
                                       color='red', markeredgecolor='darkred', markeredgewidth=2, zorder=10)
@@ -741,6 +878,17 @@ class ChartPlotter:
                                               edgecolor='darkred', linewidth=2),
                                       arrowprops=dict(arrowstyle='->', color='red', lw=2))
                 self.signal_annotations['sell'].append(ann)
+
+        if self.state.trading_halted and self.state.halt_time is not None:
+            if self.state.halt_time <= current_data.index[-1]:
+                ann = self.fig.text(0.5, 0.5,
+                                   "HALT\nCongrats over 100 points\n" + self.state.halt_time.strftime('%H:%M') +
+                                   "\n" + self.target_date,
+                                   ha='center', va='center', fontsize=33, color='white', fontweight='bold',
+                                   bbox=dict(boxstyle='round,pad=1.2', facecolor='dodgerblue', alpha=0.98,
+                                             edgecolor='navy', linewidth=3),
+                                   zorder=1000)
+                self.signal_annotations['halt'].append(ann)
     
     def update_stats(self, current_data):
         """Update statistics box"""
@@ -786,6 +934,8 @@ class ChartPlotter:
         entry_time = None
         
         for time in current_data.index:
+            if self.state.trading_halted and self.state.halt_time is not None and time > self.state.halt_time:
+                break
             # Check if there's a BUY signal at this time
             if time in self.state.detected_buy_signals:
                 current_position = 'long'
