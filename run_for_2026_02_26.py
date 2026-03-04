@@ -1,0 +1,33 @@
+from data_extraction import get_ym_intraday
+from plotFigure import ChartPlotter
+import matplotlib
+import os
+
+# Use headless backend
+matplotlib.use('Agg')
+
+if __name__ == '__main__':
+    target_date = '2026-02-26'
+    start_time = '09:30'
+    end_time = '10:00'
+
+    data = get_ym_intraday(target_date=target_date, start_time=start_time, end_time=end_time, use_csv=False)
+
+    if data is None or data.empty:
+        print('\n✗ No data available for {}'.format(target_date))
+    else:
+        output_dir = os.path.expanduser('/Users/orkiskevin/Desktop/Trading/Temp')
+        os.makedirs(output_dir, exist_ok=True)
+
+        plotter = ChartPlotter(data, target_date, start_time, end_time, output_dir)
+        # Prepare figure and update to final frame
+        plotter.create_figure()
+        plotter.update_plot(len(data) - 1)
+
+        # Run full detection (prints to stdout)
+        plotter.detect_all_signals_once()
+
+        # Save a static image
+        out_file = os.path.join(output_dir, f'YM_{target_date}_summary.png')
+        plotter.fig.savefig(out_file, dpi=200, bbox_inches='tight')
+        print('\n✓ Saved static plot to:', out_file)

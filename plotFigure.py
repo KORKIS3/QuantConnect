@@ -898,15 +898,17 @@ class ChartPlotter:
 
         if self.state.trading_halted and self.state.halt_time is not None:
             if self.state.halt_time <= current_data.index[-1]:
-                ann = self.fig.text(0.5, 0.5,
-                                   "HALT\nCongrats over 100 points\n" + self.state.halt_time.strftime('%H:%M') +
-                                   "\n" + self.target_date,
-                                   ha='center', va='center', fontsize=33, color='white', fontweight='bold',
-                                   bbox=dict(boxstyle='round,pad=1.2', facecolor='dodgerblue', alpha=0.98,
-                                             edgecolor='navy', linewidth=3),
-                                   zorder=1000)
-                self.signal_annotations['halt'].append(ann)
-    
+                # Temporarily disable the congratulations/halt overlay
+                # ann = self.fig.text(0.5, 0.5,
+                #                    "HALT\nCongrats over 100 points\n" + self.state.halt_time.strftime('%H:%M') +
+                #                    "\n" + self.target_date,
+                #                    ha='center', va='center', fontsize=33, color='white', fontweight='bold',
+                #                    bbox=dict(boxstyle='round,pad=1.2', facecolor='dodgerblue', alpha=0.98,
+                #                              edgecolor='navy', linewidth=3),
+                #                    zorder=1000)
+                # self.signal_annotations['halt'].append(ann)
+                pass
+
     def update_stats(self, current_data):
         """Update statistics box"""
         times = current_data.index
