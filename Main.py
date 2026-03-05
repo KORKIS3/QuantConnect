@@ -11,15 +11,19 @@ import os
 
 
 if __name__ == "__main__":
-    target_date = "2026-02-20"  # Set to the date you want to analyze
+    target_date = "2026-01-30"
     start_time = "09:30"
     end_time = "10:00"
 
-    # Check if local CSV exists for the date
-    local_csv = f"YM_intraday_{target_date}_{start_time.replace(':', '')}-{end_time.replace(':', '')}.csv"
-    use_csv = os.path.exists(local_csv)
+    # Load directly from CBOT_MINI_YM1_ByDate_930_1000 folder
+    import pytz
+    from RunFullDataSet import _load_csv_as_df
 
-    data = get_ym_intraday(target_date=target_date, start_time=start_time, end_time=end_time, use_csv=use_csv)
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    csv_path = os.path.join(desktop, "CBOT_MINI_YM1_ByDate_930_1000", f"CBOT_MINI_YM1_{target_date}.csv")
+
+    print(f"Loading: {csv_path}")
+    data = _load_csv_as_df(csv_path)
 
     if data is not None and not data.empty:
         plot_intraday_data(data, target_date, start_time, end_time)

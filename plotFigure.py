@@ -939,54 +939,64 @@ class ChartPlotter:
         self.current_time_text.set_text(f"Viewing: {current_time_display}")
     
     def update_pl_axis(self, current_data):
-        """Update profit/loss axis with P/L labels for each minute after trade"""
+        """Update profit/loss axis with cumulative P/L labels for each minute after trade"""
         self.ax_top.clear()
         self.ax_top.set_xlim(self.ax.get_xlim())
         self.ax_top.set_ylim(self.ax.get_ylim())
-        self.ax_top.set_xlabel('P/L by Minute (after trade)', fontsize=11, fontweight='bold')
+        self.ax_top.set_xlabel('Cumulative P/L by Minute', fontsize=11, fontweight='bold')
         self.ax_top.xaxis.set_label_position('top')
         self.ax_top.tick_params(axis='x', which='both', top=True, bottom=False, labeltop=True, labelbottom=False)
-        
-        # Track current position and calculate P/L at each minute
+
+        # Track cumulative realized P/L — never resets to zero on new trades
         current_position = 'flat'
         entry_price = None
         entry_time = None
-        
+        cumulative_realized_pl = 0.0
+
         for time in current_data.index:
             if self.state.trading_halted and self.state.halt_time is not None and time > self.state.halt_time:
                 break
-            # Check if there's a BUY signal at this time
-            if time in self.state.detected_buy_signals:
+
+            is_buy  = time in self.state.detected_buy_signals
+            is_sell = time in self.state.detected_sell_signals
+
+            # Close existing position first (realize P/L), then open new one
+            if is_buy:
+                buy_price = self.state.detected_buy_signals[time]
+                if current_position == 'short' and entry_price is not None:
+                    cumulative_realized_pl += entry_price - buy_price
                 current_position = 'long'
-                entry_price = self.state.detected_buy_signals[time]
+                entry_price = buy_price
                 entry_time = time
-            
-            # Check if there's a SELL signal at this time
-            if time in self.state.detected_sell_signals:
+
+            if is_sell:
+                sell_price = self.state.detected_sell_signals[time]
+                if current_position == 'long' and entry_price is not None:
+                    cumulative_realized_pl += sell_price - entry_price
                 current_position = 'short'
-                entry_price = self.state.detected_sell_signals[time]
+                entry_price = sell_price
                 entry_time = time
-            
-            # Calculate and display P/L if in a position
+
+            # Display cumulative P/L (realized + current unrealized) while in a position
             if current_position != 'flat' and entry_price is not None:
                 current_price = current_data.loc[time, 'Close']
-                
+
                 if current_position == 'long':
-                    pl = current_price - entry_price
-                else:  # short
-                    pl = entry_price - current_price
-                
-                # Display P/L label above the data point
+                    unrealized = current_price - entry_price
+                else:
+                    unrealized = entry_price - current_price
+
+                pl = cumulative_realized_pl + unrealized
+
                 color = 'green' if pl >= 0 else 'red'
-                sign = '+' if pl >= 0 else ''
-                
-                # Place label at top of chart
-                y_pos = self.ax.get_ylim()[1] - 5  # Near top of y-axis
-                self.ax_top.text(time, y_pos, f"{sign}{pl:.0f}", 
-                               ha='center', va='top', fontsize=7, 
+                sign  = '+' if pl >= 0 else ''
+
+                y_pos = self.ax.get_ylim()[1] - 5
+                self.ax_top.text(time, y_pos, f"{sign}{pl:.0f}",
+                               ha='center', va='top', fontsize=7,
                                color=color, fontweight='bold',
-                               bbox=dict(boxstyle='round,pad=0.3', 
-                                       facecolor='white', alpha=0.7, 
+                               bbox=dict(boxstyle='round,pad=0.3',
+                                       facecolor='white', alpha=0.7,
                                        edgecolor=color, linewidth=1.5))
     
     def save_snapshot(self, current_data):
