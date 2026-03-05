@@ -246,13 +246,14 @@ class RayManager:
 class ChartPlotter:
     """Handles all chart plotting and visualization"""
     
-    def __init__(self, data, target_date, start_time, end_time, output_dir):
+    def __init__(self, data, target_date, start_time, end_time, output_dir, batch_mode=False):
         self.data = data
         #target_date is the date we are analyzing 
         self.target_date = target_date
         self.start_time = start_time
         self.end_time = end_time
         self.output_dir = output_dir
+        self.batch_mode = batch_mode
         #Initializes the trading state and ray manager
         self.state = TradingState()
         self.ray_manager = RayManager(data)
@@ -1001,9 +1002,11 @@ class ChartPlotter:
     
     def save_snapshot(self, current_data):
         """Save snapshot at specific times"""
+        if self.batch_mode:
+            return
         snapshot_times = ['09:31', '09:38', '09:45', '09:55', '10:00']
         current_time_hhmm = current_data.index[-1].strftime('%H:%M')
-        
+
         if current_time_hhmm in snapshot_times and current_time_hhmm not in self.state.snapshots_taken:
             timestamp_filename = current_data.index[-1].strftime('%Y%m%d_%H%M')
             snapshot_filename = f"{self.output_dir}/YM_{self.target_date}_{timestamp_filename}.png"

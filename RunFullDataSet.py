@@ -150,9 +150,11 @@ def _load_csv_as_df(fp: str) -> pd.DataFrame:
 
 
 def _compute_trade_stats(plotter: ChartPlotter) -> dict:
-    # Ensure signals detected
-    if not plotter.state.all_signals_detected:
-        plotter.detect_all_signals_once()
+    # Signals already populated by frame-stepping in run_from_desktop;
+    # only fall back to detect_all_signals_once if nothing was detected
+    if not plotter.state.detected_buy_signals and not plotter.state.detected_sell_signals:
+        if not plotter.state.all_signals_detected:
+            plotter.detect_all_signals_once()
 
     buys = {t: p for t, p in plotter.state.detected_buy_signals.items()}
     sells = {t: p for t, p in plotter.state.detected_sell_signals.items()}
@@ -367,14 +369,24 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
             print(f"Skipping {fname}: High/Low columns contain no numeric data")
             continue
 
-        # Create ChartPlotter and detect signals (no interactive show)
-        plotter = ChartPlotter(df, target_date, start_time, end_time, output_dir)
-        # Create figure/axes so aspect-ratio calculations work, but don't show interactively
+        # Create ChartPlotter and step through every frame exactly like Main.py does
+        # interactively — this ensures update_signals_incremental is used (same code path)
+        plotter = ChartPlotter(df, target_date, start_time, end_time, output_dir, batch_mode=True)
         try:
             plotter.create_figure()
+            # Finalize layout before any aspect-ratio-dependent calculations
+            plotter.fig.canvas.draw()
         except Exception:
             pass
-        plotter.detect_all_signals_once()
+
+        # Step through each frame to trigger update_signals_incremental per minute
+        try:
+            for frame in range(len(df)):
+                plotter.update_plot(frame)
+                if plotter.state.trading_halted:
+                    break
+        except Exception:
+            pass
 
         # Save figure as JPEG into ~/Desktop/TradingPics/ using the CSV-derived date as filename
         try:
@@ -439,7 +451,6 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
             'win_pct': stats['win_pct'],
             'Captured 100 points': stats.get('captured_100', 'No'),
             'p/l high': stats.get('pl_high', 0.0),
-            'p/l when liquidated': stats.get('liquidation_pl', None),
             'p/l liquidation trade': stats.get('liquidation_trade_pl', None),
         })
 
@@ -490,17 +501,37 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
         try:
             file_idx = header.index('FileName') + 1
             file_col_letter = get_column_letter(file_idx)
-            # set width to zero and mark hidden
             ws.column_dimensions[file_col_letter].width = 0
             ws.column_dimensions[file_col_letter].hidden = True
         except ValueError:
             pass
 
-        # Append a summary row with the total of 'p/l liquidation trade'
+        # If 'p/l liquidation trade' is blank for a row, fill it from 'final_P/L'
         try:
             liq_idx = header.index('p/l liquidation trade') + 1
         except ValueError:
             liq_idx = None
+
+        try:
+            final_pl_idx = header.index('final_P/L') + 1
+        except ValueError:
+            final_pl_idx = None
+
+        if liq_idx and final_pl_idx:
+            for row in range(2, ws.max_row + 1):
+                liq_val = ws.cell(row=row, column=liq_idx).value
+                if liq_val is None or str(liq_val).strip() == '':
+                    ws.cell(row=row, column=liq_idx).value = ws.cell(row=row, column=final_pl_idx).value
+
+        # Recompute total_liq after filling blanks so SUM/AVG reflect filled values
+        total_liq = 0.0
+        if liq_idx:
+            for row in range(2, ws.max_row + 1):
+                v = ws.cell(row=row, column=liq_idx).value
+                try:
+                    total_liq += float(v)
+                except (TypeError, ValueError):
+                    pass
 
         # Place summary label in the 'Date' column if available, else first column
         try:
@@ -525,6 +556,56 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
         if liq_idx:
             ws.cell(row=avg_row, column=liq_idx).value = float(avg_points)
 
+        # SUM of final_P/L column
+        try:
+            final_pl_sum_idx = header.index('final_P/L') + 1
+        except ValueError:
+            final_pl_sum_idx = None
+
+        if final_pl_sum_idx:
+            total_final_pl = 0.0
+            for row in range(2, summary_row):
+                v = ws.cell(row=row, column=final_pl_sum_idx).value
+                try:
+                    total_final_pl += float(v)
+                except (TypeError, ValueError):
+                    pass
+            sum_final_pl_row = avg_row + 1
+            ws.cell(row=sum_final_pl_row, column=date_idx).value = 'SUM final_P/L'
+            ws.cell(row=sum_final_pl_row, column=final_pl_sum_idx).value = float(total_final_pl)
+
+        # AVG of win_pct column
+        try:
+            win_pct_idx = header.index('win_pct') + 1
+        except ValueError:
+            win_pct_idx = None
+
+        if win_pct_idx:
+            win_pct_vals = []
+            for row in range(2, summary_row):
+                v = ws.cell(row=row, column=win_pct_idx).value
+                try:
+                    win_pct_vals.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+            avg_win_pct = sum(win_pct_vals) / len(win_pct_vals) if win_pct_vals else 0.0
+            avg_win_pct_row = avg_row + 2
+            ws.cell(row=avg_win_pct_row, column=date_idx).value = 'AVG win_pct'
+            ws.cell(row=avg_win_pct_row, column=win_pct_idx).value = round(float(avg_win_pct), 2)
+
+        # Auto-size every column to fit the widest content in that column
+        for col_cells in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col_cells[0].column)
+            for cell in col_cells:
+                try:
+                    cell_len = len(str(cell.value)) if cell.value is not None else 0
+                    if cell_len > max_len:
+                        max_len = cell_len
+                except Exception:
+                    pass
+            ws.column_dimensions[col_letter].width = max_len + 4
+
         wb.save(out_xlsx)
         print(f"Results saved to: {out_xlsx}")
     except Exception as e:
@@ -535,4 +616,4 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
 
 
 if __name__ == '__main__':
-    run_from_desktop()
+    run_from_desktop('CBOT_MINI_YM1_ByDate_930_1000', '09:30', '10:00')
