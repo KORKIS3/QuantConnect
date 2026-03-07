@@ -97,10 +97,10 @@ class RayManager:
     def initialize_rays(self, current_data, x_per_inch, y_per_inch):
         """Initialize all rays from current data"""
         # All rays now start from the first minute
-        self.orange_ray = Ray(-5, current_data['High'].iloc[0], current_data.index[0], 'orange', 'Max Ray (-5°)')
-        self.yellow_ray = Ray(5, current_data['Low'].iloc[0], current_data.index[0], 'yellow', 'Min Ray (+5°)')
-        self.purple_ray = Ray(-65, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-65°)')
-        self.blue_ray = Ray(65, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+65°)')
+        self.orange_ray = Ray(-2.5, current_data['High'].iloc[0], current_data.index[0], 'orange', 'Max Ray (-2.5°)')
+        self.yellow_ray = Ray(2.5, current_data['Low'].iloc[0], current_data.index[0], 'yellow', 'Min Ray (+2.5°)')
+        self.purple_ray = Ray(-60, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-60°)')
+        self.blue_ray = Ray(60, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+60°)')
         self.dark_purple_ray = None
         self.purple_intersections = 0
     
@@ -309,6 +309,46 @@ class ChartPlotter:
         self.blue_angle_annotation = None
         self._prev_frame_purple_slope = None
         self._prev_frame_blue_slope = None
+
+        # If the input data already contains signal columns from the
+        # headless TradingAlgo run, pre-load those signals so the
+        # interactive chart simply visualizes them instead of
+        # re-detecting. This keeps the chart aligned 1:1 with the
+        # backtest.
+        self._load_signals_from_data_if_present()
+
+    def _load_signals_from_data_if_present(self):
+        """Seed detected signals from an existing 'signal' column.
+
+        When `ReOrgMain.run_single_day` passes in the enriched
+        DataFrame from `TradingAlgo.run_trading_algo`, that frame
+        already includes columns like 'signal', 'buy_price', and
+        'sell_price'. We treat those as the source of truth and
+        avoid running interactive signal detection on top.
+        """
+
+        if not hasattr(self.data, "columns") or "signal" not in self.data.columns:
+            return
+
+        for ts, row in self.data.iterrows():
+            sig = row.get("signal")
+            if sig == "BUY":
+                price = row.get("buy_price")
+                if pd.isna(price):
+                    price = row.get("Close")
+                if pd.isna(price):
+                    continue
+                self.state.detected_buy_signals[ts] = float(price)
+            elif sig == "SELL":
+                price = row.get("sell_price")
+                if pd.isna(price):
+                    price = row.get("Close")
+                if pd.isna(price):
+                    continue
+                self.state.detected_sell_signals[ts] = float(price)
+
+        if self.state.detected_buy_signals or self.state.detected_sell_signals:
+            self.state.all_signals_detected = True
         
     def create_figure(self):
         """Create the matplotlib figure and axes"""
@@ -322,10 +362,10 @@ class ChartPlotter:
         self.lines['low'], = self.ax.plot([], [], label='Low', color='red', linewidth=2, marker='o', markersize=5)
         self.lines['close'], = self.ax.plot([], [], label='Close', color='black', linewidth=2.5, marker='s', markersize=5)
         
-        self.lines['ray_orange'], = self.ax.plot([], [], 'orange', linewidth=2.5, label='Max Ray (-5°)', alpha=0.9)
-        self.lines['ray_yellow'], = self.ax.plot([], [], 'yellow', linewidth=2.5, label='Min Ray (+5°)', alpha=0.9)
-        self.lines['ray_purple'], = self.ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-65°)', alpha=0.9)
-        self.lines['ray_blue'], = self.ax.plot([], [], color='blue', linewidth=2.5, label='Min Ray (+65°)', alpha=0.9)
+        self.lines['ray_orange'], = self.ax.plot([], [], 'orange', linewidth=2.5, label='Max Ray (-2.5°)', alpha=0.9)
+        self.lines['ray_yellow'], = self.ax.plot([], [], 'yellow', linewidth=2.5, label='Min Ray (+2.5°)', alpha=0.9)
+        self.lines['ray_purple'], = self.ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-60°)', alpha=0.9)
+        self.lines['ray_blue'], = self.ax.plot([], [], color='blue', linewidth=2.5, label='Min Ray (+60°)', alpha=0.9)
         self.lines['ray_dark_purple'], = self.ax.plot([], [], color='indigo', linewidth=2.5, label='Dark Purple Ray (-65°)', alpha=0.9)
         
         self.ax.set_ylabel('Price', fontsize=13, fontweight='bold')
@@ -423,20 +463,12 @@ class ChartPlotter:
         
         # Initialize minute-by-minute tracking for all rays
         # These will be updated minute-by-minute to match what's displayed on the graph
-        minute_purple_ray = Ray(-65, full_data['High'].iloc[0], full_data.index[0], 'darkviolet', 'Max Ray (-65°)')
-        minute_blue_ray = Ray(65, full_data['Low'].iloc[0], full_data.index[0], 'blue', 'Min Ray (+65°)')
+        minute_purple_ray = Ray(-60, full_data['High'].iloc[0], full_data.index[0], 'darkviolet', 'Max Ray (-60°)')
+        minute_blue_ray = Ray(60, full_data['Low'].iloc[0], full_data.index[0], 'blue', 'Min Ray (+60°)')
         
         print(f"\n📐 Starting minute-by-minute ray tracking:")
         print(f"   Purple (9:30): {minute_purple_ray.start_price:.2f} @ {minute_purple_ray.start_time.strftime('%H:%M')}")
         print(f"   Blue (9:30): {minute_blue_ray.start_price:.2f} @ {minute_blue_ray.start_time.strftime('%H:%M')}")
-        
-        prev_close = None
-        prev_orange = None
-        prev_yellow = None
-        prev_purple = None
-        prev_blue = None
-        prev_purple_slope = None
-        prev_blue_slope = None
         
         orange_slope = self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
         yellow_slope = self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
@@ -459,6 +491,32 @@ class ChartPlotter:
             blue_slope = minute_blue_ray.adjusted_slope or minute_blue_ray.calculate_slope(x_per_inch, y_per_inch)
             purple_price = minute_purple_ray.get_price_at_time(time, purple_slope)
             blue_price = minute_blue_ray.get_price_at_time(time, blue_slope)
+
+            # Derive "previous-minute" ray values from the ray manager that has
+            # already been updated through the prior bar. This mirrors the
+            # incremental logic so crossings use the same prev_* values as the
+            # interactive chart.
+            if i > 0:
+                prev_time = full_data.index[i - 1]
+                prev_close = full_data['Close'].iloc[i - 1]
+
+                prev_orange = self.ray_manager.orange_ray.get_price_at_time(prev_time, orange_slope)
+                prev_yellow = self.ray_manager.yellow_ray.get_price_at_time(prev_time, yellow_slope)
+
+                prev_purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
+                prev_blue_slope = self.ray_manager.blue_ray.adjusted_slope or self.ray_manager.blue_ray.calculate_slope(x_per_inch, y_per_inch)
+
+                prev_purple = self.ray_manager.purple_ray.get_price_at_time(prev_time, prev_purple_slope)
+                prev_blue = self.ray_manager.blue_ray.get_price_at_time(prev_time, prev_blue_slope)
+            else:
+                prev_time = None
+                prev_close = None
+                prev_orange = None
+                prev_yellow = None
+                prev_purple = None
+                prev_blue = None
+                prev_purple_slope = None
+                prev_blue_slope = None
             
             # Debug output for key times
             if time.strftime('%H:%M') in ['09:37', '09:38', '09:39', '09:40', '09:41', '09:42', '09:43']:
@@ -510,7 +568,7 @@ class ChartPlotter:
                     
                     # BUY: Previous close was at/below previous purple, current close is above previous purple (strict crossover)
                     if not buy_triggered and prev_close is not None and prev_purple is not None:
-                        angle_slope = prev_purple_slope if prev_purple_slope is not None else purple_slope
+                        angle_slope = prev_purple_slope
                         purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
                         if purple_angle > 65:
                             print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° > 65°")
@@ -538,7 +596,7 @@ class ChartPlotter:
                     
                     # SELL: Previous close was at/above previous blue, current close is below previous-minute blue
                     if not sell_triggered and prev_close is not None and prev_blue is not None:
-                        angle_slope = prev_blue_slope if prev_blue_slope is not None else blue_slope
+                        angle_slope = prev_blue_slope
                         blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
                         if blue_angle > 65:
                             print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° > 65°")
@@ -582,14 +640,6 @@ class ChartPlotter:
                             self.state.halt_time = time
                             print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
                             break
-            
-            prev_close = row['Close']
-            prev_orange = orange_price
-            prev_yellow = yellow_price
-            prev_purple = purple_price
-            prev_blue = blue_price
-            prev_purple_slope = purple_slope
-            prev_blue_slope = blue_slope
             
             # NOW update purple and blue rays for the NEXT iteration (after storing prev values)
             current_data_so_far = full_data.iloc[:i + 1]
@@ -642,6 +692,13 @@ class ChartPlotter:
 
     def update_signals_incremental(self, current_data, x_per_inch, y_per_inch):
         """Detect buy/sell signals incrementally per minute"""
+        # If the underlying data already contains precomputed signals
+        # (from the headless TradingAlgo), skip interactive detection
+        # entirely and just render those signals. This guarantees the
+        # chart matches the backtest exactly.
+        if hasattr(self.data, "columns") and "signal" in self.data.columns:
+            return
+
         if len(current_data) < 2:
             return
 

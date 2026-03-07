@@ -75,10 +75,11 @@ class RayManager:
         if current_data.empty:
             return
         first_idx = current_data.index[0]
-        self.orange_ray = Ray(-5.0, float(current_data["High"].iloc[0]), first_idx, "orange", "Max Ray (-5)")
-        self.yellow_ray = Ray(5.0, float(current_data["Low"].iloc[0]), first_idx, "yellow", "Min Ray (+5)")
-        self.purple_ray = Ray(-65.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-65)")
-        self.blue_ray = Ray(65.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+65)")
+        # Use shallower base angles to match the latest interactive behaviour.
+        self.orange_ray = Ray(-2.5, float(current_data["High"].iloc[0]), first_idx, "orange", "Max Ray (-2.5)")
+        self.yellow_ray = Ray(2.5, float(current_data["Low"].iloc[0]), first_idx, "yellow", "Min Ray (+2.5)")
+        self.purple_ray = Ray(-60.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-60)")
+        self.blue_ray = Ray(60.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+60)")
         self.dark_purple_ray = None
         self.purple_intersections = 0
 
@@ -162,12 +163,12 @@ class RayManager:
                 return
 
             if self.purple_ray is None:
-                self.purple_ray = Ray(-65.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-65)")
+                self.purple_ray = Ray(-60.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-60)")
             self.purple_ray.start_price = float(self.purple_anchor_price)
             self.purple_ray.start_time = self.purple_anchor_time
 
             if self.blue_ray is None:
-                self.blue_ray = Ray(65.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+65)")
+                self.blue_ray = Ray(60.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+60)")
             self.blue_ray.start_price = float(self.blue_anchor_price)
             self.blue_ray.start_time = self.blue_anchor_time
 
@@ -196,13 +197,13 @@ class RayManager:
             resist_slope_time = resist_slope_idx / time_step_days_purple
 
             if self.purple_ray is None:
-                self.purple_ray = Ray(-65.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-65)")
+                self.purple_ray = Ray(-60.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-60)")
             self.purple_ray.start_price = float(resist_intercept)
             self.purple_ray.start_time = window_data_purple.index[0]
             self.purple_ray.adjusted_slope = float(resist_slope_time)
 
             if self.blue_ray is None:
-                self.blue_ray = Ray(65.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+65)")
+                self.blue_ray = Ray(60.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+60)")
             self.blue_ray.start_price = float(support_intercept)
             self.blue_ray.start_time = window_data_blue.index[0]
             self.blue_ray.adjusted_slope = float(support_slope_time)
@@ -333,16 +334,8 @@ def run_trading_algo(
     if full_data.empty:
         return full_data
 
-    minute_purple_ray = Ray(-65.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-65)")
-    minute_blue_ray = Ray(65.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+65)")
-
-    prev_close: Optional[float] = None
-    prev_orange: Optional[float] = None
-    prev_yellow: Optional[float] = None
-    prev_purple: Optional[float] = None
-    prev_blue: Optional[float] = None
-    prev_purple_slope: Optional[float] = None
-    prev_blue_slope: Optional[float] = None
+    minute_purple_ray = Ray(-60.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-60)")
+    minute_blue_ray = Ray(60.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+60)")
 
     orange_slope = rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
     yellow_slope = rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
@@ -358,16 +351,26 @@ def run_trading_algo(
     for i, (time, row) in enumerate(full_data.iterrows()):
         current_close = float(row["Close"])
 
-        # Current ray prices BEFORE updating steep rays for this iteration
-        orange_price = rm.orange_ray.get_price_at_time(time, orange_slope)
-        yellow_price = rm.yellow_ray.get_price_at_time(time, yellow_slope)
-
-        purple_slope = minute_purple_ray.adjusted_slope or minute_purple_ray.calculate_slope(x_per_unit, y_per_unit)
-        blue_slope = minute_blue_ray.adjusted_slope or minute_blue_ray.calculate_slope(x_per_unit, y_per_unit)
-        purple_price = minute_purple_ray.get_price_at_time(time, purple_slope)
-        blue_price = minute_blue_ray.get_price_at_time(time, blue_slope)
-
         if time >= cutoff_time and i > 0 and not trading_halted:
+            # Compute "previous-minute" values using the ray state that has
+            # already been updated through the prior bar. This mirrors the
+            # incremental logic in the interactive plotter, so crossings use
+            # the same prev_* values as the chart.
+
+            prev_time = full_data.index[i - 1]
+            prev_close = float(full_data["Close"].iloc[i - 1])
+
+            # Slopes and prices as of the previous minute
+            prev_orange_slope = rm.orange_ray.adjusted_slope or rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
+            prev_yellow_slope = rm.yellow_ray.adjusted_slope or rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
+            prev_purple_slope = rm.purple_ray.adjusted_slope or rm.purple_ray.calculate_slope(x_per_unit, y_per_unit)
+            prev_blue_slope = rm.blue_ray.adjusted_slope or rm.blue_ray.calculate_slope(x_per_unit, y_per_unit)
+
+            prev_orange = rm.orange_ray.get_price_at_time(prev_time, prev_orange_slope)
+            prev_yellow = rm.yellow_ray.get_price_at_time(prev_time, prev_yellow_slope)
+            prev_purple = rm.purple_ray.get_price_at_time(prev_time, prev_purple_slope)
+            prev_blue = rm.blue_ray.get_price_at_time(prev_time, prev_blue_slope)
+
             # BUY signals - can trigger from flat or short (position reversal)
             if temp_position != "long" and time not in buy_signals:
                 buy_triggered = False
@@ -377,7 +380,7 @@ def run_trading_algo(
                         buy_triggered = True
 
                 if not buy_triggered and prev_close is not None and prev_purple is not None:
-                    angle_slope = prev_purple_slope if prev_purple_slope is not None else purple_slope
+                    angle_slope = prev_purple_slope
                     purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if purple_angle <= 65.0 and prev_close <= prev_purple and current_close > prev_purple:
                         buy_triggered = True
@@ -396,7 +399,7 @@ def run_trading_algo(
                         sell_triggered = True
 
                 if not sell_triggered and prev_close is not None and prev_blue is not None:
-                    angle_slope = prev_blue_slope if prev_blue_slope is not None else blue_slope
+                    angle_slope = prev_blue_slope
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if blue_angle <= 65.0 and prev_close >= prev_blue and current_close < prev_blue:
                         sell_triggered = True
@@ -427,15 +430,8 @@ def run_trading_algo(
                         trading_halted = True
                         halt_time = time
 
-        prev_close = current_close
-        prev_orange = orange_price
-        prev_yellow = yellow_price
-        prev_purple = purple_price
-        prev_blue = blue_price
-        prev_purple_slope = purple_slope
-        prev_blue_slope = blue_slope
-
-        # Update steep rays for the next iteration
+        # Update steep rays for the next iteration (this will be the
+        # "previous-minute" state on the next loop iteration).
         current_data_so_far = full_data.iloc[: i + 1]
         rm.purple_ray = minute_purple_ray
         rm.blue_ray = minute_blue_ray

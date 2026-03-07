@@ -70,8 +70,13 @@ def run_single_day(
         # Use the same batch-style pattern as RunFullDataSet: create a
         # ChartPlotter in batch_mode, step through frames, and save the
         # final rendered figure.
+        #
+        # IMPORTANT: use the enriched algo_df (which contains the
+        # precomputed `signal`/`buy_price`/`sell_price` columns from
+        # TradingAlgo) so the batch charts exactly match the headless
+        # backtest results.
         output_dir = image_root  # re-use as the plotter's output_dir
-        plotter = ChartPlotter(data, target_date, start_time, end_time, output_dir, batch_mode=True)
+        plotter = ChartPlotter(algo_df, target_date, start_time, end_time, output_dir, batch_mode=True)
 
         try:
             plotter.create_figure()
@@ -80,7 +85,7 @@ def run_single_day(
             pass
 
         try:
-            for frame in range(len(data)):
+            for frame in range(len(algo_df)):
                 plotter.update_plot(frame)
                 if plotter.state.trading_halted:
                     break
