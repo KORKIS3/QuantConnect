@@ -78,8 +78,8 @@ class RayManager:
         # Use shallower base angles to match the latest interactive behaviour.
         self.orange_ray = Ray(-2.5, float(current_data["High"].iloc[0]), first_idx, "orange", "Max Ray (-2.5)")
         self.yellow_ray = Ray(2.5, float(current_data["Low"].iloc[0]), first_idx, "yellow", "Min Ray (+2.5)")
-        self.purple_ray = Ray(-60.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-60)")
-        self.blue_ray = Ray(60.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+60)")
+        self.purple_ray = Ray(-45.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-45)")
+        self.blue_ray = Ray(45.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+45)")
         self.dark_purple_ray = None
         self.purple_intersections = 0
 
@@ -163,12 +163,12 @@ class RayManager:
                 return
 
             if self.purple_ray is None:
-                self.purple_ray = Ray(-60.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-60)")
+                self.purple_ray = Ray(-45.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-45)")
             self.purple_ray.start_price = float(self.purple_anchor_price)
             self.purple_ray.start_time = self.purple_anchor_time
 
             if self.blue_ray is None:
-                self.blue_ray = Ray(60.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+60)")
+                self.blue_ray = Ray(45.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+45)")
             self.blue_ray.start_price = float(self.blue_anchor_price)
             self.blue_ray.start_time = self.blue_anchor_time
 
@@ -197,13 +197,13 @@ class RayManager:
             resist_slope_time = resist_slope_idx / time_step_days_purple
 
             if self.purple_ray is None:
-                self.purple_ray = Ray(-60.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-60)")
+                self.purple_ray = Ray(-45.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-45)")
             self.purple_ray.start_price = float(resist_intercept)
             self.purple_ray.start_time = window_data_purple.index[0]
             self.purple_ray.adjusted_slope = float(resist_slope_time)
 
             if self.blue_ray is None:
-                self.blue_ray = Ray(60.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+60)")
+                self.blue_ray = Ray(45.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+45)")
             self.blue_ray.start_price = float(support_intercept)
             self.blue_ray.start_time = window_data_blue.index[0]
             self.blue_ray.adjusted_slope = float(support_slope_time)
@@ -323,10 +323,35 @@ def run_trading_algo(
 
     cutoff_time = pd.Timestamp(f"{target_date} 09:38:00", tz=est)
 
+    # Compute an aspect ratio that matches the interactive ChartPlotter so
+    # that angle-based filters (e.g. the 65° cutoff on purple/blue rays)
+    # produce the same results as the live chart.
+    #
+    # ChartPlotter uses figsize=(16, 9) with:
+    #   subplots_adjust(right=0.85)
+    #   subplot2grid((10, 1), (0, 0), rowspan=9)
+    # giving approximate axes fractions:
+    #   width  = 0.85 - 0.125 = 0.725  (right - left default)
+    #   height = 0.88 - 0.11  = 0.770  (top - bottom defaults)
+    _fig_w = 16.0
+    _fig_h = 9.0
+    _ax_w_in = _fig_w * (0.85 - 0.125)   # ≈ 11.6 inches
+    _ax_h_in = _fig_h * (0.88 - 0.11)    # ≈ 6.93 inches
+
+    _x_range = (
+        mdates.date2num(full_data.index[-1])
+        - mdates.date2num(full_data.index[0])
+    )
+    _y_range = (
+        float(full_data["High"].max()) + 20.0
+        - (float(full_data["Low"].min()) - 20.0)
+    )
+
+    x_per_unit = _x_range / _ax_w_in
+    y_per_unit = _y_range / _ax_h_in
+
     # Initialize ray manager and per-minute steep rays.
     rm = RayManager(full_data)
-    x_per_unit = 1.0
-    y_per_unit = 1.0
 
     if rm.orange_ray is None:
         rm.initialize_rays(full_data, x_per_unit, y_per_unit)
@@ -334,8 +359,8 @@ def run_trading_algo(
     if full_data.empty:
         return full_data
 
-    minute_purple_ray = Ray(-60.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-60)")
-    minute_blue_ray = Ray(60.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+60)")
+    minute_purple_ray = Ray(-45.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-45)")
+    minute_blue_ray = Ray(45.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+45)")
 
     # These slopes are used only for the fixed-angle orange/yellow rays.
     orange_slope = rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
@@ -378,7 +403,7 @@ def run_trading_algo(
             prev_time = full_data.index[i - 1]
             prev_close = float(full_data["Close"].iloc[i - 1])
 
-            # Slopes and prices as of the previous minute
+            # Slopes and prices as of the previous minute.
             prev_orange_slope = rm.orange_ray.adjusted_slope or rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
             prev_yellow_slope = rm.yellow_ray.adjusted_slope or rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
             prev_purple_slope = rm.purple_ray.adjusted_slope or rm.purple_ray.calculate_slope(x_per_unit, y_per_unit)
@@ -400,7 +425,7 @@ def run_trading_algo(
                 if not buy_triggered and prev_close is not None and prev_purple is not None:
                     angle_slope = prev_purple_slope
                     purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if purple_angle <= 65.0 and prev_close <= prev_purple and current_close > prev_purple:
+                    if purple_angle < 45.0 and prev_close <= prev_purple and current_close > prev_purple:
                         buy_triggered = True
 
                 if buy_triggered:
@@ -419,7 +444,7 @@ def run_trading_algo(
                 if not sell_triggered and prev_close is not None and prev_blue is not None:
                     angle_slope = prev_blue_slope
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if blue_angle <= 65.0 and prev_close >= prev_blue and current_close < prev_blue:
+                    if blue_angle < 45.0 and prev_close >= prev_blue and current_close < prev_blue:
                         sell_triggered = True
 
                 if sell_triggered:
@@ -427,26 +452,26 @@ def run_trading_algo(
                     temp_position = "short"
                     temp_entry_price = current_close
 
-            # Profit target liquidation
-            if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
-                if temp_position == "long":
-                    pl = current_close - temp_entry_price
-                    if pl > 100.0:
-                        if time not in sell_signals:
-                            sell_signals[time] = current_close
-                        temp_position = "flat"
-                        temp_entry_price = None
-                        trading_halted = True
-                        halt_time = time
-                else:  # short
-                    pl = temp_entry_price - current_close
-                    if pl > 100.0:
-                        if time not in buy_signals:
-                            buy_signals[time] = current_close
-                        temp_position = "flat"
-                        temp_entry_price = None
-                        trading_halted = True
-                        halt_time = time
+            # Profit target liquidation (disabled)
+            # if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
+            #     if temp_position == "long":
+            #         pl = current_close - temp_entry_price
+            #         if pl > 100.0:
+            #             if time not in sell_signals:
+            #                 sell_signals[time] = current_close
+            #             temp_position = "flat"
+            #             temp_entry_price = None
+            #             trading_halted = True
+            #             halt_time = time
+            #     else:  # short
+            #         pl = temp_entry_price - current_close
+            #         if pl > 100.0:
+            #             if time not in buy_signals:
+            #                 buy_signals[time] = current_close
+            #             temp_position = "flat"
+            #             temp_entry_price = None
+            #             trading_halted = True
+            #             halt_time = time
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).
