@@ -155,18 +155,19 @@ def build_lean() -> None:
         run(["dotnet", "restore", t, "--verbosity", "minimal"], cwd=LEAN_DIR)
 
     print("  Compiling ...")
-    result = subprocess.run(
-        [
-            "dotnet", "build", *targets,
-            "--configuration", "Debug",
-            "--no-restore",
-            "--verbosity", "minimal",
-        ],
-        cwd=LEAN_DIR,
-    )
-    if result.returncode != 0:
-        print("\n  ERROR: Build failed. Review the output above for details.")
-        sys.exit(1)
+    for t in targets:
+        result = subprocess.run(
+            [
+                "dotnet", "build", t,
+                "--configuration", "Debug",
+                "--no-restore",
+                "--verbosity", "minimal",
+            ],
+            cwd=LEAN_DIR,
+        )
+        if result.returncode != 0:
+            print("\n  ERROR: Build failed. Review the output above for details.")
+            sys.exit(1)
     print("  Build succeeded.")
 
 # ---------------------------------------------------------------------------

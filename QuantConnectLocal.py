@@ -1,0 +1,196 @@
+# region imports
+from AlgorithmImports import *
+# endregion
+
+
+
+
+class PensiveLightBrownWolf(QCAlgorithm):
+
+    def initialize(self):
+        # Set the start date for back testing (January 1st, 2024)
+        self.set_start_date(2024, 1, 1)
+        # Set the end date for back testing (March 5th, 2024)
+        self.set_end_date(2024, 3, 5)
+        # Set cash (YM futures require significant margin - each contract is $5 per point)
+        self.set_cash(50000)
+        
+        # Add YM E-mini Dow futures subscription with MINUTE resolution
+        # This gives us price updates every minute during trading hours
+        # extended_market_hours=True ensures we get data during futures trading hours (nearly 24/5)
+        ym = self.add_future(Futures.Indices.DOW_30_E_MINI, Resolution.MINUTE, extended_market_hours=True)
+        # Store the canonical symbol to identify YM contracts in the chain
+        self.ym = ym.symbol
+        
+        # Set a filter to only get front month and next month contracts (reduces data load)
+        ym.set_filter(0, 60)
+        
+        # Set Benchmark to SPY for comparison
+        self.set_benchmark('SPY')
+
+        # Store the contract we're currently trading
+        self.contract = None
+        
+        # TRENDLINE STRATEGY VARIABLES
+        # Rolling window to store recent prices for trendline calculation (last 100 bars)
+        self.price_window = RollingWindow[float](100)
+        # Store swing highs (local peaks) with their index positions
+        self.swing_highs = []
+        # Store swing lows (local troughs) with their index positions  
+        self.swing_lows = []
+        # Current trendline slope and intercept for uptrend support line
+        self.uptrend_slope = None
+        self.uptrend_intercept = None
+        # Current trendline slope and intercept for downtrend resistance line
+        self.downtrend_slope = None
+        self.downtrend_intercept = None
+        # Track entry price for stop loss calculation
+        self.entry_price = 0
+        # Stop loss percentage (2% for leveraged futures)
+        self.stop_loss_percent = 0.02
+        
+        # Schedule trendline analysis to run every 4 hours
+        # This recalculates trendlines based on recent price action
+        self.schedule.on(self.date_rules.every_day(self.ym),
+                        self.time_rules.every(timedelta(hours=4)),
+                        self.update_trendlines)
+        
+        # Warm up period to collect initial price data
+        # This ensures we have enough data to calculate trendlines at start
+        self.set_warm_up(100, Resolution.MINUTE)
+        
+    def on_data(self, slice):
+        # This runs every minute when we receive new price data
+        
+        # Skip if we're still warming up (collecting initial data)
+        if self.is_warming_up:
+            return
+            
+        # Get the futures chain for YM
+        chain = self.future_chain_provider.get_future_contract_list(self.ym, self.time)
+        if not chain:
+            return
+            
+        # Select the front month contract (nearest expiration)
+        contract_symbol = sorted(chain, key=lambda x: x.id.date)[0]
+        
+        # Update our contract reference if it changed (due to rollover)
+        if self.contract != contract_symbol:
+            self.contract = contract_symbol
+            # Subscribe to this specific contract to get minute data
+            if self.contract not in self.securities:
+                self.add_future_contract(self.contract)
+            return
+        
+        # Make sure we have this contract in our securities
+        if self.contract not in self.securities:
+            return
+            
+        # Get current price
+        price = self.securities[self.contract].price
+        if price == 0:
+            return
+
+        # Add current price to our rolling window for trendline calculation
+        self.price_window.add(price)
+        
+        # TRENDLINE BREAKOUT LOGIC
+        # Check for bullish breakout (price breaks above downtrend resistance)
+        if self.downtrend_slope is not None and not self.portfolio.invested:
+            # Calculate expected trendline value at current position
+            # Formula: y = mx + b where m=slope, x=position, b=intercept
+            expected_resistance = self.downtrend_slope * 0 + self.downtrend_intercept
+            
+            # BUY SIGNAL: Price breaks above downtrend resistance line
+            if price > expected_resistance:
+                # Enter long position with 50% of capital (reduced for risk management)
+                self.set_holdings(self.contract, 0.5)
+                self.entry_price = price
+                self.log(f"BULLISH BREAKOUT: Buy YM @ {price}, Resistance was {expected_resistance}")
+        
+        # Check for bearish breakout (price breaks below uptrend support)
+        elif self.uptrend_slope is not None and not self.portfolio.invested:
+            # Calculate expected trendline value at current position
+            expected_support = self.uptrend_slope * 0 + self.uptrend_intercept
+            
+            # SHORT SIGNAL: Price breaks below uptrend support line
+            if price < expected_support:
+                # Enter short position with 50% of capital
+                self.set_holdings(self.contract, -0.5)
+                self.entry_price = price
+                self.log(f"BEARISH BREAKDOWN: Short YM @ {price}, Support was {expected_support}")
+        
+        # EXIT LOGIC: Check stop loss on existing positions
+        if self.portfolio.invested:
+            position = self.portfolio[self.contract]
+            
+            # For long positions: exit if price drops below stop loss
+            if position.is_long and price < self.entry_price * (1 - self.stop_loss_percent):
+                self.liquidate(self.contract)
+                self.log(f"STOP LOSS HIT: Sell YM @ {price}, Entry was {self.entry_price}")
+            
+            # For short positions: exit if price rises above stop loss
+            elif position.is_short and price > self.entry_price * (1 + self.stop_loss_percent):
+                self.liquidate(self.contract)
+                self.log(f"STOP LOSS HIT: Cover YM @ {price}, Entry was {self.entry_price}")
+    
+    def update_trendlines(self):
+        # This function runs every 4 hours to recalculate trendlines
+        # It identifies swing points and fits trendlines through them
+        
+        # Need at least 20 data points to identify swings
+        if self.price_window.count < 20:
+            return
+        
+        # Convert rolling window to list for easier processing
+        prices = [self.price_window[i] for i in range(min(self.price_window.count, 100))]
+        
+        # Clear old swing points
+        self.swing_highs = []
+        self.swing_lows = []
+        
+        # FIND SWING HIGHS AND LOWS
+        # A swing high is a point higher than the 5 bars before and after it
+        # A swing low is a point lower than the 5 bars before and after it
+        lookback = 5
+        for i in range(lookback, len(prices) - lookback):
+            # Check if this is a swing high (local maximum)
+            is_swing_high = all(prices[i] > prices[i-j] for j in range(1, lookback+1)) and \
+                           all(prices[i] > prices[i+j] for j in range(1, lookback+1))
+            if is_swing_high:
+                self.swing_highs.append((i, prices[i]))
+            
+            # Check if this is a swing low (local minimum)
+            is_swing_low = all(prices[i] < prices[i-j] for j in range(1, lookback+1)) and \
+                          all(prices[i] < prices[i+j] for j in range(1, lookback+1))
+            if is_swing_low:
+                self.swing_lows.append((i, prices[i]))
+        
+        # CALCULATE DOWNTREND RESISTANCE LINE (connecting swing highs)
+        # Need at least 2 swing highs to draw a trendline
+        if len(self.swing_highs) >= 2:
+            # Use the two most recent swing highs
+            recent_highs = self.swing_highs[-2:]
+            x1, y1 = recent_highs[0]
+            x2, y2 = recent_highs[1]
+            
+            # Calculate slope: (y2 - y1) / (x2 - x1)
+            self.downtrend_slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+            # Calculate intercept: y = mx + b, so b = y - mx
+            self.downtrend_intercept = y2 - self.downtrend_slope * x2
+            
+            self.log(f"Downtrend resistance: slope={self.downtrend_slope:.2f}, level={self.downtrend_intercept:.2f}")
+        
+        # CALCULATE UPTREND SUPPORT LINE (connecting swing lows)
+        # Need at least 2 swing lows to draw a trendline
+        if len(self.swing_lows) >= 2:
+            # Use the two most recent swing lows
+            recent_lows = self.swing_lows[-2:]
+            x1, y1 = recent_lows[0]
+            x2, y2 = recent_lows[1]
+            
+            # Calculate slope and intercept
+            self.uptrend_slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+            self.uptrend_intercept = y2 - self.uptrend_slope * x2
+            
+            self.log(f"Uptrend support: slope={self.uptrend_slope:.2f}, level={self.uptrend_intercept:.2f}")

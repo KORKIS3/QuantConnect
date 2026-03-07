@@ -1,0 +1,448 @@
+"""TradingAlgo
+
+Headless trading algorithm core for YM intraday data.
+
+This module can run independently of the plotting layer; it does not
+require `ChartPlotter`. The ray and signal logic is copied from the
+interactive implementation in `plotFigure.py` so the behaviour remains
+consistent without moving any code out of that file.
+"""
+
+from typing import Dict, Optional, Tuple
+
+import matplotlib.dates as mdates
+import numpy as np
+import pandas as pd
+import pytz
+
+from TrendLineAutomation import fit_trendlines_high_low
+
+
+class Ray:
+    """Represents a ray line with an angle starting from a specific point."""
+
+    def __init__(self, angle_degrees: float, start_price: float, start_time, color: str, label: str):
+        self.angle_degrees = angle_degrees
+        self.start_price = start_price
+        self.start_time = start_time
+        self.color = color
+        self.label = label
+        self.adjusted_slope: Optional[float] = None
+
+    def calculate_slope(self, x_per_unit: float, y_per_unit: float) -> float:
+        """Calculate slope in data units based on angle and aspect ratio."""
+        angle_rad = np.deg2rad(self.angle_degrees)
+        tan_angle = np.tan(angle_rad)
+        return float(tan_angle * (y_per_unit / x_per_unit))
+
+    def get_price_at_time(self, target_time, slope: float) -> float:
+        """Calculate ray price at a specific time."""
+        start_time_num = mdates.date2num(self.start_time)
+        target_time_num = mdates.date2num(target_time)
+        time_diff = target_time_num - start_time_num
+        if time_diff <= 0:
+            return float(self.start_price)
+        return float(self.start_price + slope * time_diff)
+
+    def update_for_crossover(self, new_price: float, new_time, slope: float) -> float:
+        """Adjust ray to pass through a new point if crossed."""
+        start_time_num = mdates.date2num(self.start_time)
+        new_time_num = mdates.date2num(new_time)
+        time_diff = new_time_num - start_time_num
+        if time_diff > 0:
+            return float((new_price - self.start_price) / time_diff)
+        return float(slope)
+
+
+class RayManager:
+    """Manages all ray calculations and updates (headless version)."""
+
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
+        self.orange_ray: Optional[Ray] = None
+        self.yellow_ray: Optional[Ray] = None
+        self.purple_ray: Optional[Ray] = None
+        self.blue_ray: Optional[Ray] = None
+        self.dark_purple_ray: Optional[Ray] = None
+        self.purple_intersections = 0
+        self.purple_anchor_time = None
+        self.blue_anchor_time = None
+        self.purple_anchor_price: Optional[float] = None
+        self.blue_anchor_price: Optional[float] = None
+
+    def initialize_rays(self, current_data: pd.DataFrame, x_per_unit: float, y_per_unit: float) -> None:
+        """Initialize all rays from current data (first bar)."""
+        if current_data.empty:
+            return
+        first_idx = current_data.index[0]
+        self.orange_ray = Ray(-5.0, float(current_data["High"].iloc[0]), first_idx, "orange", "Max Ray (-5)")
+        self.yellow_ray = Ray(5.0, float(current_data["Low"].iloc[0]), first_idx, "yellow", "Min Ray (+5)")
+        self.purple_ray = Ray(-65.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-65)")
+        self.blue_ray = Ray(65.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+65)")
+        self.dark_purple_ray = None
+        self.purple_intersections = 0
+
+    def update_all_rays(self, current_data: pd.DataFrame, x_per_unit: float, y_per_unit: float) -> None:
+        """Update all rays (orange, yellow, purple, blue) for crossovers."""
+        if (
+            self.orange_ray is None
+            or self.yellow_ray is None
+            or self.purple_ray is None
+            or self.blue_ray is None
+        ):
+            return
+
+        if len(current_data) > 0 and current_data.index[0] == self.data.index[0]:
+            if len(current_data) == 1 or self.orange_ray.start_time != current_data.index[0]:
+                self.orange_ray.start_price = float(current_data["High"].iloc[0])
+                self.orange_ray.start_time = current_data.index[0]
+                self.orange_ray.adjusted_slope = None
+            if len(current_data) == 1 or self.yellow_ray.start_time != current_data.index[0]:
+                self.yellow_ray.start_price = float(current_data["Low"].iloc[0])
+                self.yellow_ray.start_time = current_data.index[0]
+                self.yellow_ray.adjusted_slope = None
+
+        orange_slope = self.orange_ray.calculate_slope(x_per_unit, y_per_unit)
+        yellow_slope = self.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
+        purple_slope = self.purple_ray.calculate_slope(x_per_unit, y_per_unit)
+        blue_slope = self.blue_ray.calculate_slope(x_per_unit, y_per_unit)
+
+        # Orange ray tracks highs with -5 deg angle
+        for i in range(1, len(current_data)):
+            current_high = float(current_data["High"].iloc[i])
+            current_idx = current_data.index[i]
+            if current_high >= self.orange_ray.start_price:
+                self.orange_ray.start_price = current_high
+                self.orange_ray.start_time = current_idx
+                orange_slope = self.orange_ray.calculate_slope(x_per_unit, y_per_unit)
+            else:
+                expected_price = self.orange_ray.get_price_at_time(current_idx, orange_slope)
+                if current_high > expected_price:
+                    orange_slope = self.orange_ray.update_for_crossover(current_high, current_idx, orange_slope)
+        self.orange_ray.adjusted_slope = orange_slope
+
+        # Yellow ray tracks lows with +5 deg angle
+        for i in range(1, len(current_data)):
+            current_low = float(current_data["Low"].iloc[i])
+            current_idx = current_data.index[i]
+            if current_low <= self.yellow_ray.start_price:
+                self.yellow_ray.start_price = current_low
+                self.yellow_ray.start_time = current_idx
+                yellow_slope = self.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
+            else:
+                expected_price = self.yellow_ray.get_price_at_time(current_idx, yellow_slope)
+                if current_low < expected_price:
+                    yellow_slope = self.yellow_ray.update_for_crossover(current_low, current_idx, yellow_slope)
+        self.yellow_ray.adjusted_slope = yellow_slope
+
+        # Purple/blue trendlines using TrendLineAutomation
+        if len(current_data) >= 2:
+            max_high = float(current_data["High"].max())
+            last_max_time = current_data[current_data["High"] == max_high].index[-1]
+            min_low = float(current_data["Low"].min())
+            last_min_time = current_data[current_data["Low"] == min_low].index[-1]
+
+            if self.purple_anchor_time is None:
+                self.purple_anchor_time = last_max_time
+                self.purple_anchor_price = max_high
+            elif max_high > float(self.purple_anchor_price):
+                self.purple_anchor_time = last_max_time
+                self.purple_anchor_price = max_high
+
+            if self.blue_anchor_time is None:
+                self.blue_anchor_time = last_min_time
+                self.blue_anchor_price = min_low
+            elif min_low < float(self.blue_anchor_price):
+                self.blue_anchor_time = last_min_time
+                self.blue_anchor_price = min_low
+
+            window_data_purple = current_data.loc[self.purple_anchor_time :]
+            window_data_blue = current_data.loc[self.blue_anchor_time :]
+            if len(window_data_purple) < 2 or len(window_data_blue) < 2:
+                return
+
+            if self.purple_ray is None:
+                self.purple_ray = Ray(-65.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-65)")
+            self.purple_ray.start_price = float(self.purple_anchor_price)
+            self.purple_ray.start_time = self.purple_anchor_time
+
+            if self.blue_ray is None:
+                self.blue_ray = Ray(65.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+65)")
+            self.blue_ray.start_price = float(self.blue_anchor_price)
+            self.blue_ray.start_time = self.blue_anchor_time
+
+            support_coefs, _ = fit_trendlines_high_low(
+                window_data_blue["High"].to_numpy(),
+                window_data_blue["Low"].to_numpy(),
+                window_data_blue["Close"].to_numpy(),
+            )
+            _, resist_coefs = fit_trendlines_high_low(
+                window_data_purple["High"].to_numpy(),
+                window_data_purple["Low"].to_numpy(),
+                window_data_purple["Close"].to_numpy(),
+            )
+
+            support_slope_idx, support_intercept = support_coefs
+            resist_slope_idx, resist_intercept = resist_coefs
+
+            time_step_days_blue = mdates.date2num(window_data_blue.index[1]) - mdates.date2num(window_data_blue.index[0])
+            time_step_days_purple = mdates.date2num(window_data_purple.index[1]) - mdates.date2num(window_data_purple.index[0])
+            if time_step_days_blue == 0:
+                time_step_days_blue = 1.0
+            if time_step_days_purple == 0:
+                time_step_days_purple = 1.0
+
+            support_slope_time = support_slope_idx / time_step_days_blue
+            resist_slope_time = resist_slope_idx / time_step_days_purple
+
+            if self.purple_ray is None:
+                self.purple_ray = Ray(-65.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-65)")
+            self.purple_ray.start_price = float(resist_intercept)
+            self.purple_ray.start_time = window_data_purple.index[0]
+            self.purple_ray.adjusted_slope = float(resist_slope_time)
+
+            if self.blue_ray is None:
+                self.blue_ray = Ray(65.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+65)")
+            self.blue_ray.start_price = float(support_intercept)
+            self.blue_ray.start_time = window_data_blue.index[0]
+            self.blue_ray.adjusted_slope = float(support_slope_time)
+
+
+def _display_angle_from_slope(slope: float, x_per_unit: float = 1.0, y_per_unit: float = 1.0) -> float:
+    """Return the visual angle in degrees of a ray given its slope.
+
+    In this headless context we treat x/y scales as 1:1, so this reduces
+    to the arctangent of the slope magnitude.
+    """
+
+    return float(abs(np.rad2deg(np.arctan(abs(slope) * x_per_unit / y_per_unit))))
+
+
+def _build_signals_frame(
+    data: pd.DataFrame,
+    buy_signals: Dict[pd.Timestamp, float],
+    sell_signals: Dict[pd.Timestamp, float],
+    trading_halted: bool,
+    halt_time,
+) -> pd.DataFrame:
+    """Construct a per-minute DataFrame with signals and cumulative P/L."""
+
+    df = data.copy()
+
+    df["signal"] = ""
+    df["buy_price"] = pd.NA
+    df["sell_price"] = pd.NA
+
+    for ts, price in buy_signals.items():
+        if ts in df.index:
+            df.at[ts, "signal"] = "BUY"
+            df.at[ts, "buy_price"] = float(price)
+
+    for ts, price in sell_signals.items():
+        if ts in df.index:
+            df.at[ts, "signal"] = "SELL"
+            df.at[ts, "sell_price"] = float(price)
+
+    position = "flat"
+    entry_price: Optional[float] = None
+    cumulative_realized_pl: float = 0.0
+
+    positions = []
+    pls = []
+
+    for ts in df.index:
+        if trading_halted and halt_time is not None and ts > halt_time:
+            # After halt, keep position flat and P/L constant.
+            positions.append("flat")
+            pls.append(cumulative_realized_pl)
+            continue
+
+        is_buy = ts in buy_signals
+        is_sell = ts in sell_signals
+
+        if is_buy:
+            buy_price = float(buy_signals[ts])
+            if position == "short" and entry_price is not None:
+                cumulative_realized_pl += entry_price - buy_price
+            position = "long"
+            entry_price = buy_price
+
+        if is_sell:
+            sell_price = float(sell_signals[ts])
+            if position == "long" and entry_price is not None:
+                cumulative_realized_pl += sell_price - entry_price
+            position = "short"
+            entry_price = sell_price
+
+        current_close = float(df.loc[ts, "Close"])
+        unrealized = 0.0
+        if position == "long" and entry_price is not None:
+            unrealized = current_close - entry_price
+        elif position == "short" and entry_price is not None:
+            unrealized = entry_price - current_close
+
+        total_pl = cumulative_realized_pl + unrealized
+        positions.append(position)
+        pls.append(total_pl)
+
+    df["position"] = positions
+    df["pl"] = pls
+
+    return df
+
+
+def run_trading_algo(
+    data: pd.DataFrame,
+    target_date: str,
+    start_time: str = "09:30",
+    end_time: str = "10:00",
+) -> pd.DataFrame:
+    """Run the trading algorithm headlessly for a single day's data.
+
+    This function mirrors the ray/signal logic used by the interactive
+    plotter but operates purely on the DataFrame, returning an enriched
+    per-minute DataFrame with signals and cumulative P/L.
+    """
+
+    if data is None or data.empty:
+        raise ValueError("run_trading_algo expected non-empty intraday data")
+
+    full_data = data.copy()
+
+    # Ensure timezone-awareness (US/Eastern) to match the interactive code.
+    est = pytz.timezone("US/Eastern")
+    try:
+        if full_data.index.tz is None:
+            full_data.index = pd.to_datetime(full_data.index, errors="coerce")
+            full_data.index = full_data.index.tz_localize(est)
+        else:
+            full_data.index = pd.to_datetime(full_data.index).tz_convert(est)
+    except Exception:
+        pass
+
+    cutoff_time = pd.Timestamp(f"{target_date} 09:38:00", tz=est)
+
+    # Initialize ray manager and per-minute steep rays.
+    rm = RayManager(full_data)
+    x_per_unit = 1.0
+    y_per_unit = 1.0
+
+    if rm.orange_ray is None:
+        rm.initialize_rays(full_data, x_per_unit, y_per_unit)
+
+    if full_data.empty:
+        return full_data
+
+    minute_purple_ray = Ray(-65.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-65)")
+    minute_blue_ray = Ray(65.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+65)")
+
+    prev_close: Optional[float] = None
+    prev_orange: Optional[float] = None
+    prev_yellow: Optional[float] = None
+    prev_purple: Optional[float] = None
+    prev_blue: Optional[float] = None
+    prev_purple_slope: Optional[float] = None
+    prev_blue_slope: Optional[float] = None
+
+    orange_slope = rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
+    yellow_slope = rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
+
+    temp_position = "flat"
+    temp_entry_price: Optional[float] = None
+    trading_halted = False
+    halt_time = None
+
+    buy_signals: Dict[pd.Timestamp, float] = {}
+    sell_signals: Dict[pd.Timestamp, float] = {}
+
+    for i, (time, row) in enumerate(full_data.iterrows()):
+        current_close = float(row["Close"])
+
+        # Current ray prices BEFORE updating steep rays for this iteration
+        orange_price = rm.orange_ray.get_price_at_time(time, orange_slope)
+        yellow_price = rm.yellow_ray.get_price_at_time(time, yellow_slope)
+
+        purple_slope = minute_purple_ray.adjusted_slope or minute_purple_ray.calculate_slope(x_per_unit, y_per_unit)
+        blue_slope = minute_blue_ray.adjusted_slope or minute_blue_ray.calculate_slope(x_per_unit, y_per_unit)
+        purple_price = minute_purple_ray.get_price_at_time(time, purple_slope)
+        blue_price = minute_blue_ray.get_price_at_time(time, blue_slope)
+
+        if time >= cutoff_time and i > 0 and not trading_halted:
+            # BUY signals - can trigger from flat or short (position reversal)
+            if temp_position != "long" and time not in buy_signals:
+                buy_triggered = False
+
+                if prev_close is not None and prev_orange is not None:
+                    if prev_close <= prev_orange and current_close > prev_orange:
+                        buy_triggered = True
+
+                if not buy_triggered and prev_close is not None and prev_purple is not None:
+                    angle_slope = prev_purple_slope if prev_purple_slope is not None else purple_slope
+                    purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
+                    if purple_angle <= 65.0 and prev_close <= prev_purple and current_close > prev_purple:
+                        buy_triggered = True
+
+                if buy_triggered:
+                    buy_signals[time] = current_close
+                    temp_position = "long"
+                    temp_entry_price = current_close
+
+            # SELL signals - can trigger from flat or long (position reversal)
+            if temp_position != "short" and time not in sell_signals:
+                sell_triggered = False
+
+                if prev_close is not None and prev_yellow is not None:
+                    if prev_close >= prev_yellow and current_close < prev_yellow:
+                        sell_triggered = True
+
+                if not sell_triggered and prev_close is not None and prev_blue is not None:
+                    angle_slope = prev_blue_slope if prev_blue_slope is not None else blue_slope
+                    blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
+                    if blue_angle <= 65.0 and prev_close >= prev_blue and current_close < prev_blue:
+                        sell_triggered = True
+
+                if sell_triggered:
+                    sell_signals[time] = current_close
+                    temp_position = "short"
+                    temp_entry_price = current_close
+
+            # Profit target liquidation
+            if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
+                if temp_position == "long":
+                    pl = current_close - temp_entry_price
+                    if pl > 100.0:
+                        if time not in sell_signals:
+                            sell_signals[time] = current_close
+                        temp_position = "flat"
+                        temp_entry_price = None
+                        trading_halted = True
+                        halt_time = time
+                else:  # short
+                    pl = temp_entry_price - current_close
+                    if pl > 100.0:
+                        if time not in buy_signals:
+                            buy_signals[time] = current_close
+                        temp_position = "flat"
+                        temp_entry_price = None
+                        trading_halted = True
+                        halt_time = time
+
+        prev_close = current_close
+        prev_orange = orange_price
+        prev_yellow = yellow_price
+        prev_purple = purple_price
+        prev_blue = blue_price
+        prev_purple_slope = purple_slope
+        prev_blue_slope = blue_slope
+
+        # Update steep rays for the next iteration
+        current_data_so_far = full_data.iloc[: i + 1]
+        rm.purple_ray = minute_purple_ray
+        rm.blue_ray = minute_blue_ray
+        rm.update_all_rays(current_data_so_far, x_per_unit, y_per_unit)
+        minute_purple_ray = rm.purple_ray
+        minute_blue_ray = rm.blue_ray
+
+    # Build and return enriched per-minute frame.
+    return _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time)
+

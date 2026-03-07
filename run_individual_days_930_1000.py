@@ -1,0 +1,246 @@
+"""
+Run RunFullDataSet on Updated SpreadSheet - UpdatedJanData.csv
+Process each day individually for 9:30-10:00 AM window
+"""
+import pandas as pd
+import pytz
+import os
+import datetime
+from plotFigure import ChartPlotter
+from RunFullDataSet import _compute_trade_stats
+
+# Configuration
+start_time = "09:30"
+end_time = "10:00"
+csv_file = os.path.join(os.path.expanduser('~'), 'Desktop', 'Updated SpreadSheet - UpdatedJanData.csv')
+output_charts_dir = os.path.join(os.path.expanduser('~'), 'Desktop', 'TradingPics_930-1000_Individual')
+output_temp_dir = os.path.join(os.path.expanduser('~'), 'Desktop', 'Trading', 'Temp')
+
+print("="*60)
+print("RunFullDataSet - Individual Day Processing")
+print("="*60)
+print(f"Data file: {csv_file}")
+print(f"Time window: {start_time} - {end_time}")
+print(f"Output: {output_charts_dir}")
+
+# Load data
+print("\nLoading data...")
+df = pd.read_csv(csv_file, parse_dates=['Timestamp'])
+df = df.set_index('Timestamp')
+
+# Keep only High, Low, Close
+df = df[['High', 'Low', 'Close']].copy()
+
+# Ensure EST timezone
+est = pytz.timezone('US/Eastern')
+if df.index.tz is None:
+    df.index = df.index.tz_localize(est, ambiguous='NaT', nonexistent='shift_forward')
+else:
+    df.index = df.index.tz_convert(est)
+
+print(f"Loaded {len(df):,} rows")
+print(f"Date range: {df.index[0].date()} to {df.index[-1].date()}")
+
+# Group by date
+df['date'] = df.index.date
+dates = sorted(df['date'].unique())
+print(f"Trading days: {len(dates)}")
+
+# Create output directories
+os.makedirs(output_charts_dir, exist_ok=True)
+os.makedirs(output_temp_dir, exist_ok=True)
+
+# Results storage
+results = []
+
+print("\n" + "="*60)
+print("Processing Each Day")
+print("="*60)
+
+# Process each day
+for idx, date in enumerate(dates, 1):
+    date_str = date.strftime('%Y-%m-%d')
+    print(f"\n[{idx}/{len(dates)}] {date_str}")
+    
+    # Filter data for this date
+    df_day = df[df['date'] == date].copy()
+    df_day = df_day.drop('date', axis=1)
+    
+    if df_day.empty:
+        print("  ✗ No data")
+        continue
+    
+    # Filter to 9:30-10:00 window
+    window_start = datetime.time(9, 30)
+    window_end = datetime.time(10, 0)
+    df_window = df_day[(df_day.index.time >= window_start) & (df_day.index.time <= window_end)]
+    
+    if len(df_window) < 10:
+        print(f"  ✗ Only {len(df_window)} minutes (need at least 10)")
+        continue
+    
+    print(f"  • {len(df_window)} minutes: {df_window.index[0].strftime('%H:%M')} - {df_window.index[-1].strftime('%H:%M')}")
+    
+    # Create chart plotter
+    try:
+        plotter = ChartPlotter(df_window, date_str, start_time, end_time, output_temp_dir)
+        plotter.create_figure()
+        plotter.detect_all_signals_once()
+        
+        # Save chart image
+        img_filename = f"{date_str}.jpg"
+        img_path = os.path.join(output_charts_dir, img_filename)
+        
+        if hasattr(plotter, 'fig') and plotter.fig is not None:
+            # Update to final frame
+            final_frame = max(0, len(df_window) - 1)
+            plotter.state.current_frame = final_frame
+            plotter.update_plot(final_frame)
+            
+            # Draw and save
+            try:
+                plotter.fig.canvas.draw()
+                plotter.fig.canvas.flush_events()
+            except:
+                pass
+            
+            plotter.fig.savefig(img_path, dpi=150, bbox_inches='tight')
+            print(f"  ✓ Chart: {img_filename}")
+            
+            # Close figure
+            import matplotlib.pyplot as plt
+            plt.close(plotter.fig)
+        
+        # Compute trade statistics
+        stats = _compute_trade_stats(plotter)
+        
+        # Display signals
+        buy_count = len(plotter.state.detected_buy_signals)
+        sell_count = len(plotter.state.detected_sell_signals)
+        print(f"  • Signals: {buy_count} BUY, {sell_count} SELL")
+        print(f"  • Trades: {stats['total_trades']} ({stats['winning_trades']}W/{stats['losing_trades']}L)")
+        print(f"  • P/L: {stats['final_pl']:.2f} pts | High: {stats['pl_high']:.2f} pts")
+        if stats.get('liquidation_trade_pl'):
+            print(f"  • Liquidation: {stats['liquidation_trade_pl']:.2f} pts")
+        
+        # Store results
+        results.append({
+            'Date': date_str,
+            'Minutes': len(df_window),
+            'Buy_Signals': buy_count,
+            'Sell_Signals': sell_count,
+            'Total_Trades': stats['total_trades'],
+            'Winning_Trades': stats['winning_trades'],
+            'Losing_Trades': stats['losing_trades'],
+            'Win_Pct': stats['win_pct'],
+            'Final_PL': stats['final_pl'],
+            'PL_High': stats['pl_high'],
+            'Captured_100': stats['captured_100'],
+            'Liquidation_PL': stats.get('liquidation_trade_pl', 0) or 0
+        })
+        
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Summary
+print("\n" + "="*60)
+print("SUMMARY")
+print("="*60)
+
+if results:
+    df_results = pd.DataFrame(results)
+    
+    total_days = len(results)
+    total_pl = df_results['Final_PL'].sum()
+    total_liq_pl = df_results['Liquidation_PL'].sum()
+    avg_pl = total_pl / total_days if total_days > 0 else 0
+    avg_liq_pl = total_liq_pl / total_days if total_days > 0 else 0
+    
+    days_captured_100 = len(df_results[df_results['Captured_100'] == 'Yes'])
+    
+    print(f"Trading Days Processed: {total_days}")
+    print(f"Total P/L: {total_pl:.2f} points")
+    print(f"Average P/L per Day: {avg_pl:.2f} points")
+    print(f"Total Liquidation P/L: {total_liq_pl:.2f} points")
+    print(f"Average Liquidation P/L per Day: {avg_liq_pl:.2f} points")
+    print(f"Days Captured 100+ pts: {days_captured_100}/{total_days}")
+    
+    # Save summary to Excel
+    summary_file = os.path.join(os.path.expanduser('~'), 'Desktop', 'Individual_Days_930-1000_Summary.xlsx')
+    
+    try:
+        with pd.ExcelWriter(summary_file, engine='openpyxl') as writer:
+            df_results.to_excel(writer, index=False, sheet_name='Results')
+        
+        # Format the Excel file
+        from openpyxl import load_workbook
+        from openpyxl.styles import PatternFill, Font
+        from openpyxl.utils import get_column_letter
+        
+        wb = load_workbook(summary_file)
+        ws = wb['Results']
+        
+        # Color coding for Captured_100 column
+        green = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+        red = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        
+        header = [cell.value for cell in ws[1]]
+        cap_idx = header.index('Captured_100') + 1 if 'Captured_100' in header else None
+        
+        for row in range(2, ws.max_row + 1):
+            if cap_idx:
+                val = ws.cell(row=row, column=cap_idx).value
+                is_yes = str(val).strip().lower() == 'yes'
+                fill = green if is_yes else red
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=row, column=c).fill = fill
+        
+        # Add summary section
+        summary_row = ws.max_row + 2
+        ws.cell(row=summary_row, column=1).value = "SUMMARY"
+        ws.cell(row=summary_row, column=1).font = Font(bold=True, size=14)
+        
+        ws.cell(row=summary_row + 1, column=1).value = "Total P/L"
+        ws.cell(row=summary_row + 1, column=2).value = float(total_pl)
+        ws.cell(row=summary_row + 1, column=1).font = Font(bold=True)
+        
+        ws.cell(row=summary_row + 2, column=1).value = "Avg P/L per Day"
+        ws.cell(row=summary_row + 2, column=2).value = float(avg_pl)
+        ws.cell(row=summary_row + 2, column=1).font = Font(bold=True)
+        
+        ws.cell(row=summary_row + 3, column=1).value = "Total Liquidation P/L"
+        ws.cell(row=summary_row + 3, column=2).value = float(total_liq_pl)
+        ws.cell(row=summary_row + 3, column=1).font = Font(bold=True)
+        
+        ws.cell(row=summary_row + 4, column=1).value = "Days Captured 100+"
+        ws.cell(row=summary_row + 4, column=2).value = f"{days_captured_100}/{total_days}"
+        ws.cell(row=summary_row + 4, column=1).font = Font(bold=True)
+        
+        # Auto-adjust columns
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 50)
+        
+        wb.save(summary_file)
+        print(f"\n✓ Summary saved: {summary_file}")
+        
+    except Exception as e:
+        print(f"\n✗ Failed to save Excel: {e}")
+        csv_file = os.path.join(os.path.expanduser('~'), 'Desktop', 'Individual_Days_930-1000_Summary.csv')
+        df_results.to_csv(csv_file, index=False)
+        print(f"✓ CSV saved: {csv_file}")
+    
+    print(f"✓ Charts saved: {output_charts_dir}")
+else:
+    print("✗ No days processed")
+
+print("="*60)

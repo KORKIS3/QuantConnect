@@ -231,16 +231,50 @@ class RayManager:
             resist_slope_time = resist_slope_idx / time_step_days_purple
 
             if self.purple_ray is None:
-                self.purple_ray = Ray(-65, resist_intercept, window_data_purple.index[0], 'darkviolet', 'Max Ray (-65°)')
-            self.purple_ray.start_price = resist_intercept
-            self.purple_ray.start_time = window_data_purple.index[0]
+                self.purple_ray = Ray(-65, self.purple_anchor_price, self.purple_anchor_time, 'darkviolet', 'Max Ray (-65°)')
+            self.purple_ray.start_price = self.purple_anchor_price
+            self.purple_ray.start_time = self.purple_anchor_time
             self.purple_ray.adjusted_slope = resist_slope_time
 
             if self.blue_ray is None:
-                self.blue_ray = Ray(65, support_intercept, window_data_blue.index[0], 'blue', 'Min Ray (+65°)')
-            self.blue_ray.start_price = support_intercept
-            self.blue_ray.start_time = window_data_blue.index[0]
+                self.blue_ray = Ray(65, self.blue_anchor_price, self.blue_anchor_time, 'blue', 'Min Ray (+65°)')
+            self.blue_ray.start_price = self.blue_anchor_price
+            self.blue_ray.start_time = self.blue_anchor_time
             self.blue_ray.adjusted_slope = support_slope_time
+
+            # Ensure blue ray never projects above any bar low:
+            # walk forward and drop anchor whenever line exceeds a bar low
+            b_price = self.blue_ray.start_price
+            b_time_num = mdates.date2num(self.blue_ray.start_time)
+            for t, row in window_data_blue.iterrows():
+                t_num = mdates.date2num(t)
+                projected = b_price + support_slope_time * (t_num - b_time_num)
+                if projected > row['Low']:
+                    b_price = row['Low']
+                    b_time_num = t_num
+            self.blue_ray.start_price = b_price
+            self.blue_ray.start_time = window_data_blue.index[
+                list(window_data_blue.index).index(
+                    min(window_data_blue.index, key=lambda t: abs(mdates.date2num(t) - b_time_num))
+                )
+            ]
+
+            # Ensure purple ray never projects below any bar high:
+            # walk forward and raise anchor whenever line falls below a bar high
+            p_price = self.purple_ray.start_price
+            p_time_num = mdates.date2num(self.purple_ray.start_time)
+            for t, row in window_data_purple.iterrows():
+                t_num = mdates.date2num(t)
+                projected = p_price + resist_slope_time * (t_num - p_time_num)
+                if projected < row['High']:
+                    p_price = row['High']
+                    p_time_num = t_num
+            self.purple_ray.start_price = p_price
+            self.purple_ray.start_time = window_data_purple.index[
+                list(window_data_purple.index).index(
+                    min(window_data_purple.index, key=lambda t: abs(mdates.date2num(t) - p_time_num))
+                )
+            ]
 
 
 class ChartPlotter:
@@ -273,6 +307,8 @@ class ChartPlotter:
         self.yellow_angle_annotation = None
         self.purple_angle_annotation = None
         self.blue_angle_annotation = None
+        self._prev_frame_purple_slope = None
+        self._prev_frame_blue_slope = None
         
     def create_figure(self):
         """Create the matplotlib figure and axes"""
@@ -345,6 +381,10 @@ class ChartPlotter:
         # Return the scaling factors used for correct angle calculations
         return x_per_inch, y_per_inch
     
+    def _ray_display_angle(self, slope, x_per_inch, y_per_inch):
+        """Return the visual angle in degrees of a ray given its slope and chart aspect ratio."""
+        return abs(np.rad2deg(np.arctan(abs(slope) * x_per_inch / y_per_inch)))
+
     def detect_all_signals_once(self):
         """Detect ALL signals across the entire dataset ONCE"""
         if self.state.all_signals_detected:
@@ -395,6 +435,8 @@ class ChartPlotter:
         prev_yellow = None
         prev_purple = None
         prev_blue = None
+        prev_purple_slope = None
+        prev_blue_slope = None
         
         orange_slope = self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
         yellow_slope = self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
@@ -468,7 +510,11 @@ class ChartPlotter:
                     
                     # BUY: Previous close was at/below previous purple, current close is above previous purple (strict crossover)
                     if not buy_triggered and prev_close is not None and prev_purple is not None:
-                        if prev_close <= prev_purple and row['Close'] > prev_purple:
+                        angle_slope = prev_purple_slope if prev_purple_slope is not None else purple_slope
+                        purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
+                        if purple_angle > 65:
+                            print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° > 65°")
+                        elif prev_close <= prev_purple and row['Close'] > prev_purple:
                             print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > prev_purple {prev_purple:.0f}")
                             buy_triggered = True
                     
@@ -492,7 +538,11 @@ class ChartPlotter:
                     
                     # SELL: Previous close was at/above previous blue, current close is below previous-minute blue
                     if not sell_triggered and prev_close is not None and prev_blue is not None:
-                        if prev_close >= prev_blue and row['Close'] < prev_blue:
+                        angle_slope = prev_blue_slope if prev_blue_slope is not None else blue_slope
+                        blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
+                        if blue_angle > 65:
+                            print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° > 65°")
+                        elif prev_close >= prev_blue and row['Close'] < prev_blue:
                             print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < prev_blue {prev_blue:.0f}")
                             print(f"      Current close: {row['Close']:.2f}, Previous minute's blue ray: {prev_blue:.2f}")
                             sell_triggered = True
@@ -538,6 +588,8 @@ class ChartPlotter:
             prev_yellow = yellow_price
             prev_purple = purple_price
             prev_blue = blue_price
+            prev_purple_slope = purple_slope
+            prev_blue_slope = blue_slope
             
             # NOW update purple and blue rays for the NEXT iteration (after storing prev values)
             current_data_so_far = full_data.iloc[:i + 1]
@@ -599,6 +651,15 @@ class ChartPlotter:
         time = current_data.index[-1]
         prev_time = current_data.index[-2]
 
+        # Compute and store slopes BEFORE the cutoff check so the angle filter
+        # always has the correct previous-frame slope regardless of navigation order
+        orange_slope = self.ray_manager.orange_ray.adjusted_slope or self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
+        yellow_slope = self.ray_manager.yellow_ray.adjusted_slope or self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
+        purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
+        blue_slope = self.ray_manager.blue_ray.adjusted_slope or self.ray_manager.blue_ray.calculate_slope(x_per_inch, y_per_inch)
+        self._prev_frame_purple_slope = purple_slope
+        self._prev_frame_blue_slope = blue_slope
+
         if time < self.cutoff_time:
             return
 
@@ -608,12 +669,6 @@ class ChartPlotter:
         # Derive current position from detected signals up to this time
         last_buy_time = max((t for t in self.state.detected_buy_signals.keys() if t <= time), default=None)
         last_sell_time = max((t for t in self.state.detected_sell_signals.keys() if t <= time), default=None)
-
-        # Calculate ray values for current and previous points
-        orange_slope = self.ray_manager.orange_ray.adjusted_slope or self.ray_manager.orange_ray.calculate_slope(x_per_inch, y_per_inch)
-        yellow_slope = self.ray_manager.yellow_ray.adjusted_slope or self.ray_manager.yellow_ray.calculate_slope(x_per_inch, y_per_inch)
-        purple_slope = self.ray_manager.purple_ray.adjusted_slope or self.ray_manager.purple_ray.calculate_slope(x_per_inch, y_per_inch)
-        blue_slope = self.ray_manager.blue_ray.adjusted_slope or self.ray_manager.blue_ray.calculate_slope(x_per_inch, y_per_inch)
 
         # Compute "previous-minute" ray values using a frozen copy of the ray manager
         # so comparisons use the ray state up to prev_time (before current-minute updates).
@@ -628,12 +683,16 @@ class ChartPlotter:
             prev_yellow = prev_rm.yellow_ray.get_price_at_time(prev_time, prev_rm.yellow_ray.adjusted_slope or prev_rm.yellow_ray.calculate_slope(x_per_inch, y_per_inch))
             prev_purple = prev_rm.purple_ray.get_price_at_time(prev_time, prev_rm.purple_ray.adjusted_slope or prev_rm.purple_ray.calculate_slope(x_per_inch, y_per_inch))
             prev_blue = prev_rm.blue_ray.get_price_at_time(prev_time, prev_rm.blue_ray.adjusted_slope or prev_rm.blue_ray.calculate_slope(x_per_inch, y_per_inch))
+            prev_purple_slope = prev_rm.purple_ray.adjusted_slope or prev_rm.purple_ray.calculate_slope(x_per_inch, y_per_inch)
+            prev_blue_slope = prev_rm.blue_ray.adjusted_slope or prev_rm.blue_ray.calculate_slope(x_per_inch, y_per_inch)
         except Exception:
             # Fallback: use current ray_manager if deepcopy/update fails
             prev_orange = self.ray_manager.orange_ray.get_price_at_time(prev_time, orange_slope)
             prev_yellow = self.ray_manager.yellow_ray.get_price_at_time(prev_time, yellow_slope)
             prev_purple = self.ray_manager.purple_ray.get_price_at_time(prev_time, purple_slope)
             prev_blue = self.ray_manager.blue_ray.get_price_at_time(prev_time, blue_slope)
+            prev_purple_slope = purple_slope
+            prev_blue_slope = blue_slope
 
         curr_orange = self.ray_manager.orange_ray.get_price_at_time(time, orange_slope)
         curr_yellow = self.ray_manager.yellow_ray.get_price_at_time(time, yellow_slope)
@@ -704,7 +763,12 @@ class ChartPlotter:
                 buy_triggered = True
 
             if not buy_triggered and prev_close <= prev_purple and current_close > prev_purple:
-                buy_triggered = True
+                angle_slope = self._prev_frame_purple_slope if self._prev_frame_purple_slope is not None else purple_slope
+                purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
+                if purple_angle > 65:
+                    print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° > 65°")
+                else:
+                    buy_triggered = True
 
             if buy_triggered:
                 self.state.detected_buy_signals[time] = current_close
@@ -721,7 +785,12 @@ class ChartPlotter:
 
             if not sell_triggered and prev_close is not None and prev_blue is not None:
                 if prev_close >= prev_blue and current_close < prev_blue:
-                    sell_triggered = True
+                    angle_slope = self._prev_frame_blue_slope if self._prev_frame_blue_slope is not None else blue_slope
+                    blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
+                    if blue_angle > 65:
+                        print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° > 65°")
+                    else:
+                        sell_triggered = True
 
             if sell_triggered:
                 self.state.detected_sell_signals[time] = current_close
@@ -753,6 +822,10 @@ class ChartPlotter:
                     self.state.trading_halted = True
                     self.state.halt_reason = 'profit_target'
                     self.state.halt_time = time
+
+        # Store this frame's slopes so the next frame can use them for the angle filter
+        self._prev_frame_purple_slope = purple_slope
+        self._prev_frame_blue_slope = blue_slope
 
     def update_price_lines(self, current_data):
         """Update the price line data"""
@@ -1103,13 +1176,20 @@ class ChartPlotter:
     def show(self):
         """Display the interactive plot"""
         self.create_figure()
-        self.update_plot(0)
-        self.create_navigation_buttons()
         self.fig.canvas.draw()
-        # Detect all signals ONCE before showing the graph
+
         print(f"\n✓ Interactive graph ready!")
         print(f"  - Total minutes: {len(self.data)}")
         print(f"  - Use buttons to navigate\n")
+
+        # Run all frames sequentially so signals are pre-computed and
+        # _prev_frame slopes are accurate before the user interacts
+        for frame in range(len(self.data)):
+            self.update_plot(frame)
+        self.state.current_frame = len(self.data) - 1
+
+        self.create_navigation_buttons()
+        self.fig.canvas.draw()
         plt.show()
 
 
