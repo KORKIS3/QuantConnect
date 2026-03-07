@@ -1176,20 +1176,22 @@ class ChartPlotter:
     def show(self):
         """Display the interactive plot"""
         self.create_figure()
+
+        # For interactive use, start the view at the very first
+        # minute (e.g. 09:30) and let `update_plot` build rays and
+        # signals incrementally as you step forward. This avoids
+        # seeding the ray manager with full-day anchor state, so
+        # the purple/blue rays line up with the data at each step.
+        self.state.current_frame = 0
+        self.update_plot(self.state.current_frame)
+
+        self.create_navigation_buttons()
         self.fig.canvas.draw()
 
         print(f"\n✓ Interactive graph ready!")
         print(f"  - Total minutes: {len(self.data)}")
         print(f"  - Use buttons to navigate\n")
 
-        # Run all frames sequentially so signals are pre-computed and
-        # _prev_frame slopes are accurate before the user interacts
-        for frame in range(len(self.data)):
-            self.update_plot(frame)
-        self.state.current_frame = len(self.data) - 1
-
-        self.create_navigation_buttons()
-        self.fig.canvas.draw()
         plt.show()
 
 
