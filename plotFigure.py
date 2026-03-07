@@ -310,6 +310,11 @@ class ChartPlotter:
         self._prev_frame_purple_slope = None
         self._prev_frame_blue_slope = None
 
+        # Only signals/P&L are treated as precomputed truth from
+        # TradingAlgo. Rays are still computed here so their visual
+        # angles (2.5° / 60°) match the chart geometry exactly.
+        self._has_precomputed_signals = hasattr(self.data, "columns") and "signal" in self.data.columns
+
         # If the input data already contains signal columns from the
         # headless TradingAlgo run, pre-load those signals so the
         # interactive chart simply visualizes them instead of
@@ -327,7 +332,7 @@ class ChartPlotter:
         avoid running interactive signal detection on top.
         """
 
-        if not hasattr(self.data, "columns") or "signal" not in self.data.columns:
+        if not self._has_precomputed_signals:
             return
 
         for ts, row in self.data.iterrows():
@@ -674,13 +679,13 @@ class ChartPlotter:
             return
         
         x_per_inch, y_per_inch = self.get_aspect_ratio()
-        
+
         if frame >= 0:
             if self.ray_manager.orange_ray is None:
                 self.ray_manager.initialize_rays(current_data, x_per_inch, y_per_inch)
-            
+
             self.ray_manager.update_all_rays(current_data, x_per_inch, y_per_inch)
-        
+
         self.update_price_lines(current_data)
         self.update_ray_lines(current_data, x_per_inch, y_per_inch)
         self.update_annotations(current_data, x_per_inch, y_per_inch)
@@ -696,7 +701,7 @@ class ChartPlotter:
         # (from the headless TradingAlgo), skip interactive detection
         # entirely and just render those signals. This guarantees the
         # chart matches the backtest exactly.
-        if hasattr(self.data, "columns") and "signal" in self.data.columns:
+        if self._has_precomputed_signals:
             return
 
         if len(current_data) < 2:
@@ -926,29 +931,31 @@ class ChartPlotter:
     
     def update_ray_lines(self, current_data, x_per_inch, y_per_inch):
         """Update all ray lines"""
+        # Compute rays from scratch using the interactive RayManager so
+        # that their visual angles are tied to the chart aspect ratio.
         if self.ray_manager.orange_ray is None:
             return
-        
+
         end_time = self.data.index[-1]
         current_end = current_data.index[-1]
-        
+
         # Update each ray using the helper method
         self.update_single_ray_with_angle(
             self.ray_manager.orange_ray, 'ray_orange', 'orange_angle_annotation',
             current_end, end_time, x_per_inch, y_per_inch, 'darkorange', 'orange', -15)
-        
+
         self.update_single_ray_with_angle(
             self.ray_manager.yellow_ray, 'ray_yellow', 'yellow_angle_annotation',
             current_end, end_time, x_per_inch, y_per_inch, 'gold', 'yellow', -15)
-        
+
         self.update_single_ray_with_angle(
             self.ray_manager.purple_ray, 'ray_purple', 'purple_angle_annotation',
             current_end, end_time, x_per_inch, y_per_inch, 'darkviolet', 'darkviolet', 15)
-        
+
         self.update_single_ray_with_angle(
             self.ray_manager.blue_ray, 'ray_blue', 'blue_angle_annotation',
             current_end, end_time, x_per_inch, y_per_inch, 'blue', 'blue', -15)
-        
+
         # Update dark purple ray if it exists
         if self.ray_manager.dark_purple_ray is not None:
             self.update_single_ray_with_angle(
@@ -1078,7 +1085,31 @@ class ChartPlotter:
         self.ax_top.xaxis.set_label_position('top')
         self.ax_top.tick_params(axis='x', which='both', top=True, bottom=False, labeltop=True, labelbottom=False)
 
-        # Track cumulative realized P/L — never resets to zero on new trades
+        # If TradingAlgo already produced a per-minute P/L column, use it
+        # directly so this overlay matches the headless backtest exactly.
+        if hasattr(self.data, 'columns') and 'pl' in self.data.columns:
+            for time in current_data.index:
+                if self.state.trading_halted and self.state.halt_time is not None and time > self.state.halt_time:
+                    break
+
+                pl = float(current_data.loc[time, 'pl'])
+                if pl == 0:
+                    continue
+
+                color = 'green' if pl >= 0 else 'red'
+                sign  = '+' if pl >= 0 else ''
+
+                y_pos = self.ax.get_ylim()[1] - 5
+                self.ax_top.text(time, y_pos, f"{sign}{pl:.0f}",
+                                 ha='center', va='top', fontsize=7,
+                                 color=color, fontweight='bold',
+                                 bbox=dict(boxstyle='round,pad=0.3',
+                                           facecolor='white', alpha=0.7,
+                                           edgecolor=color, linewidth=1.5))
+            return
+
+        # Legacy path: derive cumulative P/L from detected signals when
+        # no precomputed 'pl' column is available.
         current_position = 'flat'
         entry_price = None
         entry_time = None
@@ -1124,11 +1155,11 @@ class ChartPlotter:
 
                 y_pos = self.ax.get_ylim()[1] - 5
                 self.ax_top.text(time, y_pos, f"{sign}{pl:.0f}",
-                               ha='center', va='top', fontsize=7,
-                               color=color, fontweight='bold',
-                               bbox=dict(boxstyle='round,pad=0.3',
-                                       facecolor='white', alpha=0.7,
-                                       edgecolor=color, linewidth=1.5))
+                                 ha='center', va='top', fontsize=7,
+                                 color=color, fontweight='bold',
+                                 bbox=dict(boxstyle='round,pad=0.3',
+                                           facecolor='white', alpha=0.7,
+                                           edgecolor=color, linewidth=1.5))
     
     def save_snapshot(self, current_data):
         """Save snapshot at specific times"""

@@ -337,6 +337,7 @@ def run_trading_algo(
     minute_purple_ray = Ray(-60.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-60)")
     minute_blue_ray = Ray(60.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+60)")
 
+    # These slopes are used only for the fixed-angle orange/yellow rays.
     orange_slope = rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
     yellow_slope = rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
 
@@ -347,6 +348,23 @@ def run_trading_algo(
 
     buy_signals: Dict[pd.Timestamp, float] = {}
     sell_signals: Dict[pd.Timestamp, float] = {}
+
+    # Per-minute geometry that will be attached to the result so the
+    # interactive plotter only has to *render* what the algo computed.
+    orange_prices = []
+    yellow_prices = []
+    purple_prices = []
+    blue_prices = []
+
+    orange_slopes = []
+    yellow_slopes = []
+    purple_slopes = []
+    blue_slopes = []
+
+    purple_anchor_prices = []
+    purple_anchor_times = []
+    blue_anchor_prices = []
+    blue_anchor_times = []
 
     for i, (time, row) in enumerate(full_data.iterrows()):
         current_close = float(row["Close"])
@@ -439,6 +457,55 @@ def run_trading_algo(
         minute_purple_ray = rm.purple_ray
         minute_blue_ray = rm.blue_ray
 
-    # Build and return enriched per-minute frame.
-    return _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time)
+        # After updating, capture the ray geometry for this bar so the
+        # caller can inspect/plot exactly what the algo used.
+        # Orange / yellow use fixed angles; purple / blue come from
+        # the trendline engine plus the walk-forward anchor logic.
+        orange_slope_now = rm.orange_ray.adjusted_slope or rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
+        yellow_slope_now = rm.yellow_ray.adjusted_slope or rm.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
+        purple_slope_now = rm.purple_ray.adjusted_slope or rm.purple_ray.calculate_slope(x_per_unit, y_per_unit)
+        blue_slope_now = rm.blue_ray.adjusted_slope or rm.blue_ray.calculate_slope(x_per_unit, y_per_unit)
+
+        orange_slopes.append(float(orange_slope_now))
+        yellow_slopes.append(float(yellow_slope_now))
+        purple_slopes.append(float(purple_slope_now))
+        blue_slopes.append(float(blue_slope_now))
+
+        orange_prices.append(float(rm.orange_ray.get_price_at_time(time, orange_slope_now)))
+        yellow_prices.append(float(rm.yellow_ray.get_price_at_time(time, yellow_slope_now)))
+        purple_prices.append(float(rm.purple_ray.get_price_at_time(time, purple_slope_now)))
+        blue_prices.append(float(rm.blue_ray.get_price_at_time(time, blue_slope_now)))
+
+        # Anchor meta so the plotter/debug tools can see exactly where
+        # the steep rays are based.
+        purple_anchor_price = rm.purple_anchor_price if rm.purple_anchor_price is not None else rm.purple_ray.start_price
+        purple_anchor_time = rm.purple_anchor_time if rm.purple_anchor_time is not None else rm.purple_ray.start_time
+        blue_anchor_price = rm.blue_anchor_price if rm.blue_anchor_price is not None else rm.blue_ray.start_price
+        blue_anchor_time = rm.blue_anchor_time if rm.blue_anchor_time is not None else rm.blue_ray.start_time
+
+        purple_anchor_prices.append(float(purple_anchor_price))
+        purple_anchor_times.append(purple_anchor_time)
+        blue_anchor_prices.append(float(blue_anchor_price))
+        blue_anchor_times.append(blue_anchor_time)
+
+    # Build and return enriched per-minute frame and attach all
+    # per-bar geometry so plotting is a pure visualization step.
+    result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time)
+
+    result["orange_ray"] = orange_prices
+    result["yellow_ray"] = yellow_prices
+    result["purple_ray"] = purple_prices
+    result["blue_ray"] = blue_prices
+
+    result["orange_slope"] = orange_slopes
+    result["yellow_slope"] = yellow_slopes
+    result["purple_slope"] = purple_slopes
+    result["blue_slope"] = blue_slopes
+
+    result["purple_anchor_price"] = purple_anchor_prices
+    result["purple_anchor_time"] = purple_anchor_times
+    result["blue_anchor_price"] = blue_anchor_prices
+    result["blue_anchor_time"] = blue_anchor_times
+
+    return result
 
