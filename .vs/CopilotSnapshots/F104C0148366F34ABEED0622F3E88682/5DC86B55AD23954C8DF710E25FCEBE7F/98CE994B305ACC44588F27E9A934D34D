@@ -1,4 +1,4 @@
-"""TradingAlgo
+﻿"""TradingAlgo
 
 Headless trading algorithm core for YM intraday data.
 
@@ -225,31 +225,24 @@ def _build_signals_frame(
     sell_signals: Dict[pd.Timestamp, float],
     trading_halted: bool,
     halt_time,
-    liquidation_timestamps: Optional[set] = None,
 ) -> pd.DataFrame:
     """Construct a per-minute DataFrame with signals and cumulative P/L."""
 
     df = data.copy()
-    liq_ts = liquidation_timestamps or set()
 
     df["signal"] = ""
     df["buy_price"] = pd.NA
     df["sell_price"] = pd.NA
-    df["is_liquidation"] = False
 
     for ts, price in buy_signals.items():
         if ts in df.index:
             df.at[ts, "signal"] = "BUY"
             df.at[ts, "buy_price"] = float(price)
-            if ts in liq_ts:
-                df.at[ts, "is_liquidation"] = True
 
     for ts, price in sell_signals.items():
         if ts in df.index:
             df.at[ts, "signal"] = "SELL"
             df.at[ts, "sell_price"] = float(price)
-            if ts in liq_ts:
-                df.at[ts, "is_liquidation"] = True
 
     position = "flat"
     entry_price: Optional[float] = None
@@ -267,31 +260,20 @@ def _build_signals_frame(
 
         is_buy = ts in buy_signals
         is_sell = ts in sell_signals
-        is_liq = ts in liq_ts
 
         if is_buy:
             buy_price = float(buy_signals[ts])
             if position == "short" and entry_price is not None:
                 cumulative_realized_pl += entry_price - buy_price
-            if is_liq:
-                # Liquidation: close short, go flat (do not open long).
-                position = "flat"
-                entry_price = None
-            else:
-                position = "long"
-                entry_price = buy_price
+            position = "long"
+            entry_price = buy_price
 
         if is_sell:
             sell_price = float(sell_signals[ts])
             if position == "long" and entry_price is not None:
                 cumulative_realized_pl += sell_price - entry_price
-            if is_liq:
-                # Liquidation: close long, go flat (do not open short).
-                position = "flat"
-                entry_price = None
-            else:
-                position = "short"
-                entry_price = sell_price
+            position = "short"
+            entry_price = sell_price
 
         current_close = float(df.loc[ts, "Close"])
         unrealized = 0.0
@@ -395,7 +377,6 @@ def run_trading_algo(
 
     buy_signals: Dict[pd.Timestamp, float] = {}
     sell_signals: Dict[pd.Timestamp, float] = {}
-    liquidation_timestamps: set = set()
 
     # Per-minute geometry that will be attached to the result so the
     # interactive plotter only has to *render* what the algo computed.
@@ -437,37 +418,8 @@ def run_trading_algo(
             prev_purple = rm.purple_ray.get_price_at_time(prev_time, prev_purple_slope)
             prev_blue = rm.blue_ray.get_price_at_time(prev_time, prev_blue_slope)
 
-            # Current-bar orange/yellow prices used for the 50-point proximity check.
-            curr_orange = rm.orange_ray.get_price_at_time(time, prev_orange_slope)
-            curr_yellow = rm.yellow_ray.get_price_at_time(time, prev_yellow_slope)
-
-            # Liquidation: if already in a trade and blue or purple is crossed
-            # against the trade direction, close the position flat immediately.
-            # Long  → liquidate on a downward cross of blue or purple.
-            # Short → liquidate on an upward  cross of blue or purple.
-            liquidated_this_bar = False
-            if temp_position != "flat":
-                if temp_position == "long":
-                    blue_crossed   = prev_blue   is not None and prev_close >= prev_blue   and current_close < prev_blue
-                    purple_crossed = prev_purple  is not None and prev_close >= prev_purple  and current_close < prev_purple
-                else:  # short
-                    blue_crossed   = prev_blue   is not None and prev_close <= prev_blue   and current_close > prev_blue
-                    purple_crossed = prev_purple  is not None and prev_close <= prev_purple  and current_close > prev_purple
-                if blue_crossed or purple_crossed:
-                    if temp_position == "long" and time not in sell_signals:
-                        sell_signals[time] = current_close
-                        liquidation_timestamps.add(time)
-                    elif temp_position == "short" and time not in buy_signals:
-                        buy_signals[time] = current_close
-                        liquidation_timestamps.add(time)
-                    temp_position = "flat"
-                    temp_entry_price = None
-                    liquidated_this_bar = True
-
-            # BUY signals - can trigger from flat or short (position reversal).
-            # Purple crosses are suppressed when close is within 50 pts of orange or yellow;
-            # in that case the orange cross acts as the entry trigger instead.
-            if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
+            # BUY signals - can trigger from flat or short (position reversal)
+            if temp_position != "long" and time not in buy_signals:
                 buy_triggered = False
 
                 if prev_close is not None and prev_orange is not None:
@@ -478,22 +430,15 @@ def run_trading_algo(
                     angle_slope = prev_purple_slope
                     purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if purple_angle < 45.0 and prev_close <= prev_purple and current_close > prev_purple:
-                        within_50 = (
-                            abs(current_close - curr_orange) <= 50
-                            or abs(current_close - curr_yellow) <= 50
-                        )
-                        if not within_50:
-                            buy_triggered = True
+                        buy_triggered = True
 
                 if buy_triggered:
                     buy_signals[time] = current_close
                     temp_position = "long"
                     temp_entry_price = current_close
 
-            # SELL signals - can trigger from flat or long (position reversal).
-            # Blue crosses are suppressed when close is within 50 pts of orange or yellow;
-            # in that case the yellow cross acts as the entry trigger instead.
-            if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
+            # SELL signals - can trigger from flat or long (position reversal)
+            if temp_position != "short" and time not in sell_signals:
                 sell_triggered = False
 
                 if prev_close is not None and prev_yellow is not None:
@@ -504,12 +449,7 @@ def run_trading_algo(
                     angle_slope = prev_blue_slope
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if blue_angle < 45.0 and prev_close >= prev_blue and current_close < prev_blue:
-                        within_50 = (
-                            abs(current_close - curr_orange) <= 50
-                            or abs(current_close - curr_yellow) <= 50
-                        )
-                        if not within_50:
-                            sell_triggered = True
+                        sell_triggered = True
 
                 if sell_triggered:
                     sell_signals[time] = current_close
@@ -579,7 +519,7 @@ def run_trading_algo(
 
     # Build and return enriched per-minute frame and attach all
     # per-bar geometry so plotting is a pure visualization step.
-    result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
+    result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time)
 
     result["orange_ray"] = orange_prices
     result["yellow_ray"] = yellow_prices

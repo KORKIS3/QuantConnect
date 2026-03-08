@@ -1,4 +1,4 @@
-"""RunAllDays
+﻿"""RunAllDays
 
 Entry script to run the YM trading workflow for all days in a folder.
 
@@ -114,19 +114,7 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
                     position = "long"
                     entry_price = price
                     entry_time = ts
-            elif typ == "buy_flat":
-                # Liquidation: close short position, go flat (do not open long).
-                if position == "short" and entry_price is not None:
-                    pl = entry_price - price
-                    cumulative_realized_pl += pl
-                    trades.append({"entry_time": entry_time, "exit_time": ts, "pl": pl})
-                    if pl >= 100 and liquidation_p_l is None:
-                        liquidation_p_l = cumulative_realized_pl
-                        liquidation_trade_pl = float(pl)
-                position = "flat"
-                entry_price = None
-                entry_time = None
-            elif typ == "sell":
+            else:  # sell
                 if position == "flat":
                     position = "short"
                     entry_price = price
@@ -141,18 +129,6 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
                     position = "short"
                     entry_price = price
                     entry_time = ts
-            elif typ == "sell_flat":
-                # Liquidation: close long position, go flat (do not open short).
-                if position == "long" and entry_price is not None:
-                    pl = price - entry_price
-                    cumulative_realized_pl += pl
-                    trades.append({"entry_time": entry_time, "exit_time": ts, "pl": pl})
-                    if pl >= 100 and liquidation_p_l is None:
-                        liquidation_p_l = cumulative_realized_pl
-                        liquidation_trade_pl = float(pl)
-                position = "flat"
-                entry_price = None
-                entry_time = None
 
         # compute current total P/L (realized + unrealized)
         try:

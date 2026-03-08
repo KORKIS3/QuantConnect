@@ -1,4 +1,4 @@
-"""RunAllDays
+﻿"""RunAllDays
 
 Entry script to run the YM trading workflow for all days in a folder.
 
@@ -53,21 +53,20 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
     events = []
     for ts, row in df.iterrows():
         sig = str(row.get("signal", "")).strip().upper()
-        is_liq = bool(row.get("is_liquidation", False))
         if sig == "BUY":
             price = row.get("buy_price")
             try:
                 price_f = float(price) if price is not None and price == price else float(row["Close"])
             except Exception:
                 price_f = float(row["Close"])
-            events.append((ts, "buy_flat" if is_liq else "buy", price_f))
+            events.append((ts, "buy", price_f))
         elif sig == "SELL":
             price = row.get("sell_price")
             try:
                 price_f = float(price) if price is not None and price == price else float(row["Close"])
             except Exception:
                 price_f = float(row["Close"])
-            events.append((ts, "sell_flat" if is_liq else "sell", price_f))
+            events.append((ts, "sell", price_f))
 
     events.sort(key=lambda x: x[0])
 
@@ -114,19 +113,7 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
                     position = "long"
                     entry_price = price
                     entry_time = ts
-            elif typ == "buy_flat":
-                # Liquidation: close short position, go flat (do not open long).
-                if position == "short" and entry_price is not None:
-                    pl = entry_price - price
-                    cumulative_realized_pl += pl
-                    trades.append({"entry_time": entry_time, "exit_time": ts, "pl": pl})
-                    if pl >= 100 and liquidation_p_l is None:
-                        liquidation_p_l = cumulative_realized_pl
-                        liquidation_trade_pl = float(pl)
-                position = "flat"
-                entry_price = None
-                entry_time = None
-            elif typ == "sell":
+            else:  # sell
                 if position == "flat":
                     position = "short"
                     entry_price = price
@@ -141,18 +128,6 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
                     position = "short"
                     entry_price = price
                     entry_time = ts
-            elif typ == "sell_flat":
-                # Liquidation: close long position, go flat (do not open short).
-                if position == "long" and entry_price is not None:
-                    pl = price - entry_price
-                    cumulative_realized_pl += pl
-                    trades.append({"entry_time": entry_time, "exit_time": ts, "pl": pl})
-                    if pl >= 100 and liquidation_p_l is None:
-                        liquidation_p_l = cumulative_realized_pl
-                        liquidation_trade_pl = float(pl)
-                position = "flat"
-                entry_price = None
-                entry_time = None
 
         # compute current total P/L (realized + unrealized)
         try:

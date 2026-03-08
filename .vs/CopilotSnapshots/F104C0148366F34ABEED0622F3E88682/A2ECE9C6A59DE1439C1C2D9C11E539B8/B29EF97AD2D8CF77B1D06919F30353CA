@@ -1,4 +1,4 @@
-"""
+﻿"""
 YM Futures Trading Analysis - Plotting Module
 Contains all plotting and visualization classes
 """
@@ -573,18 +573,17 @@ class ChartPlotter:
                 curr_orange_price = self.ray_manager.orange_ray.get_price_at_time(time, orange_slope)
                 curr_yellow_price = self.ray_manager.yellow_ray.get_price_at_time(time, yellow_slope)
 
-                # Liquidation: close the position if price crosses blue or purple
-                # against the trade direction.
-                # Long  → liquidate on a downward cross of blue or purple.
-                # Short → liquidate on an upward  cross of blue or purple.
+                # Liquidation: if in a trade and blue or purple is crossed, close flat.
                 liquidated_this_bar = False
                 if temp_position != 'flat':
-                    if temp_position == 'long':
-                        blue_crossed   = prev_blue   is not None and prev_close >= prev_blue   and row['Close'] < prev_blue
-                        purple_crossed = prev_purple  is not None and prev_close >= prev_purple  and row['Close'] < prev_purple
-                    else:  # short
-                        blue_crossed   = prev_blue   is not None and prev_close <= prev_blue   and row['Close'] > prev_blue
-                        purple_crossed = prev_purple  is not None and prev_close <= prev_purple  and row['Close'] > prev_purple
+                    blue_crossed = prev_blue is not None and (
+                        (prev_close >= prev_blue and row['Close'] < prev_blue)
+                        or (prev_close <= prev_blue and row['Close'] > prev_blue)
+                    )
+                    purple_crossed = prev_purple is not None and (
+                        (prev_close <= prev_purple and row['Close'] > prev_purple)
+                        or (prev_close >= prev_purple and row['Close'] < prev_purple)
+                    )
                     if blue_crossed or purple_crossed:
                         if temp_position == 'long' and time not in self.state.detected_sell_signals:
                             self.state.detected_sell_signals[time] = row['Close']
@@ -884,18 +883,17 @@ class ChartPlotter:
             print(f"Already in detected_buy_signals? {time in self.state.detected_buy_signals}")
             print(f"==================================\n")
 
-        # Liquidation: close the position if price crosses blue or purple
-        # against the trade direction.
-        # Long  → liquidate on a downward cross of blue or purple.
-        # Short → liquidate on an upward  cross of blue or purple.
+        # Liquidation: if already in a trade and blue or purple is crossed, close flat.
         liquidated_incremental = False
         if self.state.position != 'flat':
-            if self.state.position == 'long':
-                blue_crossed   = prev_close >= prev_blue   and current_close < prev_blue
-                purple_crossed = prev_close >= prev_purple  and current_close < prev_purple
-            else:  # short
-                blue_crossed   = prev_close <= prev_blue   and current_close > prev_blue
-                purple_crossed = prev_close <= prev_purple  and current_close > prev_purple
+            blue_crossed = (
+                (prev_close >= prev_blue and current_close < prev_blue)
+                or (prev_close <= prev_blue and current_close > prev_blue)
+            )
+            purple_crossed = (
+                (prev_close <= prev_purple and current_close > prev_purple)
+                or (prev_close >= prev_purple and current_close < prev_purple)
+            )
             if blue_crossed or purple_crossed:
                 if self.state.position == 'long' and time not in self.state.detected_sell_signals:
                     self.state.detected_sell_signals[time] = current_close

@@ -1,0 +1,27 @@
+﻿import pandas as pd, pytz
+from RunFullDataSet import _load_csv_as_df
+from TradingAlgo import run_trading_algo, RayManager, Ray, _display_angle_from_slope
+import matplotlib.dates as mdates
+import numpy as np
+
+est = pytz.timezone('US/Eastern')
+df = _load_csv_as_df(r'C:\Users\Administrator\Desktop\CBOT_MINI_YM1_ByDate\CBOT_MINI_YM1_2026-02-19.csv')
+if df.index.tz is None:
+    df.index = pd.to_datetime(df.index).tz_localize(est)
+else:
+    df.index = pd.to_datetime(df.index).tz_convert(est)
+
+t0 = pd.Timestamp('2026-02-19 09:30:00', tz=est)
+t1 = pd.Timestamp('2026-02-19 10:00:00', tz=est)
+df = df[(df.index >= t0) & (df.index <= t1)]
+
+print("=== RAW PRICE DATA ===")
+print(df[['Open','High','Low','Close']].to_string())
+
+print("\n=== RUNNING ALGO ===")
+result = run_trading_algo(df, '2026-02-19', '09:30', '10:00')
+
+print("\n=== SIGNALS & RAY VALUES ===")
+cols = ['Close','signal','is_liquidation','buy_price','sell_price',
+        'orange_ray','yellow_ray','purple_ray','blue_ray','position','pl']
+print(result[cols].to_string())

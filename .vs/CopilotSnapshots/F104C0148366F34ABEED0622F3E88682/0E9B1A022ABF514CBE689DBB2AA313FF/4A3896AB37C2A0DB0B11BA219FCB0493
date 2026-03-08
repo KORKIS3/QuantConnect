@@ -1,4 +1,4 @@
-"""
+﻿"""
 YM Futures Trading Analysis - Plotting Module
 Contains all plotting and visualization classes
 """
@@ -64,7 +64,6 @@ class TradingState:
         #creates dictionaries 
         self.detected_sell_signals = {}
         self.detected_buy_signals = {}
-        self.detected_liquidation_signals = set()  # timestamps of liquidation-to-flat signals
         self.position = 'flat'
         self.entry_price = None
         self.entry_time = None
@@ -338,7 +337,6 @@ class ChartPlotter:
 
         for ts, row in self.data.iterrows():
             sig = row.get("signal")
-            is_liq = bool(row.get("is_liquidation", False))
             if sig == "BUY":
                 price = row.get("buy_price")
                 if pd.isna(price):
@@ -346,8 +344,6 @@ class ChartPlotter:
                 if pd.isna(price):
                     continue
                 self.state.detected_buy_signals[ts] = float(price)
-                if is_liq:
-                    self.state.detected_liquidation_signals.add(ts)
             elif sig == "SELL":
                 price = row.get("sell_price")
                 if pd.isna(price):
@@ -355,8 +351,6 @@ class ChartPlotter:
                 if pd.isna(price):
                     continue
                 self.state.detected_sell_signals[ts] = float(price)
-                if is_liq:
-                    self.state.detected_liquidation_signals.add(ts)
 
         if self.state.detected_buy_signals or self.state.detected_sell_signals:
             self.state.all_signals_detected = True
@@ -486,12 +480,10 @@ class ChartPlotter:
         
         print(f"\n📏 Fixed Slopes: Orange={orange_slope:.6f}, Yellow={yellow_slope:.6f}")
         
-        liquidation_times: set = set()
-
         temp_position = 'flat'
         temp_entry_price = None
         temp_entry_time = None
-
+        
         print(f"\n🔎 Scanning for signals...")
         
         for i, (time, row) in enumerate(full_data.iterrows()):
@@ -569,97 +561,55 @@ class ChartPlotter:
                         print(f"   BOTH? {sell_cond1 and sell_cond2}")
             
             if time >= self.cutoff_time and i > 0 and not self.state.trading_halted:
-                # Current-bar orange/yellow prices for 50-point proximity check.
-                curr_orange_price = self.ray_manager.orange_ray.get_price_at_time(time, orange_slope)
-                curr_yellow_price = self.ray_manager.yellow_ray.get_price_at_time(time, yellow_slope)
-
-                # Liquidation: close the position if price crosses blue or purple
-                # against the trade direction.
-                # Long  → liquidate on a downward cross of blue or purple.
-                # Short → liquidate on an upward  cross of blue or purple.
-                liquidated_this_bar = False
-                if temp_position != 'flat':
-                    if temp_position == 'long':
-                        blue_crossed   = prev_blue   is not None and prev_close >= prev_blue   and row['Close'] < prev_blue
-                        purple_crossed = prev_purple  is not None and prev_close >= prev_purple  and row['Close'] < prev_purple
-                    else:  # short
-                        blue_crossed   = prev_blue   is not None and prev_close <= prev_blue   and row['Close'] > prev_blue
-                        purple_crossed = prev_purple  is not None and prev_close <= prev_purple  and row['Close'] > prev_purple
-                    if blue_crossed or purple_crossed:
-                        if temp_position == 'long' and time not in self.state.detected_sell_signals:
-                            self.state.detected_sell_signals[time] = row['Close']
-                            liquidation_times.add(time)
-                            print(f"  🟥 LIQUIDATE long @ {time.strftime('%H:%M')}: {row['Close']:.0f}")
-                        elif temp_position == 'short' and time not in self.state.detected_buy_signals:
-                            self.state.detected_buy_signals[time] = row['Close']
-                            liquidation_times.add(time)
-                            print(f"  🟥 LIQUIDATE short @ {time.strftime('%H:%M')}: {row['Close']:.0f}")
-                        temp_position = 'flat'
-                        temp_entry_price = None
-                        temp_entry_time = None
-                        liquidated_this_bar = True
-
                 # BUY signals - Can trigger from flat or short (position reversal)
-                if temp_position != 'long' and time not in self.state.detected_buy_signals and not liquidated_this_bar:
+                if temp_position != 'long' and time not in self.state.detected_buy_signals:
                     buy_triggered = False
-
+                    
                     # BUY: Previous close was at/below previous orange, current close is above previous orange
                     if prev_close is not None and prev_orange is not None:
                         if prev_close <= prev_orange and row['Close'] > prev_orange:
                             print(f"  🟢 BUY (Orange) @ {time.strftime('%H:%M')}: {row['Close']:.0f} > prev_orange {prev_orange:.0f}")
                             buy_triggered = True
-
-                    # BUY: Purple cross — suppressed if close within 50 pts of orange or yellow.
+                    
+                    # BUY: Previous close was at/below previous purple, current close is above previous purple (strict crossover)
                     if not buy_triggered and prev_close is not None and prev_purple is not None:
                         angle_slope = prev_purple_slope
                         purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
                         if purple_angle >= 45:
                             print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° >= 45°")
                         elif prev_close <= prev_purple and row['Close'] > prev_purple:
-                            within_50 = (
-                                abs(row['Close'] - curr_orange_price) <= 50
-                                or abs(row['Close'] - curr_yellow_price) <= 50
-                            )
-                            if within_50:
-                                print(f"  ⏳ BUY (Purple) SUPPRESSED @ {time.strftime('%H:%M')}: close {row['Close']:.0f} within 50pts of orange/yellow — waiting for orange cross")
-                            else:
-                                print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > prev_purple {prev_purple:.0f}")
-                                buy_triggered = True
-
+                            print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > prev_purple {prev_purple:.0f}")
+                            buy_triggered = True
+                    
                     if buy_triggered:
                         self.state.detected_buy_signals[time] = row['Close']
                         temp_position = 'long'
                         temp_entry_price = row['Close']
                         temp_entry_time = time
                         print(f"      ✅ Position: {temp_position}")
-
+                
                 # SELL signals - Can trigger from flat or long (position reversal)
-                if temp_position != 'short' and time not in self.state.detected_sell_signals and not liquidated_this_bar:
+                if temp_position != 'short' and time not in self.state.detected_sell_signals:
                     sell_triggered = False
-
+                    
                     # SELL: Previous close was at/above previous yellow, current close is below previous yellow
                     if prev_close is not None and prev_yellow is not None:
                         if prev_close >= prev_yellow and row['Close'] < prev_yellow:
                             print(f"  🔴 SELL (Yellow) @ {time.strftime('%H:%M')}: {row['Close']:.0f} < prev_yellow {prev_yellow:.0f}")
+                            print(f"      Current close: {row['Close']:.2f}, Previous minute's yellow ray: {prev_yellow:.2f}")
                             sell_triggered = True
-
-                    # SELL: Blue cross — suppressed if close within 50 pts of orange or yellow.
+                    
+                    # SELL: Previous close was at/above previous blue, current close is below previous-minute blue
                     if not sell_triggered and prev_close is not None and prev_blue is not None:
                         angle_slope = prev_blue_slope
                         blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
                         if blue_angle >= 45:
                             print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° >= 45°")
                         elif prev_close >= prev_blue and row['Close'] < prev_blue:
-                            within_50 = (
-                                abs(row['Close'] - curr_orange_price) <= 50
-                                or abs(row['Close'] - curr_yellow_price) <= 50
-                            )
-                            if within_50:
-                                print(f"  ⏳ SELL (Blue) SUPPRESSED @ {time.strftime('%H:%M')}: close {row['Close']:.0f} within 50pts of orange/yellow — waiting for yellow cross")
-                            else:
-                                print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < prev_blue {prev_blue:.0f}")
-                                sell_triggered = True
-
+                            print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < prev_blue {prev_blue:.0f}")
+                            print(f"      Current close: {row['Close']:.2f}, Previous minute's blue ray: {prev_blue:.2f}")
+                            sell_triggered = True
+                    
                     if sell_triggered:
                         self.state.detected_sell_signals[time] = row['Close']
                         temp_position = 'short'
@@ -711,11 +661,6 @@ class ChartPlotter:
         print(f"   SELL signals: {len(self.state.detected_sell_signals)}")
         for t, p in self.state.detected_sell_signals.items():
             print(f"      - {t.strftime('%H:%M:%S')}: {p:.2f}")
-        print(f"   LIQUIDATION signals: {len(liquidation_times)}")
-        for t in liquidation_times:
-            print(f"      - {t.strftime('%H:%M:%S')}")
-
-        self.state.detected_liquidation_signals = liquidation_times
         
         if len(self.state.detected_buy_signals) == 0 and len(self.state.detected_sell_signals) == 0:
             print(f"\n⚠️  WARNING: No signals detected!")
@@ -844,25 +789,13 @@ class ChartPlotter:
         )
 
         if last_buy_time and (last_sell_time is None or last_buy_time > last_sell_time):
-            last_signal_time = last_buy_time
-            if last_signal_time in self.state.detected_liquidation_signals:
-                self.state.position = 'flat'
-                self.state.entry_price = None
-                self.state.entry_time = None
-            else:
-                self.state.position = 'long'
-                self.state.entry_price = self.state.detected_buy_signals[last_buy_time]
-                self.state.entry_time = last_buy_time
+            self.state.position = 'long'
+            self.state.entry_price = self.state.detected_buy_signals[last_buy_time]
+            self.state.entry_time = last_buy_time
         elif last_sell_time and (last_buy_time is None or last_sell_time > last_buy_time):
-            last_signal_time = last_sell_time
-            if last_signal_time in self.state.detected_liquidation_signals:
-                self.state.position = 'flat'
-                self.state.entry_price = None
-                self.state.entry_time = None
-            else:
-                self.state.position = 'short'
-                self.state.entry_price = self.state.detected_sell_signals[last_sell_time]
-                self.state.entry_time = last_sell_time
+            self.state.position = 'short'
+            self.state.entry_price = self.state.detected_sell_signals[last_sell_time]
+            self.state.entry_time = last_sell_time
         else:
             self.state.position = 'flat'
             self.state.entry_price = None
@@ -884,34 +817,8 @@ class ChartPlotter:
             print(f"Already in detected_buy_signals? {time in self.state.detected_buy_signals}")
             print(f"==================================\n")
 
-        # Liquidation: close the position if price crosses blue or purple
-        # against the trade direction.
-        # Long  → liquidate on a downward cross of blue or purple.
-        # Short → liquidate on an upward  cross of blue or purple.
-        liquidated_incremental = False
-        if self.state.position != 'flat':
-            if self.state.position == 'long':
-                blue_crossed   = prev_close >= prev_blue   and current_close < prev_blue
-                purple_crossed = prev_close >= prev_purple  and current_close < prev_purple
-            else:  # short
-                blue_crossed   = prev_close <= prev_blue   and current_close > prev_blue
-                purple_crossed = prev_close <= prev_purple  and current_close > prev_purple
-            if blue_crossed or purple_crossed:
-                if self.state.position == 'long' and time not in self.state.detected_sell_signals:
-                    self.state.detected_sell_signals[time] = current_close
-                    self.state.detected_liquidation_signals.add(time)
-                    print(f"  🟥 LIQUIDATE long @ {time.strftime('%H:%M')}: {current_close:.0f}")
-                elif self.state.position == 'short' and time not in self.state.detected_buy_signals:
-                    self.state.detected_buy_signals[time] = current_close
-                    self.state.detected_liquidation_signals.add(time)
-                    print(f"  🟥 LIQUIDATE short @ {time.strftime('%H:%M')}: {current_close:.0f}")
-                self.state.position = 'flat'
-                self.state.entry_price = None
-                self.state.entry_time = None
-                liquidated_incremental = True
-
         # BUY signals
-        if self.state.position != 'long' and time not in self.state.detected_buy_signals and not liquidated_incremental:
+        if self.state.position != 'long' and time not in self.state.detected_buy_signals:
             buy_triggered = False
 
             if prev_close <= prev_orange and current_close > prev_orange:
@@ -923,14 +830,7 @@ class ChartPlotter:
                 if purple_angle >= 45:
                     print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° >= 45°")
                 else:
-                    within_50 = (
-                        abs(current_close - curr_orange) <= 50
-                        or abs(current_close - curr_yellow) <= 50
-                    )
-                    if within_50:
-                        print(f"  ⏳ BUY (Purple) SUPPRESSED @ {time.strftime('%H:%M')}: within 50pts of orange/yellow")
-                    else:
-                        buy_triggered = True
+                    buy_triggered = True
 
             if buy_triggered:
                 self.state.detected_buy_signals[time] = current_close
@@ -939,7 +839,7 @@ class ChartPlotter:
                 self.state.entry_time = time
 
         # SELL signals
-        if self.state.position != 'short' and time not in self.state.detected_sell_signals and not liquidated_incremental:
+        if self.state.position != 'short' and time not in self.state.detected_sell_signals:
             sell_triggered = False
 
             if prev_close >= prev_yellow and current_close < prev_yellow:
@@ -952,14 +852,7 @@ class ChartPlotter:
                     if blue_angle >= 45:
                         print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° >= 45°")
                     else:
-                        within_50 = (
-                            abs(current_close - curr_orange) <= 50
-                            or abs(current_close - curr_yellow) <= 50
-                        )
-                        if within_50:
-                            print(f"  ⏳ SELL (Blue) SUPPRESSED @ {time.strftime('%H:%M')}: within 50pts of orange/yellow")
-                        else:
-                            sell_triggered = True
+                        sell_triggered = True
 
             if sell_triggered:
                 self.state.detected_sell_signals[time] = current_close
