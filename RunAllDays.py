@@ -433,4 +433,71 @@ def run_all_days(
 
 
 if __name__ == "__main__":
-    run_all_days()
+
+    time_periods = [
+        ("09:30", "10:00", "CBOT_MINI_YM1_ByDate_930_1000"),
+        ("10:00", "10:30", "CBOT_MINI_YM1_ByDate_1000_1030"),
+        ("10:30", "11:00", "CBOT_MINI_YM1_ByDate_1030_1100"),
+        ("11:00", "11:30", "CBOT_MINI_YM1_ByDate_1100_1130"),
+    ]
+
+    desktop_root = os.path.join(os.path.expanduser("~"), "Desktop")
+    data_root = os.path.join(desktop_root, "data")
+
+    for start_time, end_time, folder_name in time_periods:
+        period_label = f"{start_time.replace(':','')}-{end_time.replace(':','')}"
+        image_root = os.path.join(desktop_root, "TradingPics", period_label)
+        tracking_root = os.path.join(desktop_root, "TradingTracking", period_label)
+        os.makedirs(image_root, exist_ok=True)
+        os.makedirs(tracking_root, exist_ok=True)
+
+        csv_root = os.path.join(data_root, folder_name)
+        results = []
+        pattern = os.path.join(csv_root, "*.csv")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            print(f"RunAllDays: no CSV files found in {csv_root}")
+            continue
+
+        for fp in files:
+            fname = os.path.basename(fp)
+            target_date = _extract_date_from_filename(fname)
+            if not target_date:
+                print(f"RunAllDays: skipping {fname} (no parsable date)")
+                continue
+
+            print("\n" + "=" * 60)
+            print(f"RunAllDays: processing {fname} (date={target_date}) [{start_time}-{end_time}]")
+            print("=" * 60)
+
+            try:
+                algo_df = run_single_day(
+                    target_date,
+                    start_time,
+                    end_time,
+                    csv_root=csv_root,
+                    show_plot=False,
+                    image_root=image_root,
+                    tracking_root=tracking_root,
+                )
+                stats = _compute_trade_stats_from_df(algo_df)
+                results.append({
+                    "FileName": fname,
+                    "Date": target_date,
+                    "final_P/L": stats["final_pl"],
+                    "winning_trades": stats["winning_trades"],
+                    "losing_trades": stats["losing_trades"],
+                    "win_pct": stats["win_pct"],
+                    "Captured 100 points": stats.get("captured_100", "No"),
+                    "p/l high": stats.get("pl_high", 0.0),
+                    "p/l liquidation trade": stats.get("liquidation_trade_pl", None),
+                })
+            except Exception as exc:
+                print(f"RunAllDays: error processing {fname}: {exc}")
+
+        if results:
+            # Write results CSV to the period folder
+            df_res = pd.DataFrame(results)
+            csv_simple = os.path.join(image_root, "RunAllDayscsv.csv")
+            df_res.to_csv(csv_simple, index=False)
+            print(f"Simple CSV summary written to: {csv_simple}")

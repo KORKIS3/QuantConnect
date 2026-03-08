@@ -1,0 +1,13 @@
+﻿"""RunAllDays
+
+Entry script to run the YM trading workflow for all days in a folder.
+
+NOTE: This is a skeleton created as part of a re-org. The actual
+trading / plotting logic will live in `ReOrgMain.py`, `TradingAlgo.py`,
+and `Plotter.py`.
+"""
+
+if __name__ == "__main__":
+    # TODO: implement folder scan and per-day calls into ReOrgMain.
+    # This placeholder exists so the file is present and importable.
+    print("RunAllDays.py skeleton – implement folder loop here.")

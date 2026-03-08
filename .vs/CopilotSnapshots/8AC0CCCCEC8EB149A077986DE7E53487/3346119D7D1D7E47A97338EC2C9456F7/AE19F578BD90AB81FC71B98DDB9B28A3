@@ -1,0 +1,24 @@
+﻿"""TradingAlgo
+
+Trading algorithm core.
+
+In the target design this module will:
+- Take minute-by-minute YM data for a single day.
+- Run all ray / signal detection logic minute-by-minute.
+- Store the evolving state in a pandas DataFrame.
+
+Currently this is only a skeleton. The existing signal logic is
+embedded in `plotFigure.ChartPlotter` and will be migrated here.
+"""
+
+import pandas as pd
+
+
+def run_trading_algo(data: pd.DataFrame) -> pd.DataFrame:
+    """Placeholder trading algorithm.
+
+    For now this simply returns a copy of the input data. In the full
+    refactor, this function will compute signals and additional
+    per-minute state columns.
+    """
+    return data.copy()

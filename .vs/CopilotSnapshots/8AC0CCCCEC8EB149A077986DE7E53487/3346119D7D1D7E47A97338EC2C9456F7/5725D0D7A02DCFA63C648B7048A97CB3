@@ -1,0 +1,14 @@
+﻿"""ReOrgMain
+
+Orchestrates loading data for a single day, running the trading
+algorithm minute-by-minute, and then plotting results.
+
+NOTE: This is a skeleton created as part of a re-org. The actual
+business logic still lives in existing modules and will be migrated
+here gradually.
+"""
+
+if __name__ == "__main__":
+    # TODO: accept a target date (e.g. via argparse), load that day's
+    # data, feed it to TradingAlgo, then call Plotter.
+    print("ReOrgMain.py skeleton – implement per-day orchestration here.")

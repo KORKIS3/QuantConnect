@@ -1,0 +1,24 @@
+﻿"""Plotter
+
+Interactive plotting of YM trading results.
+
+In the target design this module will:
+- Accept a DataFrame produced by `TradingAlgo` (prices + signals).
+- Build the same interactive matplotlib graph you have today,
+  including navigation buttons and snapshots.
+
+Currently this is a skeleton; the full `ChartPlotter` implementation
+from `plotFigure.py` still drives the UI and will be migrated here.
+"""
+
+import pandas as pd
+
+
+def plot_results(data: pd.DataFrame, target_date: str, start_time: str, end_time: str) -> None:
+    """Placeholder plotter.
+
+    For now this is a stub so the file exists and can be wired up
+    gradually. The full interactive implementation will be moved from
+    `plotFigure.ChartPlotter`.
+    """
+    print(f"Plotter.plot_results stub – {target_date} {start_time}-{end_time}, rows={len(data)}")

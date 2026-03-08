@@ -1,0 +1,32 @@
+﻿"""Plotter
+
+Interactive plotting of YM trading results.
+
+This module is a thin wrapper around the existing interactive plotting
+logic in `plotFigure.ChartPlotter`. It accepts the per-minute DataFrame
+produced by `TradingAlgo.run_trading_algo` and renders the same chart
+you see today, including navigation buttons and snapshots.
+
+IMPORTANT: The underlying implementation remains in `plotFigure.py`;
+we import and reuse it instead of moving code.
+"""
+
+import pandas as pd
+
+from plotFigure import plot_intraday_data
+
+
+def plot_results(data: pd.DataFrame, target_date: str, start_time: str, end_time: str) -> None:
+    """Render the interactive graph for a single day.
+
+    This simply forwards to `plot_intraday_data`, which creates a
+    `ChartPlotter` and shows the UI. The `data` argument can be either
+    raw OHLC data or the enriched DataFrame returned from
+    `TradingAlgo.run_trading_algo`.
+    """
+
+    if data is None or data.empty:
+        print("Plotter.plot_results: no data to plot")
+        return
+
+    plot_intraday_data(data, target_date, start_time, end_time)

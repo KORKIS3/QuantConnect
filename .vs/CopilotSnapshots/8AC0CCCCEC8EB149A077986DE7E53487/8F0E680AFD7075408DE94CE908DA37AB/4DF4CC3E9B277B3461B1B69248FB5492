@@ -1,0 +1,111 @@
+﻿"""
+Load YM_1m_Jan26.txt and convert to properly formatted CSV
+Format: YYYYMMDD HHMMSS;Open;High;Low;Close;Volume
+"""
+import pandas as pd
+import pytz
+import os
+
+# Read the text file from desktop
+input_file = os.path.join(os.path.expanduser('~'), 'Desktop', 'YM_1m_Jan26.txt')
+output_csv = os.path.join(os.path.expanduser('~'), 'Desktop', 'YM_1m_Jan26_parsed.csv')
+
+print(f"Reading {input_file}...")
+
+# Read the file
+with open(input_file, 'r') as f:
+    lines = f.readlines()
+
+print(f"Total lines: {len(lines)}")
+
+# Parse each line
+data_rows = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    
+    # Split by semicolon
+    parts = line.split(';')
+    if len(parts) < 5:
+        continue
+    
+    # First part contains date and time separated by space
+    datetime_part = parts[0].strip()
+    date_time_split = datetime_part.split()
+    
+    if len(date_time_split) != 2:
+        continue
+    
+    date_str = date_time_split[0]  # YYYYMMDD
+    time_str = date_time_split[1]  # HHMMSS
+    
+    # Parse date (YYYYMMDD)
+    year = date_str[0:4]
+    month = date_str[4:6]
+    day = date_str[6:8]
+    
+    # Parse time (HHMMSS) - preserve leading zeros
+    hour = time_str[0:2].zfill(2)
+    minute = time_str[2:4].zfill(2)
+    second = time_str[4:6].zfill(2)
+    
+    # Create timestamp string
+    timestamp_str = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+    
+    # Parse OHLC values
+    try:
+        open_price = float(parts[1])
+        high_price = float(parts[2])
+        low_price = float(parts[3])
+        close_price = float(parts[4])
+        volume = int(parts[5]) if len(parts) > 5 else 0
+    except:
+        continue
+    
+    data_rows.append({
+        'Timestamp': timestamp_str,
+        'Open': open_price,
+        'High': high_price,
+        'Low': low_price,
+        'Close': close_price,
+        'Volume': volume
+    })
+
+print(f"Parsed {len(data_rows)} rows")
+
+# Create DataFrame
+df = pd.DataFrame(data_rows)
+
+# Convert timestamp to datetime
+df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S')
+
+# Convert to EST timezone
+est = pytz.timezone('US/Eastern')
+df['Timestamp'] = df['Timestamp'].dt.tz_localize(est, ambiguous='NaT', nonexistent='shift_forward')
+
+# Sort by timestamp
+df = df.sort_values('Timestamp')
+
+# Remove duplicates
+print(f"Before deduplication: {len(df)} rows")
+df = df.drop_duplicates(subset=['Timestamp'], keep='first')
+print(f"After deduplication: {len(df)} rows")
+
+# Save to CSV (keeping only High, Low, Close as per your preference)
+df_hlc = df[['Timestamp', 'High', 'Low', 'Close']].copy()
+df_hlc.to_csv(output_csv, index=False)
+
+print(f"\n✓ Saved to: {output_csv}")
+print(f"\nData range:")
+print(f"  Start: {df['Timestamp'].iloc[0]}")
+print(f"  End: {df['Timestamp'].iloc[-1]}")
+print(f"\nFirst 10 rows:")
+print(df_hlc.head(10))
+print(f"\nLast 10 rows:")
+print(df_hlc.tail(10))
+
+# Also save with all columns (including Open and Volume) for reference
+output_csv_full = os.path.join(os.path.expanduser('~'), 'Desktop', 'YM_1m_Jan26_full.csv')
+df.to_csv(output_csv_full, index=False)
+print(f"\n✓ Full data (with Open & Volume) saved to: {output_csv_full}")

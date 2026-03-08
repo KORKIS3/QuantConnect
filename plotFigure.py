@@ -99,8 +99,8 @@ class RayManager:
         # All rays now start from the first minute
         self.orange_ray = Ray(-2.5, current_data['High'].iloc[0], current_data.index[0], 'orange', 'Max Ray (-2.5°)')
         self.yellow_ray = Ray(2.5, current_data['Low'].iloc[0], current_data.index[0], 'yellow', 'Min Ray (+2.5°)')
-        self.purple_ray = Ray(-60, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-60°)')
-        self.blue_ray = Ray(60, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+60°)')
+        self.purple_ray = Ray(-45, current_data['High'].iloc[0], current_data.index[0], 'darkviolet', 'Max Ray (-45°)')
+        self.blue_ray = Ray(45, current_data['Low'].iloc[0], current_data.index[0], 'blue', 'Min Ray (+45°)')
         self.dark_purple_ray = None
         self.purple_intersections = 0
     
@@ -369,8 +369,8 @@ class ChartPlotter:
         
         self.lines['ray_orange'], = self.ax.plot([], [], 'orange', linewidth=2.5, label='Max Ray (-2.5°)', alpha=0.9)
         self.lines['ray_yellow'], = self.ax.plot([], [], 'yellow', linewidth=2.5, label='Min Ray (+2.5°)', alpha=0.9)
-        self.lines['ray_purple'], = self.ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-60°)', alpha=0.9)
-        self.lines['ray_blue'], = self.ax.plot([], [], color='blue', linewidth=2.5, label='Min Ray (+60°)', alpha=0.9)
+        self.lines['ray_purple'], = self.ax.plot([], [], color='darkviolet', linewidth=2.5, label='Max Ray (-45°)', alpha=0.9)
+        self.lines['ray_blue'], = self.ax.plot([], [], color='blue', linewidth=2.5, label='Min Ray (+45°)', alpha=0.9)
         self.lines['ray_dark_purple'], = self.ax.plot([], [], color='indigo', linewidth=2.5, label='Dark Purple Ray (-65°)', alpha=0.9)
         
         self.ax.set_ylabel('Price', fontsize=13, fontweight='bold')
@@ -468,8 +468,8 @@ class ChartPlotter:
         
         # Initialize minute-by-minute tracking for all rays
         # These will be updated minute-by-minute to match what's displayed on the graph
-        minute_purple_ray = Ray(-60, full_data['High'].iloc[0], full_data.index[0], 'darkviolet', 'Max Ray (-60°)')
-        minute_blue_ray = Ray(60, full_data['Low'].iloc[0], full_data.index[0], 'blue', 'Min Ray (+60°)')
+        minute_purple_ray = Ray(-45, full_data['High'].iloc[0], full_data.index[0], 'darkviolet', 'Max Ray (-45°)')
+        minute_blue_ray = Ray(45, full_data['Low'].iloc[0], full_data.index[0], 'blue', 'Min Ray (+45°)')
         
         print(f"\n📐 Starting minute-by-minute ray tracking:")
         print(f"   Purple (9:30): {minute_purple_ray.start_price:.2f} @ {minute_purple_ray.start_time.strftime('%H:%M')}")
@@ -575,8 +575,8 @@ class ChartPlotter:
                     if not buy_triggered and prev_close is not None and prev_purple is not None:
                         angle_slope = prev_purple_slope
                         purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
-                        if purple_angle > 65:
-                            print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° > 65°")
+                        if purple_angle >= 45:
+                            print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° >= 45°")
                         elif prev_close <= prev_purple and row['Close'] > prev_purple:
                             print(f"  🟢 BUY (Purple) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} <= prev_purple {prev_purple:.0f}, close {row['Close']:.0f} > prev_purple {prev_purple:.0f}")
                             buy_triggered = True
@@ -603,8 +603,8 @@ class ChartPlotter:
                     if not sell_triggered and prev_close is not None and prev_blue is not None:
                         angle_slope = prev_blue_slope
                         blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
-                        if blue_angle > 65:
-                            print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° > 65°")
+                        if blue_angle >= 45:
+                            print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° >= 45°")
                         elif prev_close >= prev_blue and row['Close'] < prev_blue:
                             print(f"  🔴 SELL (Blue) @ {time.strftime('%H:%M')}: prev_close {prev_close:.0f} >= prev_blue {prev_blue:.0f}, close {row['Close']:.0f} < prev_blue {prev_blue:.0f}")
                             print(f"      Current close: {row['Close']:.2f}, Previous minute's blue ray: {prev_blue:.2f}")
@@ -617,34 +617,34 @@ class ChartPlotter:
                         temp_entry_time = time
                         print(f"      ✅ Position: {temp_position}")
 
-                # Profit target liquidation
-                if not self.state.trading_halted and temp_position != 'flat' and temp_entry_price is not None:
-                    if temp_position == 'long':
-                        pl = row['Close'] - temp_entry_price
-                        if pl > 100:
-                            if time not in self.state.detected_sell_signals:
-                                self.state.detected_sell_signals[time] = row['Close']
-                            temp_position = 'flat'
-                            temp_entry_price = None
-                            temp_entry_time = None
-                            self.state.trading_halted = True
-                            self.state.halt_reason = 'profit_target'
-                            self.state.halt_time = time
-                            print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
-                            break
-                    else:  # short
-                        pl = temp_entry_price - row['Close']
-                        if pl > 100:
-                            if time not in self.state.detected_buy_signals:
-                                self.state.detected_buy_signals[time] = row['Close']
-                            temp_position = 'flat'
-                            temp_entry_price = None
-                            temp_entry_time = None
-                            self.state.trading_halted = True
-                            self.state.halt_reason = 'profit_target'
-                            self.state.halt_time = time
-                            print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
-                            break
+                # Profit target liquidation (disabled)
+                # if not self.state.trading_halted and temp_position != 'flat' and temp_entry_price is not None:
+                #     if temp_position == 'long':
+                #         pl = row['Close'] - temp_entry_price
+                #         if pl > 100:
+                #             if time not in self.state.detected_sell_signals:
+                #                 self.state.detected_sell_signals[time] = row['Close']
+                #             temp_position = 'flat'
+                #             temp_entry_price = None
+                #             temp_entry_time = None
+                #             self.state.trading_halted = True
+                #             self.state.halt_reason = 'profit_target'
+                #             self.state.halt_time = time
+                #             print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
+                #             break
+                #     else:  # short
+                #         pl = temp_entry_price - row['Close']
+                #         if pl > 100:
+                #             if time not in self.state.detected_buy_signals:
+                #                 self.state.detected_buy_signals[time] = row['Close']
+                #             temp_position = 'flat'
+                #             temp_entry_price = None
+                #             temp_entry_time = None
+                #             self.state.trading_halted = True
+                #             self.state.halt_reason = 'profit_target'
+                #             self.state.halt_time = time
+                #             print(f"  🛑 LIQUIDATE (P/L > 100) @ {time.strftime('%H:%M')}: close {row['Close']:.0f}")
+                #             break
             
             # NOW update purple and blue rays for the NEXT iteration (after storing prev values)
             current_data_so_far = full_data.iloc[:i + 1]
@@ -827,8 +827,8 @@ class ChartPlotter:
             if not buy_triggered and prev_close <= prev_purple and current_close > prev_purple:
                 angle_slope = self._prev_frame_purple_slope if self._prev_frame_purple_slope is not None else purple_slope
                 purple_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
-                if purple_angle > 65:
-                    print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° > 65°")
+                if purple_angle >= 45:
+                    print(f"  ⛔ BUY (Purple) BLOCKED @ {time.strftime('%H:%M')}: purple angle {purple_angle:.1f}° >= 45°")
                 else:
                     buy_triggered = True
 
@@ -849,8 +849,8 @@ class ChartPlotter:
                 if prev_close >= prev_blue and current_close < prev_blue:
                     angle_slope = self._prev_frame_blue_slope if self._prev_frame_blue_slope is not None else blue_slope
                     blue_angle = self._ray_display_angle(angle_slope, x_per_inch, y_per_inch)
-                    if blue_angle > 65:
-                        print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° > 65°")
+                    if blue_angle >= 45:
+                        print(f"  ⛔ SELL (Blue) BLOCKED @ {time.strftime('%H:%M')}: blue angle {blue_angle:.1f}° >= 45°")
                     else:
                         sell_triggered = True
 
@@ -860,30 +860,30 @@ class ChartPlotter:
                 self.state.entry_price = current_close
                 self.state.entry_time = time
 
-        # Profit target liquidation (minute-by-minute)
-        if self.state.position != 'flat' and self.state.entry_price is not None:
-            if self.state.position == 'long':
-                pl = current_close - self.state.entry_price
-                if pl > 100:
-                    if time not in self.state.detected_sell_signals:
-                        self.state.detected_sell_signals[time] = current_close
-                    self.state.position = 'flat'
-                    self.state.entry_price = None
-                    self.state.entry_time = None
-                    self.state.trading_halted = True
-                    self.state.halt_reason = 'profit_target'
-                    self.state.halt_time = time
-            else:  # short
-                pl = self.state.entry_price - current_close
-                if pl > 100:
-                    if time not in self.state.detected_buy_signals:
-                        self.state.detected_buy_signals[time] = current_close
-                    self.state.position = 'flat'
-                    self.state.entry_price = None
-                    self.state.entry_time = None
-                    self.state.trading_halted = True
-                    self.state.halt_reason = 'profit_target'
-                    self.state.halt_time = time
+        # Profit target liquidation (disabled)
+        # if self.state.position != 'flat' and self.state.entry_price is not None:
+        #     if self.state.position == 'long':
+        #         pl = current_close - self.state.entry_price
+        #         if pl > 100:
+        #             if time not in self.state.detected_sell_signals:
+        #                 self.state.detected_sell_signals[time] = current_close
+        #             self.state.position = 'flat'
+        #             self.state.entry_price = None
+        #             self.state.entry_time = None
+        #             self.state.trading_halted = True
+        #             self.state.halt_reason = 'profit_target'
+        #             self.state.halt_time = time
+        #     else:  # short
+        #         pl = self.state.entry_price - current_close
+        #         if pl > 100:
+        #             if time not in self.state.detected_buy_signals:
+        #                 self.state.detected_buy_signals[time] = current_close
+        #             self.state.position = 'flat'
+        #             self.state.entry_price = None
+        #             self.state.entry_time = None
+        #             self.state.trading_halted = True
+        #             self.state.halt_reason = 'profit_target'
+        #             self.state.halt_time = time
 
         # Store this frame's slopes so the next frame can use them for the angle filter
         self._prev_frame_purple_slope = purple_slope

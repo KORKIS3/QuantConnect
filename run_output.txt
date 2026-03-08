@@ -1,0 +1,834 @@
+﻿python : C:\Users\Administrator\AppData\Local\Programs\Python\Pytho
+n312\Lib\site-packages\openpyxl\worksheet\_reader.py:329: 
+UserWarning: Unknown extension is not supported and will be removed
+At line:1 char:38
++ ...  $env:PYTHONIOENCODING='utf-8'; python RunFullDataSet.py 
+2>&1 | Out-F ...
++                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\Admini...wil 
+   l be removed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  warn(msg)
+Running from split time.xlsx
+Loading Excel file: split time.xlsx
+Loaded 15428 rows from 2026-01-01 23:01:00-05:00 to 2026-01-30 23:50:00-05:00
+
+Found 25 unique trading days
+
+============================================================
+Processing date: 2026-01-01
+Skipping 2026-01-01: no data in regular trading hours (9:30 AM - 4:00 PM)
+
+============================================================
+Processing date: 2026-01-02
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-02 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-02 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 48407.00 @ 10:00
+   Yellow: 48395.00 @ 10:00
+   Purple: 48407.00 @ 10:00
+   Blue: 48395.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 48407.00 @ 10:00
+   Blue (9:30): 48395.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1416.626044, Yellow=1416.626044
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 48421 > prev_orange 48407
+      Γ£à Position: long
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:02: close 48523
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 48421.00
+   SELL signals: 1
+      - 10:02:00: 48523.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-02.jpg
+
+============================================================
+Processing date: 2026-01-04
+Skipping 2026-01-04: no data in regular trading hours (9:30 AM - 4:00 PM)
+
+============================================================
+Processing date: 2026-01-05
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-05 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-05 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 48613.00 @ 10:00
+   Yellow: 48597.00 @ 10:00
+   Purple: 48613.00 @ 10:00
+   Blue: 48597.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 48613.00 @ 10:00
+   Blue (9:30): 48597.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-825.690609, Yellow=825.690609
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 48624 > prev_orange 48613
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 48624.00
+   SELL signals: 0
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-05.jpg
+
+============================================================
+Processing date: 2026-01-06
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-06 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-06 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49219.00 @ 10:00
+   Yellow: 49215.00 @ 10:00
+   Purple: 49219.00 @ 10:00
+   Blue: 49215.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49219.00 @ 10:00
+   Blue (9:30): 49215.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1319.485972, Yellow=1319.485972
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49212 < prev_yellow 49215
+      Current close: 49212.00, Previous minute's yellow ray: 49215.00
+      Γ£à Position: short
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 49104
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 49104.00
+   SELL signals: 1
+      - 10:10:00: 49212.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-06.jpg
+
+============================================================
+Processing date: 2026-01-07
+  Regular hours data: 360 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-07 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-07 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49735.00 @ 10:00
+   Yellow: 49728.00 @ 10:00
+   Purple: 49735.00 @ 10:00
+   Blue: 49728.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49735.00 @ 10:00
+   Blue (9:30): 49728.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-509.985376, Yellow=509.985376
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49743 > prev_orange 49735
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Blue) @ 10:01: prev_close 49748 >= prev_blue 49744, close 49744 < prev_blue 49744
+      Current close: 49744.00, Previous minute's blue ray: 49744.50
+      Γ£à Position: short
+  ≡ƒƒó BUY (Purple) @ 10:12: prev_close 49741 <= prev_purple 49743, close 49744 > prev_purple 49743
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:26: 49735 < prev_yellow 49737
+      Current close: 49735.00, Previous minute's yellow ray: 49736.85
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 2
+      - 10:10:00: 49743.00
+      - 10:12:00: 49744.00
+   SELL signals: 2
+      - 10:01:00: 49744.00
+      - 10:26:00: 49735.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-07.jpg
+
+============================================================
+Processing date: 2026-01-08
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-08 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-08 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49267.00 @ 10:00
+   Yellow: 49263.00 @ 10:00
+   Purple: 49267.00 @ 10:00
+   Blue: 49263.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49267.00 @ 10:00
+   Blue (9:30): 49263.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1950.896438, Yellow=1950.896438
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Blue) @ 10:09: prev_close 49091 >= prev_blue 49088, close 49085 < prev_blue 49088
+      Current close: 49085.00, Previous minute's blue ray: 49087.50
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 0
+   SELL signals: 1
+      - 10:09:00: 49085.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-08.jpg
+
+============================================================
+Processing date: 2026-01-09
+  Regular hours data: 360 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-09 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-09 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49536.00 @ 10:00
+   Yellow: 49528.00 @ 10:00
+   Purple: 49536.00 @ 10:00
+   Blue: 49528.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49536.00 @ 10:00
+   Blue (9:30): 49528.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-671.885495, Yellow=671.885495
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49502 < prev_yellow 49528
+      Current close: 49502.00, Previous minute's yellow ray: 49528.00
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 0
+   SELL signals: 1
+      - 10:10:00: 49502.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-09.jpg
+
+============================================================
+Processing date: 2026-01-11
+Skipping 2026-01-11: no data in regular trading hours (9:30 AM - 4:00 PM)
+
+============================================================
+Processing date: 2026-01-12
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-12 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-12 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49663.00 @ 10:00
+   Yellow: 49653.00 @ 10:00
+   Purple: 49663.00 @ 10:00
+   Blue: 49653.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49663.00 @ 10:00
+   Blue (9:30): 49653.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-2857.537106, Yellow=2857.537106
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49554 < prev_yellow 49653
+      Current close: 49554.00, Previous minute's yellow ray: 49653.00
+      Γ£à Position: short
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 49381
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 49381.00
+   SELL signals: 1
+      - 10:10:00: 49554.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-12.jpg
+
+============================================================
+Processing date: 2026-01-13
+  Regular hours data: 360 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-13 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-13 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49752.00 @ 10:00
+   Yellow: 49746.00 @ 10:00
+   Purple: 49752.00 @ 10:00
+   Blue: 49746.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49752.00 @ 10:00
+   Blue (9:30): 49746.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-615.220453, Yellow=615.220453
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49743 < prev_yellow 49746
+      Current close: 49743.00, Previous minute's yellow ray: 49746.00
+      Γ£à Position: short
+  ≡ƒƒó BUY (Orange) @ 10:01: 49750 > prev_orange 49739
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:14: 49730 < prev_yellow 49736
+      Current close: 49730.00, Previous minute's yellow ray: 49735.85
+      Γ£à Position: short
+  ≡ƒƒó BUY (Orange) @ 10:28: 49741 > prev_orange 49741
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 2
+      - 10:01:00: 49750.00
+      - 10:28:00: 49741.00
+   SELL signals: 2
+      - 10:10:00: 49743.00
+      - 10:14:00: 49730.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-13.jpg
+
+============================================================
+Processing date: 2026-01-14
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-14 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-14 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49359.00 @ 10:00
+   Yellow: 49352.00 @ 10:00
+   Purple: 49359.00 @ 10:00
+   Blue: 49352.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49359.00 @ 10:00
+   Blue (9:30): 49352.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1165.680859, Yellow=1165.680859
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49361 > prev_orange 49359
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:05: 49322 < prev_yellow 49326
+      Current close: 49322.00, Previous minute's yellow ray: 49326.43
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 49361.00
+   SELL signals: 1
+      - 10:05:00: 49322.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-14.jpg
+
+============================================================
+Processing date: 2026-01-15
+  Regular hours data: 360 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 30 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-15 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-15 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 30
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49295.00 @ 10:00
+   Yellow: 49287.00 @ 10:00
+   Purple: 49295.00 @ 10:00
+   Blue: 49287.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49295.00 @ 10:00
+   Blue (9:30): 49287.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1287.105949, Yellow=1287.105949
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Purple) @ 10:07: prev_close 49383 <= prev_purple 49383, close 49390 > prev_purple 49383
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:07:00: 49390.00
+   SELL signals: 0
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-15.jpg
+
+============================================================
+Processing date: 2026-01-16
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-16 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-16 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49673.00 @ 10:00
+   Yellow: 49668.00 @ 10:00
+   Purple: 49673.00 @ 10:00
+   Blue: 49668.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49673.00 @ 10:00
+   Blue (9:30): 49668.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-631.410465, Yellow=631.410465
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Purple) @ 10:01: prev_close 49669 <= prev_purple 49669, close 49689 > prev_purple 49669
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 49689.00
+   SELL signals: 0
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-16.jpg
+
+============================================================
+Processing date: 2026-01-17
+Skipping 2026-01-17: no data in regular trading hours (9:30 AM - 4:00 PM)
+
+============================================================
+Processing date: 2026-01-18
+Skipping 2026-01-18: no data in regular trading hours (9:30 AM - 4:00 PM)
+
+============================================================
+Processing date: 2026-01-19
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-19 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-19 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49286.00 @ 10:00
+   Yellow: 49277.00 @ 10:00
+   Purple: 49286.00 @ 10:00
+   Blue: 49277.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49286.00 @ 10:00
+   Blue (9:30): 49277.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-2080.416533, Yellow=2080.416533
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49215 < prev_yellow 49277
+      Current close: 49215.00, Previous minute's yellow ray: 49277.00
+      Γ£à Position: short
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 49081
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 49081.00
+   SELL signals: 1
+      - 10:10:00: 49215.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-19.jpg
+
+============================================================
+Processing date: 2026-01-20
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-20 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-20 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49126.00 @ 10:00
+   Yellow: 49120.00 @ 10:00
+   Purple: 49126.00 @ 10:00
+   Blue: 49120.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49126.00 @ 10:00
+   Blue (9:30): 49120.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-3861.317846, Yellow=3861.317846
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49104 < prev_yellow 49120
+      Current close: 49104.00, Previous minute's yellow ray: 49120.00
+      Γ£à Position: short
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 48703
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 48703.00
+   SELL signals: 1
+      - 10:10:00: 49104.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-20.jpg
+
+============================================================
+Processing date: 2026-01-21
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-21 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-21 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 48709.00 @ 10:00
+   Yellow: 48692.00 @ 10:00
+   Purple: 48709.00 @ 10:00
+   Blue: 48692.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 48709.00 @ 10:00
+   Blue (9:30): 48692.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-898.545662, Yellow=898.545662
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 48738 > prev_orange 48709
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:01: 48677 < prev_yellow 48711
+      Current close: 48677.00, Previous minute's yellow ray: 48710.72
+      Γ£à Position: short
+  ≡ƒƒó BUY (Orange) @ 10:29: 48735 > prev_orange 48731
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 2
+      - 10:10:00: 48738.00
+      - 10:29:00: 48735.00
+   SELL signals: 1
+      - 10:01:00: 48677.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-21.jpg
+
+============================================================
+Processing date: 2026-01-22
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-22 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-22 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49322.00 @ 10:00
+   Yellow: 49313.00 @ 10:00
+   Purple: 49322.00 @ 10:00
+   Blue: 49313.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49322.00 @ 10:00
+   Blue (9:30): 49313.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1554.241145, Yellow=1554.241145
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49328 > prev_orange 49322
+      Γ£à Position: long
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 49456
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 49328.00
+   SELL signals: 1
+      - 10:01:00: 49456.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-22.jpg
+
+============================================================
+Processing date: 2026-01-23
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-23 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-23 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49534.00 @ 10:00
+   Yellow: 49522.00 @ 10:00
+   Purple: 49534.00 @ 10:00
+   Blue: 49522.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49534.00 @ 10:00
+   Blue (9:30): 49522.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-1513.766116, Yellow=1513.766116
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49575 > prev_orange 49534
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:01: 49455 < prev_yellow 49554
+      Current close: 49455.00, Previous minute's yellow ray: 49553.54
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 49575.00
+   SELL signals: 1
+      - 10:01:00: 49455.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-23.jpg
+
+============================================================
+Processing date: 2026-01-27
+  Regular hours data: 361 minutes from 10:00 to 16:00
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:30
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-27 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-27 09:39:00 EST
+   Data range: 10:00 to 10:30
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49511.00 @ 10:00
+   Yellow: 49509.00 @ 10:00
+   Purple: 49511.00 @ 10:00
+   Blue: 49509.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49511.00 @ 10:00
+   Blue (9:30): 49509.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-579.062760, Yellow=579.062760
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:01: 49512 > prev_orange 49511
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Yellow) @ 10:02: 49509 < prev_yellow 49509
+      Current close: 49509.00, Previous minute's yellow ray: 49509.40
+      Γ£à Position: short
+  ≡ƒƒó BUY (Orange) @ 10:04: 49516 > prev_orange 49512
+      Γ£à Position: long
+  ≡ƒö┤ SELL (Blue) @ 10:30: prev_close 49525 >= prev_blue 49523, close 49520 < prev_blue 49523
+      Current close: 49520.00, Previous minute's blue ray: 49522.57
+      Γ£à Position: short
+
+≡ƒôè Detection Complete:
+   BUY signals: 2
+      - 10:01:00: 49512.00
+      - 10:04:00: 49516.00
+   SELL signals: 2
+      - 10:02:00: 49509.00
+      - 10:30:00: 49520.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-27.jpg
+
+============================================================
+Processing date: 2026-01-28
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-28 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-28 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49135.00 @ 10:00
+   Yellow: 49132.00 @ 10:00
+   Purple: 49135.00 @ 10:00
+   Blue: 49132.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49135.00 @ 10:00
+   Blue (9:30): 49132.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-785.215579, Yellow=785.215579
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49160 > prev_orange 49135
+      Γ£à Position: long
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 49160.00
+   SELL signals: 0
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-28.jpg
+
+============================================================
+Processing date: 2026-01-29
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-29 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-29 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49032.00 @ 10:00
+   Yellow: 49008.00 @ 10:00
+   Purple: 49032.00 @ 10:00
+   Blue: 49008.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49032.00 @ 10:00
+   Blue (9:30): 49008.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-2104.701551, Yellow=2104.701551
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒƒó BUY (Orange) @ 10:10: 49038 > prev_orange 49032
+      Γ£à Position: long
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 49210
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:10:00: 49038.00
+   SELL signals: 1
+      - 10:01:00: 49210.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-29.jpg
+
+============================================================
+Processing date: 2026-01-30
+  Regular hours data: 361 minutes from 10:00 to 15:59
+  Primary window has only 1 minute(s), using fallback window instead
+  Using fallback window: 31 minutes from 10:00 to 10:29
+
+≡ƒöì Detecting all signals across full dataset...
+   Cutoff time: 2026-01-30 09:38:00 EST
+   Yellow adjustment cutoff: 2026-01-30 09:39:00 EST
+   Data range: 10:00 to 10:29
+   Total rows: 31
+   Data timezone: US/Eastern
+   Cutoff timezone: US/Eastern
+
+≡ƒôÉ Rays initialized:
+   Orange: 49097.00 @ 10:00
+   Yellow: 49086.00 @ 10:00
+   Purple: 49097.00 @ 10:00
+   Blue: 49086.00 @ 10:00
+
+≡ƒôÉ Starting minute-by-minute ray tracking:
+   Purple (9:30): 49097.00 @ 10:00
+   Blue (9:30): 49086.00 @ 10:00
+
+≡ƒôÅ Fixed Slopes: Orange=-3181.337345, Yellow=3181.337345
+
+≡ƒöÄ Scanning for signals...
+  ≡ƒö┤ SELL (Yellow) @ 10:10: 49039 < prev_yellow 49086
+      Current close: 49039.00, Previous minute's yellow ray: 49086.00
+      Γ£à Position: short
+  ≡ƒ¢æ LIQUIDATE (P/L > 100) @ 10:01: close 48770
+
+≡ƒôè Detection Complete:
+   BUY signals: 1
+      - 10:01:00: 48770.00
+   SELL signals: 1
+      - 10:10:00: 49039.00
+Saved plot image: C:\Users\Administrator\Desktop\TradingPics\2026-01-30.jpg
+
+============================================================
+Results saved to: C:\Users\Administrator\Desktop\RunFullDataSet_results.xlsx
+Total P/L (liquidation trades): 1487.00
+Average points per day: 74.35
+============================================================

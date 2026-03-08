@@ -1,0 +1,61 @@
+﻿"""ReOrgMain
+
+Orchestrates loading data for a single day, running the trading
+algorithm minute-by-minute, and then plotting results.
+
+NOTE: This is a skeleton created as part of a re-org. The actual
+business logic still lives in existing modules and will be migrated
+here gradually.
+"""
+
+import os
+from typing import Optional
+
+import pandas as pd
+
+from RunFullDataSet import _load_csv_as_df
+from TradingAlgo import run_trading_algo
+from Plotter import plot_results
+
+
+def run_single_day(
+    target_date: str,
+    start_time: str = "09:30",
+    end_time: str = "10:00",
+    csv_root: Optional[str] = None,
+) -> pd.DataFrame:
+    """Run the full workflow for a single date.
+
+    Returns the enriched per-minute DataFrame produced by
+    `TradingAlgo.run_trading_algo`.
+    """
+
+    if csv_root is None:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate_930_1000")
+
+    csv_path = os.path.join(csv_root, f"CBOT_MINI_YM1_{target_date}.csv")
+
+    print(f"Loading: {csv_path}")
+    data = _load_csv_as_df(csv_path)
+
+    if data is None or data.empty:
+        raise ValueError(f"No intraday data found for {target_date} at {csv_path}")
+
+    # Run trading algorithm to compute signals / P&L per minute.
+    algo_df = run_trading_algo(data, target_date, start_time, end_time)
+
+    # Build interactive plot from the resulting DataFrame.
+    plot_results(algo_df, target_date, start_time, end_time)
+
+    return algo_df
+
+
+if __name__ == "__main__":
+    # TODO: accept a target date (e.g. via argparse), load that day's
+    # data, feed it to TradingAlgo, then call Plotter.
+    print("ReOrgMain.py skeleton – implement per-day orchestration here.")
+    # Simple CLI behaviour: allow overriding the date via env var
+    # TARGET_DATE; default to 2026-02-11 for convenience.
+    default_date = os.environ.get("TARGET_DATE", "2026-02-11")
+    run_single_day(default_date)

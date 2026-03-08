@@ -1,0 +1,16 @@
+﻿"""
+QuantConnect Configuration Template
+Copy this to config.py and fill in your actual credentials.
+Do NOT commit config.py to version control!
+"""
+
+# QuantConnect API Credentials
+# Get these from: https://www.quantconnect.com/account
+QUANTCONNECT_USER_ID = "446417"
+QUANTCONNECT_API_TOKEN = "e94d4e1022e70b6d1940194f2ae2e1540a2edd7e84454bb6900fccb1de66d0d0"
+
+# Optional: Organization ID (for team accounts)
+QUANTCONNECT_ORGANIZATION_ID = ""
+
+# API Base URL (usually no need to change)
+API_BASE_URL = "https://www.quantconnect.com/api/v2/"

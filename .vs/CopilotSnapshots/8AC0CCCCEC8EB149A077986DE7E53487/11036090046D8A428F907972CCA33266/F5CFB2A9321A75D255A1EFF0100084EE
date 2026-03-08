@@ -1,0 +1,89 @@
+﻿"""RunAllDays
+
+Entry script to run the YM trading workflow for all days in a folder.
+
+This module scans the standard desktop folder of per-day YM CSV files
+and calls `ReOrgMain.run_single_day` for each date in order.
+
+In addition to per-day images/CSVs it also produces a summary Excel
+workbook (and CSV fallback) similar to the original
+`RunFullDataSet_results.xlsx`, written as `RunAllDaysOutput.xlsx` on
+the desktop.
+"""
+
+import glob
+import os
+import re
+
+import pandas as pd
+
+from ReOrgMain import run_single_day
+
+
+def _extract_date_from_filename(fname: str) -> str:
+    """Best-effort extraction of YYYY-MM-DD from the CSV filename."""
+
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", fname)
+    if m:
+        return m.group(1)
+
+    m2 = re.search(r"(\d{8})", fname)
+    if m2:
+        s = m2.group(1)
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+
+    # Fallback: leave as empty string; caller may skip.
+    return ""
+
+
+def run_all_days(
+    start_time: str = "09:30",
+    end_time: str = "10:00",
+    csv_root: str | None = None,
+) -> None:
+    """Loop over all CSV days in the folder and run the workflow."""
+
+    if csv_root is None:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate_930_1000")
+
+    # Where to store batch chart images and tracking CSVs on the desktop.
+    desktop_root = os.path.join(os.path.expanduser("~"), "Desktop")
+    image_root = os.path.join(desktop_root, "TradingPics")
+    tracking_root = os.path.join(desktop_root, "TradingTracking")
+
+    pattern = os.path.join(csv_root, "*.csv")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        print(f"RunAllDays: no CSV files found in {csv_root}")
+        return
+
+    for fp in files:
+        fname = os.path.basename(fp)
+        target_date = _extract_date_from_filename(fname)
+        if not target_date:
+            print(f"RunAllDays: skipping {fname} (no parsable date)")
+            continue
+
+        print("\n" + "=" * 60)
+        print(f"RunAllDays: processing {fname} (date={target_date})")
+        print("=" * 60)
+
+        try:
+            # Headless run: no interactive graph. We only want a final
+            # chart image per day and a per-minute tracking CSV.
+            run_single_day(
+                target_date,
+                start_time,
+                end_time,
+                csv_root=csv_root,
+                show_plot=False,
+                image_root=image_root,
+                tracking_root=tracking_root,
+            )
+        except Exception as exc:  # keep running other days
+            print(f"RunAllDays: error processing {fname}: {exc}")
+
+
+if __name__ == "__main__":
+    run_all_days()
