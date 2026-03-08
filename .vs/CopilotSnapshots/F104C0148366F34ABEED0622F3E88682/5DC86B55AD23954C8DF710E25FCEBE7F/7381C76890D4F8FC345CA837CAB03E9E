@@ -1,4 +1,4 @@
-"""ReOrgMain
+﻿"""ReOrgMain
 
 Per-day orchestration for the YM trading workflow.
 
@@ -43,7 +43,7 @@ def run_single_day(
 
     if csv_root is None:
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate")
+        csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate_930_1000")
 
     csv_path = os.path.join(csv_root, f"CBOT_MINI_YM1_{target_date}.csv")
 
@@ -146,19 +146,8 @@ def run_single_day(
 
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        # Support short M-D or MM-DD notation (e.g. "2-4" → "2026-02-04").
-        parts = arg.split("-")
-        if len(parts) == 2:
-            default_year = int(os.environ.get("TARGET_YEAR", "2026"))
-            month, day = int(parts[0]), int(parts[1])
-            target_date = f"{default_year}-{month:02d}-{day:02d}"
-        else:
-            target_date = arg
-    else:
-        target_date = os.environ.get("TARGET_DATE", "2026-02-11")
-
-    run_single_day(target_date, show_plot=True)
+    # Simple CLI behaviour: allow overriding the date via env var
+    # TARGET_DATE; default to 2026-02-11 for convenience. When run
+    # directly, we default to showing the interactive plot.
+    default_date = os.environ.get("TARGET_DATE", "2026-02-11")
+    run_single_day(default_date, show_plot=True)

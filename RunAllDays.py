@@ -182,11 +182,14 @@ def _compute_trade_stats_from_df(df: pd.DataFrame) -> dict:
     }
 
 
-def _write_run_all_days_results(results: list) -> None:
-    """Write aggregated results to summary files on the desktop.
+def _write_run_all_days_results(results: list, out_dir: str | None = None) -> None:
+    """Write aggregated results to summary files.
 
     This closely follows the formatting and summary logic used in
     `RunFullDataSet.py`, but writes to `RunAllDays_results.xlsx`.
+
+    If `out_dir` is provided the files are written there; otherwise they
+    fall back to the Desktop.
 
     For convenience, a plain CSV `RunAllDays.csv` is also written.
     """
@@ -194,7 +197,10 @@ def _write_run_all_days_results(results: list) -> None:
     df_res = pd.DataFrame(results)
 
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    out_xlsx = os.path.join(desktop, "RunAllDays_results.xlsx")
+    if out_dir is None:
+        out_dir = desktop
+    os.makedirs(out_dir, exist_ok=True)
+    out_xlsx = os.path.join(out_dir, "RunAllDays_results.xlsx")
 
     try:
         # Compute total of 'p/l liquidation trade' for summary
@@ -346,17 +352,17 @@ def _write_run_all_days_results(results: list) -> None:
         print(f"Results saved to: {out_xlsx}")
 
         # Always emit a simple CSV summary as well.
-        csv_simple = os.path.join(desktop, "RunAllDays.csv")
+        csv_simple = os.path.join(out_dir, "RunAllDays.csv")
         df_res.to_csv(csv_simple, index=False)
         print(f"Simple CSV summary written to: {csv_simple}")
     except Exception as e:
         print(f"Failed to write Excel file: {e}")
-        csv_out = os.path.join(desktop, "RunAllDays_results.csv")
+        csv_out = os.path.join(out_dir, "RunAllDays_results.csv")
         df_res.to_csv(csv_out, index=False)
         print(f"Wrote CSV fallback to: {csv_out}")
 
         # Still ensure `RunAllDays.csv` exists for the user.
-        csv_simple = os.path.join(desktop, "RunAllDays.csv")
+        csv_simple = os.path.join(out_dir, "RunAllDays.csv")
         try:
             df_res.to_csv(csv_simple, index=False)
             print(f"Simple CSV summary written to: {csv_simple}")
@@ -501,3 +507,70 @@ if __name__ == "__main__":
             csv_simple = os.path.join(image_root, "RunAllDayscsv.csv")
             df_res.to_csv(csv_simple, index=False)
             print(f"Simple CSV summary written to: {csv_simple}")
+
+    # ------------------------------------------------------------------ #
+    # Combined 9:30-11:30 section                                          #
+    # Runs three expanding windows over the merged data folder and writes  #
+    # a RunAllDays_results.xlsx + per-day images into each sub-folder.    #
+    # ------------------------------------------------------------------ #
+    combined_csv_root = os.path.join(data_root, "CBOT_MINI_YM1_ByDate_930_1130")
+    combined_parent = os.path.join(desktop_root, "TradingPics", "0930-1130")
+
+    combined_windows = [
+        ("09:30", "10:30", "0930-1030"),
+        ("09:30", "11:00", "0930-1100"),
+        ("09:30", "11:30", "0930-1130"),
+    ]
+
+    for start_time, end_time, sub_label in combined_windows:
+        image_root = os.path.join(combined_parent, sub_label)
+        tracking_root = os.path.join(desktop_root, "TradingTracking", "0930-1130", sub_label)
+        os.makedirs(image_root, exist_ok=True)
+        os.makedirs(tracking_root, exist_ok=True)
+
+        pattern = os.path.join(combined_csv_root, "*.csv")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            print(f"RunAllDays: no CSV files found in {combined_csv_root}")
+            continue
+
+        results = []
+        for fp in files:
+            fname = os.path.basename(fp)
+            target_date = _extract_date_from_filename(fname)
+            if not target_date:
+                print(f"RunAllDays: skipping {fname} (no parsable date)")
+                continue
+
+            print("\n" + "=" * 60)
+            print(f"RunAllDays: processing {fname} (date={target_date}) [{start_time}-{end_time}]")
+            print("=" * 60)
+
+            try:
+                algo_df = run_single_day(
+                    target_date,
+                    start_time,
+                    end_time,
+                    csv_root=combined_csv_root,
+                    show_plot=False,
+                    image_root=image_root,
+                    tracking_root=tracking_root,
+                )
+                stats = _compute_trade_stats_from_df(algo_df)
+                results.append({
+                    "FileName": fname,
+                    "Date": target_date,
+                    "final_P/L": stats["final_pl"],
+                    "winning_trades": stats["winning_trades"],
+                    "losing_trades": stats["losing_trades"],
+                    "win_pct": stats["win_pct"],
+                    "Captured 100 points": stats.get("captured_100", "No"),
+                    "p/l high": stats.get("pl_high", 0.0),
+                    "p/l liquidation trade": stats.get("liquidation_trade_pl", None),
+                })
+            except Exception as exc:
+                print(f"RunAllDays: error processing {fname}: {exc}")
+
+        if results:
+            _write_run_all_days_results(results, out_dir=image_root)
+            print(f"Results for [{start_time}-{end_time}] written to: {image_root}")

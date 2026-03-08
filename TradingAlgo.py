@@ -321,7 +321,11 @@ def run_trading_algo(
     except Exception:
         pass
 
-    cutoff_time = pd.Timestamp(f"{target_date} 09:38:00", tz=est)
+    # Cutoff is 8 minutes after the session start (no trading in first 8 mins).
+    cutoff_time = (
+        pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
+        + pd.Timedelta(minutes=8)
+    )
 
     # Compute an aspect ratio that matches the interactive ChartPlotter so
     # that angle-based filters (e.g. the 65° cutoff on purple/blue rays)

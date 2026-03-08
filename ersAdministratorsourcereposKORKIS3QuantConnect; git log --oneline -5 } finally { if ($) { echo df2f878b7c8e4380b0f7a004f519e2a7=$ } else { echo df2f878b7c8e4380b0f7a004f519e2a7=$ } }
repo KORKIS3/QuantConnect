@@ -1,0 +1,10 @@
+* [33m9da7cee[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mAdd-Multiple-Time-periods[m[33m, [m[1;31morigin/Add-Multiple-Time-periods[m[33m)[m Updates complete and everything run smooth
+* [33m47c8022[m[33m ([m[1;31morigin/QuatConnectionIntegration[m[33m, [m[1;32mQuatConnectionIntegration[m[33m)[m Changes logic for blue and purple rays to 45 degrees
+* [33mfa87805[m Algotrading is now single source of truth for all calculations
+* [33m38727a5[m The previous yellow comparison was using two points back for the low.
+* [33mf7e69e8[m fixed interactive graph
+* [33m4b56a4f[m  ReArchitectCodeBase
+* [33mb78e2d3[m Add QuantConnect Lean backtesting setup script
+* [33mc16321c[m[33m ([m[1;31morigin/Scott-Playtime[m[33m, [m[1;32mScott-Playtime[m[33m)[m code working well
+* [33mcb43824[m Fixed p/l from resetting to zero at every buy
+* [33md106712[m trendline changes
