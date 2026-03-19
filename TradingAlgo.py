@@ -396,6 +396,7 @@ def run_trading_algo(
     buy_signals: Dict[pd.Timestamp, float] = {}
     sell_signals: Dict[pd.Timestamp, float] = {}
     liquidation_timestamps: set = set()
+    session_realized_pl: float = 0.0  # running closed-trade P/L for daily loss cap
 
     # Per-minute geometry that will be attached to the result so the
     # interactive plotter only has to *render* what the algo computed.
@@ -455,14 +456,21 @@ def run_trading_algo(
                     purple_crossed = prev_purple  is not None and prev_close <= prev_purple  and current_close > prev_purple
                 if blue_crossed or purple_crossed:
                     if temp_position == "long" and time not in sell_signals:
+                        if temp_entry_price is not None:
+                            session_realized_pl += current_close - temp_entry_price
                         sell_signals[time] = current_close
                         liquidation_timestamps.add(time)
                     elif temp_position == "short" and time not in buy_signals:
+                        if temp_entry_price is not None:
+                            session_realized_pl += temp_entry_price - current_close
                         buy_signals[time] = current_close
                         liquidation_timestamps.add(time)
                     temp_position = "flat"
                     temp_entry_price = None
                     liquidated_this_bar = True
+                    if session_realized_pl <= -100.0:
+                        trading_halted = True
+                        halt_time = time
 
             # BUY signals - can trigger from flat or short (position reversal).
             # Purple crosses are suppressed when close is within 50 pts of orange or yellow;
@@ -486,9 +494,18 @@ def run_trading_algo(
                             buy_triggered = True
 
                 if buy_triggered:
+                    if temp_position == "short" and temp_entry_price is not None:
+                        session_realized_pl += temp_entry_price - current_close
                     buy_signals[time] = current_close
-                    temp_position = "long"
-                    temp_entry_price = current_close
+                    if session_realized_pl <= -100.0:
+                        liquidation_timestamps.add(time)
+                        trading_halted = True
+                        halt_time = time
+                        temp_position = "flat"
+                        temp_entry_price = None
+                    else:
+                        temp_position = "long"
+                        temp_entry_price = current_close
 
             # SELL signals - can trigger from flat or long (position reversal).
             # Blue crosses are suppressed when close is within 50 pts of orange or yellow;
@@ -512,30 +529,43 @@ def run_trading_algo(
                             sell_triggered = True
 
                 if sell_triggered:
+                    if temp_position == "long" and temp_entry_price is not None:
+                        session_realized_pl += current_close - temp_entry_price
                     sell_signals[time] = current_close
-                    temp_position = "short"
-                    temp_entry_price = current_close
+                    if session_realized_pl <= -100.0:
+                        liquidation_timestamps.add(time)
+                        trading_halted = True
+                        halt_time = time
+                        temp_position = "flat"
+                        temp_entry_price = None
+                    else:
+                        temp_position = "short"
+                        temp_entry_price = current_close
 
-            # Profit target liquidation (disabled)
-            # if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
-            #     if temp_position == "long":
-            #         pl = current_close - temp_entry_price
-            #         if pl > 100.0:
-            #             if time not in sell_signals:
-            #                 sell_signals[time] = current_close
-            #             temp_position = "flat"
-            #             temp_entry_price = None
-            #             trading_halted = True
-            #             halt_time = time
-            #     else:  # short
-            #         pl = temp_entry_price - current_close
-            #         if pl > 100.0:
-            #             if time not in buy_signals:
-            #                 buy_signals[time] = current_close
-            #             temp_position = "flat"
-            #             temp_entry_price = None
-            #             trading_halted = True
-            #             halt_time = time
+            # Profit target: exit and halt when a single trade reaches +100 pts.
+            if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
+                if temp_position == "long":
+                    pl = current_close - temp_entry_price
+                    if pl >= 100.0:
+                        if time not in sell_signals:
+                            sell_signals[time] = current_close
+                            liquidation_timestamps.add(time)
+                        session_realized_pl += pl
+                        temp_position = "flat"
+                        temp_entry_price = None
+                        trading_halted = True
+                        halt_time = time
+                else:  # short
+                    pl = temp_entry_price - current_close
+                    if pl >= 100.0:
+                        if time not in buy_signals:
+                            buy_signals[time] = current_close
+                            liquidation_timestamps.add(time)
+                        session_realized_pl += pl
+                        temp_position = "flat"
+                        temp_entry_price = None
+                        trading_halted = True
+                        halt_time = time
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).
