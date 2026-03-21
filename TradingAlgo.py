@@ -468,28 +468,28 @@ def run_trading_algo(
             # Long  → liquidate on a downward cross of blue only.
             # Short → liquidate on an upward  cross of purple only.
             liquidated_this_bar = False
-            if temp_position != "flat":
-                if temp_position == "long":
-                    triggered = prev_blue is not None and prev_close >= prev_blue and current_close < prev_blue
-                else:  # short
-                    triggered = prev_purple is not None and prev_close <= prev_purple and current_close > prev_purple
-                if triggered:
-                    if temp_position == "long" and time not in sell_signals:
-                        if temp_entry_price is not None:
-                            session_realized_pl += current_close - temp_entry_price
-                        sell_signals[time] = current_close
-                        liquidation_timestamps.add(time)
-                    elif temp_position == "short" and time not in buy_signals:
-                        if temp_entry_price is not None:
-                            session_realized_pl += temp_entry_price - current_close
-                        buy_signals[time] = current_close
-                        liquidation_timestamps.add(time)
-                    temp_position = "flat"
-                    temp_entry_price = None
-                    liquidated_this_bar = True
-                    if session_realized_pl <= -100.0:
-                        trading_halted = True
-                        halt_time = time
+            ## if temp_position != "flat":
+            ##     if temp_position == "long":
+            ##         triggered = prev_blue is not None and prev_close >= prev_blue and current_close < prev_blue
+            ##     else:  # short
+            ##         triggered = prev_purple is not None and prev_close <= prev_purple and current_close > prev_purple
+            ##     if triggered:
+            ##         if temp_position == "long" and time not in sell_signals:
+            ##             if temp_entry_price is not None:
+            ##                 session_realized_pl += current_close - temp_entry_price
+            ##             sell_signals[time] = current_close
+            ##             liquidation_timestamps.add(time)
+            ##         elif temp_position == "short" and time not in buy_signals:
+            ##             if temp_entry_price is not None:
+            ##                 session_realized_pl += temp_entry_price - current_close
+            ##             buy_signals[time] = current_close
+            ##             liquidation_timestamps.add(time)
+            ##         temp_position = "flat"
+            ##         temp_entry_price = None
+            ##         liquidated_this_bar = True
+            ##         if session_realized_pl <= -100.0:
+            ##             trading_halted = True
+            ##             halt_time = time
 
             # BUY signals - can trigger from flat or short (position reversal).
             # Purple crosses are suppressed when close is within 50 pts of orange 
