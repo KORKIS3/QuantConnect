@@ -415,6 +415,27 @@ def run_trading_algo(
     blue_anchor_prices = []
     blue_anchor_times = []
 
+    # Ray drawing data: start anchor points, visual angles, and end-of-session prices.
+    # These allow plotFigure.py to render rays without any recalculation.
+    orange_ray_start_prices = []
+    orange_ray_start_times = []
+    yellow_ray_start_prices = []
+    yellow_ray_start_times = []
+    purple_ray_start_prices = []
+    purple_ray_start_times = []
+    blue_ray_start_prices = []
+    blue_ray_start_times = []
+
+    orange_angles = []
+    yellow_angles = []
+    purple_angles = []
+    blue_angles = []
+
+    orange_ray_end_prices = []
+    yellow_ray_end_prices = []
+    purple_ray_end_prices = []
+    blue_ray_end_prices = []
+
     for i, (time, row) in enumerate(full_data.iterrows()):
         current_close = float(row["Close"])
 
@@ -442,19 +463,17 @@ def run_trading_algo(
             curr_orange = rm.orange_ray.get_price_at_time(time, prev_orange_slope)
             curr_yellow = rm.yellow_ray.get_price_at_time(time, prev_yellow_slope)
 
-            # Liquidation: if already in a trade and blue or purple is crossed
+            # Liquidation: if already in a trade and the relevant ray is crossed
             # against the trade direction, close the position flat immediately.
-            # Long  → liquidate on a downward cross of blue or purple.
-            # Short → liquidate on an upward  cross of blue or purple.
+            # Long  → liquidate on a downward cross of blue only.
+            # Short → liquidate on an upward  cross of purple only.
             liquidated_this_bar = False
             if temp_position != "flat":
                 if temp_position == "long":
-                    blue_crossed   = prev_blue   is not None and prev_close >= prev_blue   and current_close < prev_blue
-                    purple_crossed = prev_purple  is not None and prev_close >= prev_purple  and current_close < prev_purple
+                    triggered = prev_blue is not None and prev_close >= prev_blue and current_close < prev_blue
                 else:  # short
-                    blue_crossed   = prev_blue   is not None and prev_close <= prev_blue   and current_close > prev_blue
-                    purple_crossed = prev_purple  is not None and prev_close <= prev_purple  and current_close > prev_purple
-                if blue_crossed or purple_crossed:
+                    triggered = prev_purple is not None and prev_close <= prev_purple and current_close > prev_purple
+                if triggered:
                     if temp_position == "long" and time not in sell_signals:
                         if temp_entry_price is not None:
                             session_realized_pl += current_close - temp_entry_price
@@ -473,7 +492,7 @@ def run_trading_algo(
                         halt_time = time
 
             # BUY signals - can trigger from flat or short (position reversal).
-            # Purple crosses are suppressed when close is within 50 pts of orange or yellow;
+            # Purple crosses are suppressed when close is within 50 pts of orange 
             # in that case the orange cross acts as the entry trigger instead.
             if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
                 buy_triggered = False
@@ -488,7 +507,7 @@ def run_trading_algo(
                     if purple_angle < 45.0 and prev_close <= prev_purple and current_close > prev_purple:
                         within_50 = (
                             abs(current_close - curr_orange) <= 50
-                            or abs(current_close - curr_yellow) <= 50
+                          ##  or abs(current_close - curr_yellow) <= 50
                         )
                         if not within_50:
                             buy_triggered = True
@@ -508,7 +527,7 @@ def run_trading_algo(
                         temp_entry_price = current_close
 
             # SELL signals - can trigger from flat or long (position reversal).
-            # Blue crosses are suppressed when close is within 50 pts of orange or yellow;
+            # Blue crosses are suppressed when close is within 50 pts of  yellow;
             # in that case the yellow cross acts as the entry trigger instead.
             if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
                 sell_triggered = False
@@ -522,8 +541,8 @@ def run_trading_algo(
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if blue_angle < 45.0 and prev_close >= prev_blue and current_close < prev_blue:
                         within_50 = (
-                            abs(current_close - curr_orange) <= 50
-                            or abs(current_close - curr_yellow) <= 50
+                            ##abs(current_close - curr_orange) <= 50 or
+                             abs(current_close - curr_yellow) <= 50
                         )
                         if not within_50:
                             sell_triggered = True
@@ -607,7 +626,33 @@ def run_trading_algo(
         blue_anchor_prices.append(float(blue_anchor_price))
         blue_anchor_times.append(blue_anchor_time)
 
-    # Build and return enriched per-minute frame and attach all
+        # Ray start points (anchor after walk-forward) and visual angles.
+        _end_num = mdates.date2num(full_data.index[-1])
+
+        orange_ray_start_prices.append(float(rm.orange_ray.start_price))
+        orange_ray_start_times.append(rm.orange_ray.start_time)
+        yellow_ray_start_prices.append(float(rm.yellow_ray.start_price))
+        yellow_ray_start_times.append(rm.yellow_ray.start_time)
+        purple_ray_start_prices.append(float(rm.purple_ray.start_price))
+        purple_ray_start_times.append(rm.purple_ray.start_time)
+        blue_ray_start_prices.append(float(rm.blue_ray.start_price))
+        blue_ray_start_times.append(rm.blue_ray.start_time)
+
+        orange_angles.append(_display_angle_from_slope(orange_slope_now, x_per_unit, y_per_unit))
+        yellow_angles.append(_display_angle_from_slope(yellow_slope_now, x_per_unit, y_per_unit))
+        purple_angles.append(_display_angle_from_slope(purple_slope_now, x_per_unit, y_per_unit))
+        blue_angles.append(_display_angle_from_slope(blue_slope_now, x_per_unit, y_per_unit))
+
+        orange_ray_end_prices.append(float(
+            rm.orange_ray.start_price + orange_slope_now * (_end_num - mdates.date2num(rm.orange_ray.start_time))))
+        yellow_ray_end_prices.append(float(
+            rm.yellow_ray.start_price + yellow_slope_now * (_end_num - mdates.date2num(rm.yellow_ray.start_time))))
+        purple_ray_end_prices.append(float(
+            rm.purple_ray.start_price + purple_slope_now * (_end_num - mdates.date2num(rm.purple_ray.start_time))))
+        blue_ray_end_prices.append(float(
+            rm.blue_ray.start_price + blue_slope_now * (_end_num - mdates.date2num(rm.blue_ray.start_time))))
+
+    # Build and return enriched per-minute frame
     # per-bar geometry so plotting is a pure visualization step.
     result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
 
@@ -625,6 +670,69 @@ def run_trading_algo(
     result["purple_anchor_time"] = purple_anchor_times
     result["blue_anchor_price"] = blue_anchor_prices
     result["blue_anchor_time"] = blue_anchor_times
+
+    result["orange_ray_start_price"] = orange_ray_start_prices
+    result["orange_ray_start_time"]  = orange_ray_start_times
+    result["yellow_ray_start_price"] = yellow_ray_start_prices
+    result["yellow_ray_start_time"]  = yellow_ray_start_times
+    result["purple_ray_start_price"] = purple_ray_start_prices
+    result["purple_ray_start_time"]  = purple_ray_start_times
+    result["blue_ray_start_price"]   = blue_ray_start_prices
+    result["blue_ray_start_time"]    = blue_ray_start_times
+
+    result["orange_angle"] = orange_angles
+    result["yellow_angle"] = yellow_angles
+    result["purple_angle"] = purple_angles
+    result["blue_angle"]   = blue_angles
+
+    result["orange_ray_end_price"] = orange_ray_end_prices
+    result["yellow_ray_end_price"] = yellow_ray_end_prices
+    result["purple_ray_end_price"] = purple_ray_end_prices
+    result["blue_ray_end_price"]   = blue_ray_end_prices
+
+    # ------------------------------------------------------------------ #
+    # Display-layer pre-computations                                       #
+    # These replace every remaining data aggregation inside plotFigure.py  #
+    # so that module truly contains zero calculations.                     #
+    # ------------------------------------------------------------------ #
+
+    # Chart axis bounds — constant for the session.
+    result["y_min"] = float(result["Low"].min()) - 20.0
+    result["y_max"] = float(result["High"].max()) + 20.0
+
+    # Session open price (first Close) — constant across all bars.
+    result["session_open"] = float(result["Close"].iloc[0])
+
+    # Per-bar running price change from the session open.
+    result["rolling_price_change"] = result["Close"] - float(result["Close"].iloc[0])
+
+    # Expanding (running) high/low extremes and their price range.
+    result["rolling_max_high"] = result["High"].expanding().max()
+    result["rolling_min_low"]  = result["Low"].expanding().min()
+    result["rolling_range"]    = result["rolling_max_high"] - result["rolling_min_low"]
+
+    # Timestamp of the current running max High and min Low.
+    _running_max  = float("-inf")
+    _running_min  = float("inf")
+    _max_high_times: list = []
+    _min_low_times: list  = []
+    _last_max_t = result.index[0]
+    _last_min_t = result.index[0]
+    for _ts, _row in result.iterrows():
+        if float(_row["High"]) >= _running_max:
+            _running_max = float(_row["High"])
+            _last_max_t  = _ts
+        if float(_row["Low"]) <= _running_min:
+            _running_min = float(_row["Low"])
+            _last_min_t  = _ts
+        _max_high_times.append(_last_max_t)
+        _min_low_times.append(_last_min_t)
+    result["rolling_max_high_time"] = _max_high_times
+    result["rolling_min_low_time"]  = _min_low_times
+
+    # Running cumulative signal counts.
+    result["rolling_buy_count"]  = (result["signal"] == "BUY").cumsum().astype(int)
+    result["rolling_sell_count"] = (result["signal"] == "SELL").cumsum().astype(int)
 
     return result
 

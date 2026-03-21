@@ -399,17 +399,22 @@ def run_all_days(
     start_time: str = "09:30",
     end_time: str = "10:00",
     csv_root: str | None = None,
+    save_images: bool = False,
+    save_tracking: bool = True,
 ) -> None:
-    """Loop over all CSV days in the folder and run the workflow."""
+    """Loop over all CSV days in the folder and run the workflow.
+
+    Set save_images=False (default) to skip chart image generation and
+    run significantly faster during optimization backtests.
+    """
 
     if csv_root is None:
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate_930_1000")
 
-    # Where to store batch chart images and tracking CSVs on the desktop.
     desktop_root = os.path.join(os.path.expanduser("~"), "Desktop")
-    image_root = os.path.join(desktop_root, "TradingPics")
-    tracking_root = os.path.join(desktop_root, "TradingTracking")
+    image_root = os.path.join(desktop_root, "TradingPics") if save_images else None
+    tracking_root = os.path.join(desktop_root, "TradingTracking") if save_tracking else None
 
     pattern = os.path.join(csv_root, "*.csv")
     files = sorted(glob.glob(pattern))
@@ -431,8 +436,6 @@ def run_all_days(
         print("=" * 60)
 
         try:
-            # Headless run: no interactive graph. We only want a final
-            # chart image per day and a per-minute tracking CSV.
             algo_df = run_single_day(
                 target_date,
                 start_time,

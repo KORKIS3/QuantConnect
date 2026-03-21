@@ -43,7 +43,7 @@ def run_single_day(
 
     if csv_root is None:
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        csv_root = os.path.join(desktop, "CBOT_MINI_YM1_ByDate")
+        csv_root = os.path.join(desktop, "2YearsData", "930_1000")
 
     csv_path = os.path.join(csv_root, f"CBOT_MINI_YM1_{target_date}.csv")
 
@@ -102,8 +102,6 @@ def run_single_day(
         try:
             for frame in range(len(algo_df)):
                 plotter.update_plot(frame)
-                if plotter.state.trading_halted:
-                    break
         except Exception:
             pass
 
@@ -119,7 +117,7 @@ def run_single_day(
 
         try:
             final_frame = max(0, len(getattr(plotter, "data", [])) - 1)
-            plotter.state.current_frame = final_frame
+            plotter.current_frame = final_frame
             plotter.update_plot(final_frame)
             try:
                 plotter.fig.canvas.draw()

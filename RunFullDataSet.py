@@ -379,12 +379,10 @@ def run_from_desktop(desktop_subfolder: str = "FebData", start_time: str = "09:3
         except Exception:
             pass
 
-        # Step through each frame to trigger update_signals_incremental per minute
+        # Step through each frame to render each minute.
         try:
-            for frame in range(len(df)):
+            for frame in range(len(plotter.data)):
                 plotter.update_plot(frame)
-                if plotter.state.trading_halted:
-                    break
         except Exception:
             pass
 
