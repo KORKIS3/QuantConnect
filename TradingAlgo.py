@@ -8,6 +8,7 @@ interactive implementation in `plotFigure.py` so the behaviour remains
 consistent without moving any code out of that file.
 """
 
+from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import matplotlib.dates as mdates
@@ -16,6 +17,27 @@ import pandas as pd
 import pytz
 
 from TrendLineAutomation import fit_trendlines_high_low
+
+
+@dataclass
+class AlgoConfig:
+    """Parameters that define a trading algorithm scenario.
+
+    All angles are expressed as positive degree magnitudes.  Orange and
+    purple rays descend (negative slope); yellow and blue rays ascend
+    (positive).  ``steep_angle_threshold`` is the maximum display angle
+    below which a purple or blue ray crossing can trigger a signal — rays
+    steeper than this value are suppressed as noise.  ``proximity_points``
+    is the price-distance window used to suppress a steep-ray crossing when
+    the close is already near the shallow orange/yellow ray.
+    """
+
+    orange_angle: float = 2.5
+    yellow_angle: float = 2.5
+    purple_angle: float = 45.0
+    blue_angle: float = 45.0
+    steep_angle_threshold: float = 45.0
+    proximity_points: float = 50.0
 
 
 class Ray:
@@ -57,8 +79,9 @@ class Ray:
 class RayManager:
     """Manages all ray calculations and updates (headless version)."""
 
-    def __init__(self, data: pd.DataFrame):
+    def __init__(self, data: pd.DataFrame, config: Optional[AlgoConfig] = None):
         self.data = data
+        self.config = config or AlgoConfig()
         self.orange_ray: Optional[Ray] = None
         self.yellow_ray: Optional[Ray] = None
         self.purple_ray: Optional[Ray] = None
@@ -76,10 +99,14 @@ class RayManager:
             return
         first_idx = current_data.index[0]
         # Use shallower base angles to match the latest interactive behaviour.
-        self.orange_ray = Ray(-2.5, float(current_data["High"].iloc[0]), first_idx, "orange", "Max Ray (-2.5)")
-        self.yellow_ray = Ray(2.5, float(current_data["Low"].iloc[0]), first_idx, "yellow", "Min Ray (+2.5)")
-        self.purple_ray = Ray(-45.0, float(current_data["High"].iloc[0]), first_idx, "darkviolet", "Max Ray (-45)")
-        self.blue_ray = Ray(45.0, float(current_data["Low"].iloc[0]), first_idx, "blue", "Min Ray (+45)")
+        _oa = self.config.orange_angle
+        _ya = self.config.yellow_angle
+        _pa = self.config.purple_angle
+        _ba = self.config.blue_angle
+        self.orange_ray = Ray(-_oa, float(current_data["High"].iloc[0]), first_idx, "orange", f"Max Ray (-{_oa})")
+        self.yellow_ray = Ray(_ya, float(current_data["Low"].iloc[0]), first_idx, "yellow", f"Min Ray (+{_ya})")
+        self.purple_ray = Ray(-_pa, float(current_data["High"].iloc[0]), first_idx, "darkviolet", f"Max Ray (-{_pa})")
+        self.blue_ray = Ray(_ba, float(current_data["Low"].iloc[0]), first_idx, "blue", f"Min Ray (+{_ba})")
         self.dark_purple_ray = None
         self.purple_intersections = 0
 
@@ -315,6 +342,7 @@ def run_trading_algo(
     target_date: str,
     start_time: str = "09:30",
     end_time: str = "10:00",
+    config: Optional[AlgoConfig] = None,
 ) -> pd.DataFrame:
     """Run the trading algorithm headlessly for a single day's data.
 
@@ -373,7 +401,8 @@ def run_trading_algo(
     y_per_unit = _y_range / _ax_h_in
 
     # Initialize ray manager and per-minute steep rays.
-    rm = RayManager(full_data)
+    cfg = config or AlgoConfig()
+    rm = RayManager(full_data, config=cfg)
 
     if rm.orange_ray is None:
         rm.initialize_rays(full_data, x_per_unit, y_per_unit)
@@ -381,8 +410,8 @@ def run_trading_algo(
     if full_data.empty:
         return full_data
 
-    minute_purple_ray = Ray(-45.0, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", "Max Ray (-45)")
-    minute_blue_ray = Ray(45.0, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", "Min Ray (+45)")
+    minute_purple_ray = Ray(-cfg.purple_angle, float(full_data["High"].iloc[0]), full_data.index[0], "darkviolet", f"Max Ray (-{cfg.purple_angle})")
+    minute_blue_ray = Ray(cfg.blue_angle, float(full_data["Low"].iloc[0]), full_data.index[0], "blue", f"Min Ray (+{cfg.blue_angle})")
 
     # These slopes are used only for the fixed-angle orange/yellow rays.
     orange_slope = rm.orange_ray.calculate_slope(x_per_unit, y_per_unit)
@@ -504,10 +533,10 @@ def run_trading_algo(
                 if not buy_triggered and prev_close is not None and prev_purple is not None:
                     angle_slope = prev_purple_slope
                     purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if purple_angle < 45.0 and prev_close <= prev_purple and current_close > prev_purple:
+                    if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
                         within_50 = (
-                            abs(current_close - curr_orange) <= 50
-                          ##  or abs(current_close - curr_yellow) <= 50
+                            abs(current_close - curr_orange) <= cfg.proximity_points
+                          ##  or abs(current_close - curr_yellow) <= cfg.proximity_points
                         )
                         if not within_50:
                             buy_triggered = True
@@ -539,10 +568,10 @@ def run_trading_algo(
                 if not sell_triggered and prev_close is not None and prev_blue is not None:
                     angle_slope = prev_blue_slope
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if blue_angle < 45.0 and prev_close >= prev_blue and current_close < prev_blue:
+                    if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
                         within_50 = (
-                            ##abs(current_close - curr_orange) <= 50 or
-                             abs(current_close - curr_yellow) <= 50
+                            ##abs(current_close - curr_orange) <= cfg.proximity_points or
+                             abs(current_close - curr_yellow) <= cfg.proximity_points
                         )
                         if not within_50:
                             sell_triggered = True
@@ -562,29 +591,29 @@ def run_trading_algo(
                         temp_entry_price = current_close
 
             # Profit target: exit and halt when a single trade reaches +100 pts.
-            if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
-                if temp_position == "long":
-                    pl = current_close - temp_entry_price
-                    if pl >= 100.0:
-                        if time not in sell_signals:
-                            sell_signals[time] = current_close
-                            liquidation_timestamps.add(time)
-                        session_realized_pl += pl
-                        temp_position = "flat"
-                        temp_entry_price = None
-                        trading_halted = True
-                        halt_time = time
-                else:  # short
-                    pl = temp_entry_price - current_close
-                    if pl >= 100.0:
-                        if time not in buy_signals:
-                            buy_signals[time] = current_close
-                            liquidation_timestamps.add(time)
-                        session_realized_pl += pl
-                        temp_position = "flat"
-                        temp_entry_price = None
-                        trading_halted = True
-                        halt_time = time
+            ## if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
+            ##     if temp_position == "long":
+            ##         pl = current_close - temp_entry_price
+            ##         if pl >= 100.0:
+            ##             if time not in sell_signals:
+            ##                 sell_signals[time] = current_close
+            ##                 liquidation_timestamps.add(time)
+            ##             session_realized_pl += pl
+            ##             temp_position = "flat"
+            ##             temp_entry_price = None
+            ##             trading_halted = True
+            ##             halt_time = time
+            ##     else:  # short
+            ##         pl = temp_entry_price - current_close
+            ##         if pl >= 100.0:
+            ##             if time not in buy_signals:
+            ##                 buy_signals[time] = current_close
+            ##                 liquidation_timestamps.add(time)
+            ##             session_realized_pl += pl
+            ##             temp_position = "flat"
+            ##             temp_entry_price = None
+            ##             trading_halted = True
+            ##             halt_time = time
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).
