@@ -288,6 +288,8 @@ class IBDataBridge:
 
     def _resample_to_minutes(self) -> pd.DataFrame:
         """Resample the accumulated 5-second bars to 1-minute OHLCV bars."""
+        if not self._session_bars:
+            return pd.DataFrame()
         df = pd.DataFrame(self._session_bars).set_index("time")
         idx = pd.to_datetime(df.index)
         df.index = idx.tz_convert(_EST) if idx.tz is not None else idx.tz_localize(_EST)
