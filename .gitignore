@@ -1,4 +1,4 @@
-# QuantConnect Configuration
+# Local config
 config.py
 
 # Python
@@ -29,9 +29,14 @@ wheels/
 # IDE
 .vscode/
 .idea/
+.vs/
 *.swp
 *.swo
 *~
+
+# Test output
+htmlcov/
+.coverage
 
 # OS
 .DS_Store
