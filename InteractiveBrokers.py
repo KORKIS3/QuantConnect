@@ -38,6 +38,7 @@ from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
 
 from TradingAlgo import AlgoConfig, run_trading_algo
 from ReOrgMain import run_live_session
+from plotFigure import ChartPlotter
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -82,6 +83,58 @@ def resolve_ym_front_month(ib: IB) -> Contract:
 
     active.sort(key=lambda c: c.lastTradeDateOrContractMonth)
     return active[0]
+
+
+# ---------------------------------------------------------------------------
+# Live chart window
+# ---------------------------------------------------------------------------
+
+class _LiveChartWindow:
+    """Non-blocking matplotlib window that redraws on each completed minute bar.
+
+    Uses ``plt.ion()`` so the figure stays open while ib_insync's event loop
+    continues to run.  Call ``update()`` whenever a new per-minute algo
+    DataFrame is ready; call ``close()`` when the session ends.
+    """
+
+    def __init__(self, target_date: str, start_time: str, end_time: str) -> None:
+        self.target_date = target_date
+        self.start_time = start_time
+        self.end_time = end_time
+        self._plotter: Optional[ChartPlotter] = None
+
+    def update(self, algo_df: pd.DataFrame) -> None:
+        """Redraw the chart at the latest frame with the current minute data."""
+        import matplotlib.pyplot as _plt
+
+        if self._plotter is None:
+            _plt.ion()
+            self._plotter = ChartPlotter(
+                algo_df,
+                self.target_date,
+                self.start_time,
+                self.end_time,
+                output_dir="",
+                batch_mode=False,
+            )
+            self._plotter.create_figure()
+        else:
+            self._plotter.data = algo_df
+            self._plotter.ax.set_xlim(algo_df.index[0], algo_df.index[-1])
+            if self._plotter.ax_top is not None:
+                self._plotter.ax_top.set_xlim(algo_df.index[0], algo_df.index[-1])
+
+        frame = len(algo_df) - 1
+        self._plotter.update_plot(frame)
+        self._plotter.fig.canvas.draw()
+        self._plotter.fig.canvas.flush_events()
+
+    def close(self) -> None:
+        """Close the live chart window."""
+        import matplotlib.pyplot as _plt
+        if self._plotter is not None and self._plotter.fig is not None:
+            _plt.close(self._plotter.fig)
+        self._plotter = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +196,8 @@ class IBDataBridge:
         self._last_result: Optional[pd.DataFrame] = None
         self._contract: Optional[Contract] = None
         self._current_date: Optional[str] = None
+        self._last_minute: Optional[str] = None
+        self._live_chart: Optional[_LiveChartWindow] = None
 
     # -- connection -----------------------------------------------------------
 
@@ -192,9 +247,14 @@ class IBDataBridge:
         Triggered automatically on day rollover (first bar of a new date) or
         when ``start()`` returns after a KeyboardInterrupt.
         """
+        if self._live_chart is not None:
+            self._live_chart.close()
+            self._live_chart = None
+
         if not self._session_bars or not self._current_date:
             self._session_bars = []
             self._last_result = None
+            self._last_minute = None
             return
 
         log.info(
@@ -222,15 +282,69 @@ class IBDataBridge:
 
         self._session_bars = []
         self._last_result = None
+        self._last_minute = None
+
+    # -- live chart -----------------------------------------------------------
+
+    def _resample_to_minutes(self) -> pd.DataFrame:
+        """Resample the accumulated 5-second bars to 1-minute OHLCV bars."""
+        df = pd.DataFrame(self._session_bars).set_index("time")
+        idx = pd.to_datetime(df.index)
+        df.index = idx.tz_convert(_EST) if idx.tz is not None else idx.tz_localize(_EST)
+        return df.resample("1min").agg(
+            Open=("Open", "first"),
+            High=("High", "max"),
+            Low=("Low", "min"),
+            Close=("Close", "last"),
+            Volume=("Volume", "sum"),
+        ).dropna(subset=["Open"])
+
+    def _update_live_chart(self) -> None:
+        """Resample bars to 1-min, run the algo, and refresh the live chart window."""
+        if not self.show_plot or not self._session_bars:
+            return
+
+        minute_df = self._resample_to_minutes()
+        if minute_df.empty:
+            return
+
+        try:
+            algo_df = run_trading_algo(
+                minute_df,
+                self._current_date,
+                self.start_time,
+                self.end_time,
+                self.config,
+            )
+        except Exception as exc:
+            log.error("[LiveChart] run_trading_algo error: %s", exc)
+            return
+
+        if self._live_chart is None:
+            self._live_chart = _LiveChartWindow(
+                target_date=self._current_date,
+                start_time=self.start_time,
+                end_time=self.end_time,
+            )
+
+        try:
+            self._live_chart.update(algo_df)
+            log.info(
+                "[LiveChart] refreshed  date=%s  bars=%d",
+                self._current_date, len(algo_df),
+            )
+        except Exception as exc:
+            log.error("[LiveChart] update error: %s", exc)
 
     # -- bar handler ----------------------------------------------------------
 
     def _on_bar(self, bars: list[BarData], has_new_bar: bool) -> None:
         """Accumulate each sealed 5-second bar and run the algo.
 
-        Detects a day rollover (bar date differs from ``_current_date``) and
-        calls ``_on_session_end()`` to finalise the previous session before
-        starting a fresh one.
+        On each minute boundary, resamples the accumulated 5-second bars to
+        1-minute OHLCV and refreshes the live ``ChartPlotter`` window.
+        On a day rollover (bar date differs from ``_current_date``), calls
+        ``_on_session_end()`` to finalise the previous session first.
         """
         if not has_new_bar or not bars:
             return
@@ -238,11 +352,18 @@ class IBDataBridge:
         bar = bars[-1]
         bar_time = datetime.fromtimestamp(bar.time, tz=timezone.utc).astimezone(_EST)
         bar_date = bar_time.strftime("%Y-%m-%d")
+        bar_minute = bar_time.strftime("%Y-%m-%d %H:%M")
 
         if self._current_date is not None and bar_date != self._current_date:
             self._on_session_end()
 
         self._current_date = bar_date
+
+        # Minute boundary — previous minute's bars are now sealed; redraw chart.
+        if self._last_minute is not None and bar_minute != self._last_minute:
+            self._update_live_chart()
+
+        self._last_minute = bar_minute
 
         self._session_bars.append({
             "Open":   bar.open,
