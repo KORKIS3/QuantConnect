@@ -490,7 +490,7 @@ class TestBuildParser:
         assert args.dry_run is False
         assert args.start_time == "09:30"
         assert args.end_time == "10:00"
-        assert args.show_plot is False
+        assert args.show_plot is True
         assert args.tracking_root is None
         assert args.image_root is None
 
@@ -500,7 +500,7 @@ class TestBuildParser:
             "--dry-run",
             "--start-time", "08:30",
             "--end-time", "09:30",
-            "--show-plot",
+            "--no-plot",
             "--tracking-root", "/tmp/tracking",
             "--image-root", "/tmp/images",
         ])
@@ -508,7 +508,7 @@ class TestBuildParser:
         assert args.dry_run is True
         assert args.start_time == "08:30"
         assert args.end_time == "09:30"
-        assert args.show_plot is True
+        assert args.show_plot is False
         assert args.tracking_root == "/tmp/tracking"
         assert args.image_root == "/tmp/images"
 

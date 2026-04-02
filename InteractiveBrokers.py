@@ -32,6 +32,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import matplotlib
+matplotlib.use('TkAgg')  # must be before any pyplot import for interactive windows on Windows
+
 import pandas as pd
 import pytz
 from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
@@ -479,8 +482,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Session start time forwarded to ReOrgMain (default: 09:30).")
     p.add_argument("--end-time",       default="10:00", dest="end_time",
                    help="Session end time forwarded to ReOrgMain (default: 10:00).")
-    p.add_argument("--show-plot",      action="store_true", dest="show_plot",
-                   help="Show interactive chart at end of session.")
+    p.add_argument("--no-plot",         action="store_false", dest="show_plot",
+                   help="Disable the live interactive chart.")
+    p.set_defaults(show_plot=True)
     p.add_argument("--tracking-root",  default=None, dest="tracking_root",
                    help="Directory to save per-day tracking CSVs.")
     p.add_argument("--image-root",     default=None, dest="image_root",
