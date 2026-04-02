@@ -37,6 +37,7 @@ import pytz
 from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
 
 from TradingAlgo import AlgoConfig, run_trading_algo
+from ReOrgMain import run_live_session
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -90,6 +91,10 @@ def resolve_ym_front_month(ib: IB) -> Contract:
 class IBDataBridge:
     """Subscribes to YM real-time bars and delegates all signals to TradingAlgo.
 
+    At the end of each trading session (day rollover or manual stop) the full
+    bar history is handed to ``ReOrgMain.run_live_session()`` which runs the
+    same chart / CSV pipeline used by historical back-tests.
+
     Parameters
     ----------
     host, port, client_id:
@@ -98,6 +103,15 @@ class IBDataBridge:
         ``AlgoConfig`` passed through to ``run_trading_algo()``.
     dry_run:
         Log signals without placing any orders.
+    start_time, end_time:
+        Session window forwarded to ``run_live_session()`` (e.g. ``'09:30'``,
+        ``'10:00'``).
+    show_plot:
+        Display the interactive chart at end of session.
+    tracking_root:
+        Directory for per-day tracking CSVs (``None`` = skip).
+    image_root:
+        Directory for per-day chart images (``None`` = skip).
     """
 
     def __init__(
@@ -107,17 +121,28 @@ class IBDataBridge:
         client_id: int = 1,
         config: Optional[AlgoConfig] = None,
         dry_run: bool = False,
+        start_time: str = "09:30",
+        end_time: str = "10:00",
+        show_plot: bool = True,
+        tracking_root: Optional[str] = None,
+        image_root: Optional[str] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.client_id = client_id
         self.config = config or AlgoConfig()
         self.dry_run = dry_run
+        self.start_time = start_time
+        self.end_time = end_time
+        self.show_plot = show_plot
+        self.tracking_root = tracking_root
+        self.image_root = image_root
 
         self._ib = IB()
         self._session_bars: list[dict] = []
         self._last_result: Optional[pd.DataFrame] = None
         self._contract: Optional[Contract] = None
+        self._current_date: Optional[str] = None
 
     # -- connection -----------------------------------------------------------
 
@@ -156,17 +181,68 @@ class IBDataBridge:
         except KeyboardInterrupt:
             log.info("Interrupted.")
         finally:
+            self._on_session_end()
             self.disconnect()
+
+    # -- session finalisation -------------------------------------------------
+
+    def _on_session_end(self) -> None:
+        """Finalise the current session: call run_live_session(), then reset state.
+
+        Triggered automatically on day rollover (first bar of a new date) or
+        when ``start()`` returns after a KeyboardInterrupt.
+        """
+        if not self._session_bars or not self._current_date:
+            self._session_bars = []
+            self._last_result = None
+            return
+
+        log.info(
+            "[Session] %s ended -- running ReOrgMain.run_live_session()",
+            self._current_date,
+        )
+        df = pd.DataFrame(self._session_bars).set_index("time")
+        idx = pd.to_datetime(df.index)
+        df.index = (
+            idx.tz_convert(_EST) if idx.tz is not None else idx.tz_localize(_EST)
+        )
+
+        try:
+            run_live_session(
+                df,
+                target_date=self._current_date,
+                start_time=self.start_time,
+                end_time=self.end_time,
+                show_plot=self.show_plot,
+                tracking_root=self.tracking_root,
+                image_root=self.image_root,
+            )
+        except Exception as exc:
+            log.error("[Session] run_live_session error: %s", exc)
+
+        self._session_bars = []
+        self._last_result = None
 
     # -- bar handler ----------------------------------------------------------
 
     def _on_bar(self, bars: list[BarData], has_new_bar: bool) -> None:
-        """Accumulate each sealed 5-second bar and run the algo."""
+        """Accumulate each sealed 5-second bar and run the algo.
+
+        Detects a day rollover (bar date differs from ``_current_date``) and
+        calls ``_on_session_end()`` to finalise the previous session before
+        starting a fresh one.
+        """
         if not has_new_bar or not bars:
             return
 
         bar = bars[-1]
         bar_time = datetime.fromtimestamp(bar.time, tz=timezone.utc).astimezone(_EST)
+        bar_date = bar_time.strftime("%Y-%m-%d")
+
+        if self._current_date is not None and bar_date != self._current_date:
+            self._on_session_end()
+
+        self._current_date = bar_date
 
         self._session_bars.append({
             "Open":   bar.open,
@@ -271,11 +347,21 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="TWS/Gateway host (default: 127.0.0.1)")
     p.add_argument("--port",      type=int, default=7497,
                    help="TWS/Gateway port (default: 7497 = TWS paper)")
-    p.add_argument("--client-id", type=int, default=1, dest="client_id")
-    p.add_argument("--test",      action="store_true",
+    p.add_argument("--client-id",     type=int, default=1, dest="client_id")
+    p.add_argument("--test",           action="store_true",
                    help="Run connection test only, then exit.")
-    p.add_argument("--dry-run",   action="store_true", dest="dry_run",
+    p.add_argument("--dry-run",        action="store_true", dest="dry_run",
                    help="Log signals without placing orders.")
+    p.add_argument("--start-time",     default="09:30", dest="start_time",
+                   help="Session start time forwarded to ReOrgMain (default: 09:30).")
+    p.add_argument("--end-time",       default="10:00", dest="end_time",
+                   help="Session end time forwarded to ReOrgMain (default: 10:00).")
+    p.add_argument("--show-plot",      action="store_true", dest="show_plot",
+                   help="Show interactive chart at end of session.")
+    p.add_argument("--tracking-root",  default=None, dest="tracking_root",
+                   help="Directory to save per-day tracking CSVs.")
+    p.add_argument("--image-root",     default=None, dest="image_root",
+                   help="Directory to save per-day chart images.")
     return p
 
 
@@ -292,6 +378,11 @@ if __name__ == "__main__":
             port=args.port,
             client_id=args.client_id,
             dry_run=args.dry_run,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            show_plot=args.show_plot,
+            tracking_root=args.tracking_root,
+            image_root=args.image_root,
         )
         bridge.connect()
         bridge.start()
