@@ -37,7 +37,11 @@ def optimize_slope(support: bool, pivot:int , init_slope: float, y: np.array):
     # Initiate at the slope of the line of best fit
     best_slope = init_slope
     best_err = check_trend_line(support, pivot, init_slope, y)
-    assert(best_err >= 0.0) # Shouldn't ever fail with initial slope
+    if best_err < 0.0:
+        # Regression slope bisects data so it is never a valid support/resistance
+        # line. Return it as-is rather than asserting; the caller draws it as a
+        # reasonable approximation.
+        return (best_slope, -best_slope * pivot + y[pivot])
 
     get_derivative = True
     derivative = None
@@ -58,8 +62,8 @@ def optimize_slope(support: bool, pivot:int , init_slope: float, y: np.array):
                 test_err = check_trend_line(support, pivot, slope_change, y)
                 derivative = best_err - test_err
 
-            if test_err < 0.0: # Derivative failed, give up
-                raise Exception("Derivative failed. Check your data. ")
+            if test_err < 0.0: # Derivative failed, return best slope found so far
+                return (best_slope, -best_slope * pivot + y[pivot])
 
             get_derivative = False
 

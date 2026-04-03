@@ -27,15 +27,15 @@ _EST = pytz.timezone("US/Eastern")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _epoch(date_str: str, time_str: str) -> float:
-    """UTC epoch float for a given EST date + time (e.g. '2024-01-15', '09:30:05')."""
+def _epoch(date_str: str, time_str: str) -> datetime:
+    """Timezone-aware EST datetime for a given date + time (e.g. '2024-01-15', '09:30:05')."""
     dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
-    return _EST.localize(dt).timestamp()
+    return _EST.localize(dt)
 
 
-def make_bar(epoch: float, o=38000.0, h=38010.0, l=37990.0, c=38005.0, vol=100):
+def make_bar(dt: datetime, o=38000.0, h=38010.0, l=37990.0, c=38005.0, vol=100):
     """Minimal BarData-like object with the fields _on_bar reads."""
-    return types.SimpleNamespace(time=epoch, open=o, high=h, low=l, close=c, volume=vol)
+    return types.SimpleNamespace(date=dt, open=o, high=h, low=l, close=c, volume=vol)
 
 
 def make_bridge(**kw) -> IBDataBridge:
@@ -47,9 +47,9 @@ def make_bridge(**kw) -> IBDataBridge:
     return bridge
 
 
-def feed_bar(bridge: IBDataBridge, epoch: float, **bar_kw):
+def feed_bar(bridge: IBDataBridge, dt: datetime, **bar_kw):
     """Deliver one sealed bar to bridge._on_bar, suppressing _run_algo."""
-    bar = make_bar(epoch, **bar_kw)
+    bar = make_bar(dt, **bar_kw)
     with patch.object(bridge, "_run_algo"):
         bridge._on_bar([bar], has_new_bar=True)
 
@@ -72,7 +72,7 @@ class TestIBDataBridgeInit:
     def test_defaults(self):
         b = make_bridge()
         assert b.host == "127.0.0.1"
-        assert b.port == 7497
+        assert b.port == 4002
         assert b.client_id == 1
         assert b.dry_run is False
         assert b.start_time == "09:30"
@@ -269,7 +269,8 @@ class TestOnSessionEnd:
         b._session_bars = [
             {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 200, "time": ts}
         ]
-        with patch("InteractiveBrokers.run_live_session") as mock_rls:
+        with patch("InteractiveBrokers.run_live_session") as mock_rls, \
+             patch.object(b, "_save_tracking_csv"):
             b._on_session_end()
         mock_rls.assert_called_once()
         _, kw = mock_rls.call_args
@@ -301,8 +302,21 @@ class TestOnSessionEnd:
         b._session_bars = [
             {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 200, "time": ts}
         ]
-        with patch("InteractiveBrokers.run_live_session", side_effect=RuntimeError("boom")):
+        with patch("InteractiveBrokers.run_live_session", side_effect=RuntimeError("boom")), \
+             patch.object(b, "_save_tracking_csv"):
             b._on_session_end()   # must not raise
+
+    def test_save_tracking_csv_called_at_session_end(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path), show_plot=False)
+        b._current_date = "2024-01-15"
+        ts = pd.Timestamp("2024-01-15 09:30:05", tz=_EST)
+        b._session_bars = [
+            {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 200, "time": ts}
+        ]
+        with patch("InteractiveBrokers.run_live_session"), \
+             patch("InteractiveBrokers.run_trading_algo", return_value=_one_bar_df()):
+            b._on_session_end()
+        assert (tmp_path / "YM_tracking_2024-01-15.csv").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +440,7 @@ class TestLiveChartWindow:
         mock_plotter.create_figure.assert_called_once()
         mock_plotter.update_plot.assert_called_once_with(0)
         mock_plotter.fig.canvas.draw.assert_called_once()
-        mock_plotter.fig.canvas.flush_events.assert_called_once()
+        mock_plotter.fig.canvas.start_event_loop.assert_called_once_with(0.5)
 
     def test_second_update_replaces_data_and_expands_xlim(self):
         w = _LiveChartWindow("2024-01-15", "09:30", "10:00")
@@ -484,15 +498,15 @@ class TestBuildParser:
     def test_defaults(self):
         args = _build_parser().parse_args([])
         assert args.host == "127.0.0.1"
-        assert args.port == 7497
+        assert args.port == 4002
         assert args.client_id == 1
         assert args.test is False
         assert args.dry_run is False
         assert args.start_time == "09:30"
         assert args.end_time == "10:00"
         assert args.show_plot is True
-        assert args.tracking_root is None
-        assert args.image_root is None
+        assert args.tracking_root == os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "tracking")
+        assert args.image_root == os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "charts")
 
     def test_all_live_flags(self):
         args = _build_parser().parse_args([
@@ -519,3 +533,117 @@ class TestBuildParser:
     def test_client_id_flag(self):
         args = _build_parser().parse_args(["--client-id", "5"])
         assert args.client_id == 5
+
+
+# ---------------------------------------------------------------------------
+# _append_bar_to_excel
+# ---------------------------------------------------------------------------
+
+class TestAppendBarToExcel:
+
+    def test_no_file_when_tracking_root_is_none(self, tmp_path):
+        b = make_bridge(tracking_root=None)
+        dt = _epoch("2024-01-15", "09:30:05")
+        feed_bar(b, dt)
+        assert b._raw_wb is None
+
+    def test_creates_workbook_on_first_bar(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path))
+        dt = _epoch("2024-01-15", "09:30:05")
+        feed_bar(b, dt)
+        assert b._raw_wb is not None
+        assert b._raw_path == str(tmp_path / "YM_raw_2024-01-15.xlsx")
+
+    def test_file_exists_after_first_bar(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path))
+        feed_bar(b, _epoch("2024-01-15", "09:30:05"))
+        assert (tmp_path / "YM_raw_2024-01-15.xlsx").exists()
+
+    def test_headers_are_correct(self, tmp_path):
+        from openpyxl import load_workbook
+        b = make_bridge(tracking_root=str(tmp_path))
+        feed_bar(b, _epoch("2024-01-15", "09:30:05"))
+        wb = load_workbook(tmp_path / "YM_raw_2024-01-15.xlsx")
+        headers = [c.value for c in wb.active[1]]
+        assert headers == ["Time", "Open", "High", "Low", "Close", "Volume"]
+
+    def test_row_values_are_correct(self, tmp_path):
+        from openpyxl import load_workbook
+        b = make_bridge(tracking_root=str(tmp_path))
+        feed_bar(b, _epoch("2024-01-15", "09:30:05"), o=38000.0, h=38010.0, l=37990.0, c=38005.0, vol=50)
+        wb = load_workbook(tmp_path / "YM_raw_2024-01-15.xlsx")
+        row = [c.value for c in wb.active[2]]
+        assert row[0] == "2024-01-15 09:30:05"
+        assert row[1] == 38000.0
+        assert row[2] == 38010.0
+        assert row[3] == 37990.0
+        assert row[4] == 38005.0
+        assert row[5] == 50
+
+    def test_each_bar_appends_a_row(self, tmp_path):
+        from openpyxl import load_workbook
+        b = make_bridge(tracking_root=str(tmp_path))
+        for sec in range(5, 20, 5):
+            feed_bar(b, _epoch("2024-01-15", f"09:30:{sec:02d}"))
+        wb = load_workbook(tmp_path / "YM_raw_2024-01-15.xlsx")
+        assert wb.active.max_row == 4  # 1 header + 3 data rows
+
+
+# ---------------------------------------------------------------------------
+# _save_tracking_csv
+# ---------------------------------------------------------------------------
+
+class TestLiveTrackingCSV:
+
+    def test_no_csv_when_tracking_root_is_none(self, tmp_path):
+        b = make_bridge(tracking_root=None)
+        b._current_date = "2024-01-15"
+        ts = pd.Timestamp("2024-01-15 09:30:05", tz=_EST)
+        b._session_bars = [
+            {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 200, "time": ts}
+        ]
+        with patch("InteractiveBrokers.run_trading_algo") as mock_rta:
+            b._save_tracking_csv()
+        mock_rta.assert_not_called()
+
+    def test_no_csv_when_session_bars_empty(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path))
+        b._current_date = "2024-01-15"
+        b._save_tracking_csv()
+        assert not (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+
+    def test_csv_written_at_minute_boundary(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path), show_plot=False)
+        with patch("InteractiveBrokers.run_trading_algo", return_value=_one_bar_df()):
+            feed_bar(b, _epoch("2024-01-15", "09:30:05"))   # first bar — no boundary
+            assert not (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+            feed_bar(b, _epoch("2024-01-15", "09:31:05"))   # rollover → CSV written
+        assert (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+
+    def test_no_csv_within_same_minute(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path), show_plot=False)
+        with patch("InteractiveBrokers.run_trading_algo", return_value=_one_bar_df()):
+            for sec in range(0, 60, 5):
+                feed_bar(b, _epoch("2024-01-15", f"09:30:{sec:02d}"))
+        assert not (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+
+    def test_csv_updated_on_each_minute_boundary(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path), show_plot=False)
+        with patch("InteractiveBrokers.run_trading_algo", return_value=_one_bar_df()) as mock_rta:
+            feed_bar(b, _epoch("2024-01-15", "09:30:05"))
+            feed_bar(b, _epoch("2024-01-15", "09:31:05"))   # first boundary
+            feed_bar(b, _epoch("2024-01-15", "09:32:05"))   # second boundary
+        # show_plot=False so _update_live_chart skips algo; only _save_tracking_csv calls it
+        assert mock_rta.call_count == 2
+        assert (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+
+    def test_algo_error_does_not_propagate(self, tmp_path):
+        b = make_bridge(tracking_root=str(tmp_path), show_plot=False)
+        b._current_date = "2024-01-15"
+        ts = pd.Timestamp("2024-01-15 09:30:05", tz=_EST)
+        b._session_bars = [
+            {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 200, "time": ts}
+        ]
+        with patch("InteractiveBrokers.run_trading_algo", side_effect=ValueError("boom")):
+            b._save_tracking_csv()   # must not raise
+        assert not (tmp_path / "YM_tracking_2024-01-15.csv").exists()

@@ -4,7 +4,7 @@ IB data bridge for the YM E-mini Futures trendline strategy.
 
 Connects to TWS or IB Gateway via ib_insync, subscribes to the front-month
 YM contract, and hands each bar to TradingAlgo.run_trading_algo() -- the
-same engine used by QuantConnectLocal, ReOrgMain, and RunAllDays.
+same engine used by ReOrgMain and RunAllDays.
 
 Connection presets
 ------------------
@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime
 from typing import Optional
 
 import matplotlib
@@ -38,6 +39,7 @@ matplotlib.use('TkAgg')  # must be before any pyplot import for interactive wind
 import pandas as pd
 import pytz
 from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
+from openpyxl import Workbook
 
 from TradingAlgo import AlgoConfig, run_trading_algo
 from ReOrgMain import run_live_session
@@ -55,6 +57,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 _EST = pytz.timezone("US/Eastern")
+_IB_LIVE_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live")
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +113,15 @@ class _LiveChartWindow:
         """Redraw the chart at the latest frame with the current minute data."""
         import matplotlib.pyplot as _plt
 
-        if self._plotter is None:
+        # Rolling 9-minute window: 7 minutes of history to the left of the
+        # latest bar plus 2 minutes of empty space to the right so upcoming
+        # bars have room on the axis.  The window slides forward by one minute
+        # on every update call.
+        _x_start = algo_df.index[-1] - pd.Timedelta(minutes=7)
+        _x_end   = algo_df.index[-1] + pd.Timedelta(minutes=2)
+
+        is_first = self._plotter is None
+        if is_first:
             _plt.ion()
             self._plotter = ChartPlotter(
                 algo_df,
@@ -121,16 +132,52 @@ class _LiveChartWindow:
                 batch_mode=False,
             )
             self._plotter.create_figure()
+            self._plotter.ax.set_xlim(_x_start, _x_end)
+            if self._plotter.ax_top is not None:
+                self._plotter.ax_top.set_xlim(_x_start, _x_end)
         else:
             self._plotter.data = algo_df
-            self._plotter.ax.set_xlim(algo_df.index[0], algo_df.index[-1])
+            self._plotter.ax.set_xlim(_x_start, _x_end)
             if self._plotter.ax_top is not None:
-                self._plotter.ax_top.set_xlim(algo_df.index[0], algo_df.index[-1])
+                self._plotter.ax_top.set_xlim(_x_start, _x_end)
 
         frame = len(algo_df) - 1
         self._plotter.update_plot(frame)
-        self._plotter.fig.canvas.draw()
-        self._plotter.fig.canvas.flush_events()
+        if is_first:
+            # show(block=False) registers the window; start_event_loop() runs
+            # the Tkinter event loop for 500 ms so the window is actually
+            # mapped, painted, and visible before control returns.
+            # start_event_loop() is preferred over plt.pause() because it
+            # targets only this canvas and returns cleanly after the timeout,
+            # avoiding re-entrancy issues if called from inside ib.run().
+            _plt.show(block=False)
+            self._plotter.fig.canvas.draw()
+            # On Windows the new figure window often appears behind the
+            # terminal.  Temporarily set -topmost so the OS raises it to
+            # the front; the after() call reverts that flag once the window
+            # has been painted and presented to the user.
+            try:
+                win = self._plotter.fig.canvas.manager.window
+                win.lift()
+                win.attributes("-topmost", True)
+                win.after(500, lambda: win.attributes("-topmost", False))
+            except Exception:
+                pass
+            self._plotter.fig.canvas.start_event_loop(0.5)
+        else:
+            # draw() triggers an immediate synchronous redraw so the chart
+            # updates visually every minute even though asyncio owns the
+            # main thread (draw_idle() only schedules for the next Tkinter
+            # idle callback, which never fires in this context).
+            self._plotter.fig.canvas.draw()
+
+    def pump(self) -> None:
+        """Pump the Tkinter event queue to keep the window responsive."""
+        if self._plotter is not None and self._plotter.fig is not None:
+            try:
+                self._plotter.fig.canvas.flush_events()
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Close the live chart window."""
@@ -173,7 +220,7 @@ class IBDataBridge:
     def __init__(
         self,
         host: str = "127.0.0.1",
-        port: int = 7497,
+        port: int = 4002,
         client_id: int = 1,
         config: Optional[AlgoConfig] = None,
         dry_run: bool = False,
@@ -201,6 +248,9 @@ class IBDataBridge:
         self._current_date: Optional[str] = None
         self._last_minute: Optional[str] = None
         self._live_chart: Optional[_LiveChartWindow] = None
+        self._raw_wb: Optional[Workbook] = None
+        self._raw_ws = None
+        self._raw_path: Optional[str] = None
 
     # -- connection -----------------------------------------------------------
 
@@ -220,18 +270,42 @@ class IBDataBridge:
     # -- real-time bar subscription -------------------------------------------
 
     def start(self) -> None:
-        """Subscribe to 5-second real-time bars and run the event loop."""
+        """Subscribe to historical data with keepUpToDate and run the event loop."""
         if self._contract is None:
             raise RuntimeError("Call connect() before start().")
 
-        bars = self._ib.reqRealTimeBars(
+        bars = self._ib.reqHistoricalData(
             self._contract,
-            barSize=5,
+            endDateTime="",
+            durationStr="3600 S",  # IB max for 5-sec bars; "1 D" exceeds the limit and returns empty
+            barSizeSetting="5 secs",
             whatToShow="TRADES",
             useRTH=False,
+            formatDate=1,
+            keepUpToDate=True,
         )
+
+        for bar in bars:
+            bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
+            self._current_date = bar_time.strftime("%Y-%m-%d")
+            self._last_minute = bar_time.strftime("%Y-%m-%d %H:%M")
+            self._session_bars.append({
+                "Open":   bar.open,
+                "High":   bar.high,
+                "Low":    bar.low,
+                "Close":  bar.close,
+                "Volume": bar.volume,
+                "time":   bar_time,
+            })
+
+        if self._session_bars:
+            log.info(
+                "Pre-loaded %d historical bars for %s",
+                len(self._session_bars), self._current_date,
+            )
+
         bars.updateEvent += self._on_bar
-        log.info("Subscribed to real-time bars for %s", self._contract.localSymbol)
+        log.info("Subscribed to live bars for %s", self._contract.localSymbol)
         log.info("Press Ctrl+C to stop.")
 
         try:
@@ -264,30 +338,39 @@ class IBDataBridge:
             "[Session] %s ended -- running ReOrgMain.run_live_session()",
             self._current_date,
         )
-        df = pd.DataFrame(self._session_bars).set_index("time")
-        idx = pd.to_datetime(df.index)
-        df.index = (
-            idx.tz_convert(_EST) if idx.tz is not None else idx.tz_localize(_EST)
-        )
 
+        # Always write the tracking CSV from all accumulated bars first.
+        # This guarantees a file appears in IB_Live/tracking even when the
+        # script is stopped before a minute boundary fires or outside the
+        # 09:30-10:00 session window.
         try:
-            run_live_session(
-                df,
-                target_date=self._current_date,
-                start_time=self.start_time,
-                end_time=self.end_time,
-                show_plot=self.show_plot,
-                tracking_root=self.tracking_root,
-                image_root=self.image_root,
-            )
+            self._save_tracking_csv()
         except Exception as exc:
-            log.error("[Session] run_live_session error: %s", exc)
+            log.error("[Session] _save_tracking_csv error: %s", exc)
+
+        # Resample raw 5-second bars to 1-minute before handing to
+        # run_live_session, which (like run_single_day) expects 1-minute data.
+        minute_df = self._resample_to_minutes()
+        if not minute_df.empty:
+            try:
+                run_live_session(
+                    minute_df,
+                    target_date=self._current_date,
+                    start_time=self.start_time,
+                    end_time=self.end_time,
+                    show_plot=self.show_plot,
+                    tracking_root=self.tracking_root,
+                    image_root=self.image_root,
+                )
+            except Exception as exc:
+                log.error("[Session] run_live_session error: %s", exc)
 
         self._session_bars = []
         self._last_result = None
         self._last_minute = None
-
-    # -- live chart -----------------------------------------------------------
+        self._raw_wb = None
+        self._raw_ws = None
+        self._raw_path = None
 
     def _resample_to_minutes(self) -> pd.DataFrame:
         """Resample the accumulated 5-second bars to 1-minute OHLCV bars."""
@@ -355,7 +438,7 @@ class IBDataBridge:
             return
 
         bar = bars[-1]
-        bar_time = datetime.fromtimestamp(bar.time, tz=timezone.utc).astimezone(_EST)
+        bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
         bar_date = bar_time.strftime("%Y-%m-%d")
         bar_minute = bar_time.strftime("%Y-%m-%d %H:%M")
 
@@ -364,9 +447,24 @@ class IBDataBridge:
 
         self._current_date = bar_date
 
-        # Minute boundary — previous minute's bars are now sealed; redraw chart.
+        # Minute boundary — previous minute's bars are now sealed; run algo and redraw chart.
         if self._last_minute is not None and bar_minute != self._last_minute:
-            self._update_live_chart()
+            log.info(
+                "[OnBar] minute boundary  %s → %s  buffered=%d",
+                self._last_minute, bar_minute, len(self._session_bars),
+            )
+            try:
+                self._update_live_chart()
+            except Exception as exc:
+                log.error("[OnBar] _update_live_chart error: %s", exc)
+            try:
+                self._run_algo()
+            except Exception as exc:
+                log.error("[OnBar] _run_algo error: %s", exc)
+            try:
+                self._save_tracking_csv()
+            except Exception as exc:
+                log.error("[OnBar] _save_tracking_csv error: %s", exc)
 
         self._last_minute = bar_minute
 
@@ -378,8 +476,64 @@ class IBDataBridge:
             "Volume": bar.volume,
             "time":   bar_time,
         })
+        self._append_bar_to_excel(bar_time, bar)
 
-        self._run_algo()
+    # -- raw 5-second Excel log ----------------------------------------------
+
+    def _append_bar_to_excel(self, bar_time: datetime, bar) -> None:
+        """Append one 5-second bar row to the per-day raw Excel workbook."""
+        if not self.tracking_root:
+            return
+
+        path = os.path.join(self.tracking_root, f"YM_raw_{self._current_date}.xlsx")
+
+        if self._raw_wb is None:
+            os.makedirs(self.tracking_root, exist_ok=True)
+            self._raw_wb = Workbook()
+            self._raw_ws = self._raw_wb.active
+            self._raw_ws.append(["Time", "Open", "High", "Low", "Close", "Volume"])
+            self._raw_path = path
+
+        self._raw_ws.append([
+            bar_time.strftime("%Y-%m-%d %H:%M:%S"),
+            bar.open, bar.high, bar.low, bar.close, bar.volume,
+        ])
+        self._raw_wb.save(self._raw_path)
+
+    # -- per-minute tracking CSV ---------------------------------------------
+
+    def _save_tracking_csv(self) -> None:
+        """Resample current session bars and overwrite the live tracking CSV.
+
+        Called at every minute boundary so ``YM_tracking_{date}.csv`` reflects
+        the latest algo output throughout the session, not just at session end.
+        """
+        if not self.tracking_root or not self._current_date or not self._session_bars:
+            return
+
+        minute_df = self._resample_to_minutes()
+        if minute_df.empty:
+            return
+
+        try:
+            algo_df = run_trading_algo(
+                minute_df,
+                self._current_date,
+                self.start_time,
+                self.end_time,
+                self.config,
+            )
+        except Exception as exc:
+            log.error("[TrackingCSV] run_trading_algo error: %s", exc)
+            return
+
+        try:
+            os.makedirs(self.tracking_root, exist_ok=True)
+            path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}.csv")
+            algo_df.to_csv(path)
+            log.info("[TrackingCSV] saved  %s  rows=%d", path, len(algo_df))
+        except Exception as exc:
+            log.error("[TrackingCSV] write error: %s", exc)
 
     # -- algo delegation ------------------------------------------------------
 
@@ -388,11 +542,19 @@ class IBDataBridge:
         if not self._session_bars:
             return
 
-        df = pd.DataFrame(self._session_bars).set_index("time")
-        target_date = df.index[0].strftime("%Y-%m-%d")
+        minute_df = self._resample_to_minutes()
+        if minute_df.empty:
+            return
+        target_date = self._current_date
 
         try:
-            result = run_trading_algo(df, target_date=target_date, config=self.config)
+            result = run_trading_algo(
+                minute_df,
+                target_date=target_date,
+                start_time=self.start_time,
+                end_time=self.end_time,
+                config=self.config,
+            )
         except Exception as exc:
             log.error("[TradingAlgo] run error: %s", exc)
             return
@@ -402,7 +564,7 @@ class IBDataBridge:
         signal = str(last.get("signal", ""))
         is_liq = bool(last.get("is_liquidation", False))
         pl = float(last.get("pl", 0.0))
-        price = float(df["Close"].iloc[-1])
+        price = float(minute_df["Close"].iloc[-1])
 
         if signal == "BUY":
             if is_liq:
@@ -471,8 +633,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="IB data bridge for YM TradingAlgo strategy.")
     p.add_argument("--host",      default="127.0.0.1",
                    help="TWS/Gateway host (default: 127.0.0.1)")
-    p.add_argument("--port",      type=int, default=7497,
-                   help="TWS/Gateway port (default: 7497 = TWS paper)")
+    p.add_argument("--port",      type=int, default=4002,
+                   help="TWS/Gateway port (default: 4002 = IB Gateway paper)")
     p.add_argument("--client-id",     type=int, default=1, dest="client_id")
     p.add_argument("--test",           action="store_true",
                    help="Run connection test only, then exit.")
@@ -485,10 +647,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-plot",         action="store_false", dest="show_plot",
                    help="Disable the live interactive chart.")
     p.set_defaults(show_plot=True)
-    p.add_argument("--tracking-root",  default=None, dest="tracking_root",
-                   help="Directory to save per-day tracking CSVs.")
-    p.add_argument("--image-root",     default=None, dest="image_root",
-                   help="Directory to save per-day chart images.")
+    p.add_argument("--tracking-root",  default=os.path.join(_IB_LIVE_ROOT, "tracking"), dest="tracking_root",
+                   help="Directory to save per-day tracking CSVs (default: ~/Desktop/IB_Live/tracking).")
+    p.add_argument("--image-root",     default=os.path.join(_IB_LIVE_ROOT, "charts"), dest="image_root",
+                   help="Directory to save per-day chart images (default: ~/Desktop/IB_Live/charts).")
     return p
 
 

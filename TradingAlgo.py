@@ -38,6 +38,7 @@ class AlgoConfig:
     blue_angle: float = 45.0
     steep_angle_threshold: float = 45.0
     proximity_points: float = 50.0
+    warmup_minutes: Optional[int] = None
 
 
 class Ray:
@@ -53,6 +54,8 @@ class Ray:
 
     def calculate_slope(self, x_per_unit: float, y_per_unit: float) -> float:
         """Calculate slope in data units based on angle and aspect ratio."""
+        if x_per_unit == 0:
+            return 0.0
         angle_rad = np.deg2rad(self.angle_degrees)
         tan_angle = np.tan(angle_rad)
         return float(tan_angle * (y_per_unit / x_per_unit))
@@ -367,11 +370,19 @@ def run_trading_algo(
     except Exception:
         pass
 
-    # Cutoff is 8 minutes after the session start (no trading in first 8 mins).
-    cutoff_time = (
-        pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
-        + pd.Timedelta(minutes=8)
-    )
+    # Resolve config early so warmup_minutes is available for the cutoff.
+    cfg = config or AlgoConfig()
+
+    # Cutoff: when warmup_minutes is set, trading begins that many minutes
+    # after the first bar in the dataset (any-time-of-day).  Otherwise fall
+    # back to the fixed 8-minute offset from session start (legacy behaviour).
+    if cfg.warmup_minutes is not None:
+        cutoff_time = full_data.index[0] + pd.Timedelta(minutes=cfg.warmup_minutes)
+    else:
+        cutoff_time = (
+            pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
+            + pd.Timedelta(minutes=8)
+        )
 
     # Compute an aspect ratio that matches the interactive ChartPlotter so
     # that angle-based filters (e.g. the 65° cutoff on purple/blue rays)
@@ -401,7 +412,6 @@ def run_trading_algo(
     y_per_unit = _y_range / _ax_h_in
 
     # Initialize ray manager and per-minute steep rays.
-    cfg = config or AlgoConfig()
     rm = RayManager(full_data, config=cfg)
 
     if rm.orange_ray is None:
