@@ -71,9 +71,14 @@ class LiveMonitor:
     # ------------------------------------------------------------------
 
     def _derive_session_window(self, bar_time: datetime) -> None:
-        """Compute session_start / session_end from the first live bar."""
-        self._session_start = bar_time.strftime("%H:%M")
-        self._session_end   = (bar_time + timedelta(minutes=CHART_LOOKBACK)).strftime("%H:%M")
+        """Compute session_start / session_end centred around bar_time.
+
+        session_start is CHART_LOOKBACK minutes before bar_time so the
+        chart window covers the most recent data.
+        """
+        start_dt = bar_time - timedelta(minutes=CHART_LOOKBACK)
+        self._session_start = start_dt.strftime("%H:%M")
+        self._session_end   = (bar_time + timedelta(minutes=30)).strftime("%H:%M")
         log.info(
             "[Monitor] session window: %s – %s  (warmup=%d min)",
             self._session_start, self._session_end, self.warmup_minutes,
@@ -200,20 +205,68 @@ class LiveMonitor:
     def run(self) -> None:
         util.logToConsole()
 
-        log.info("Connecting to IB Gateway 127.0.0.1:4002 ...")
+        print("[Monitor] Connecting to IB Gateway 127.0.0.1:4002 ...")
         self._ib.connect("127.0.0.1", 4002, clientId=97)
-        log.info("Connected.  Server v%s  account=%s",
-                 self._ib.client.serverVersion(), self._ib.managedAccounts())
+        print(f"[Monitor] Connected.  Server v{self._ib.client.serverVersion()}  "
+              f"account={self._ib.managedAccounts()}")
 
         contract = resolve_ym_front_month(self._ib)
-        log.info("Contract: %s  expiry=%s",
-                 contract.localSymbol, contract.lastTradeDateOrContractMonth)
+        print(f"[Monitor] Contract: {contract.localSymbol}  "
+              f"expiry={contract.lastTradeDateOrContractMonth}")
 
-        # Request 60 S of history purely to prime _current_date / _last_minute
-        # so the first live minute-boundary fires correctly.
-        # Historical bars are NOT accumulated -- live data only.
-        log.info("Subscribing to live bars ...")
-        bars = self._ib.reqHistoricalData(
+        # ── Stage 1: fast seed chart ────────────────────────────────────────
+        # Fetch last 2 hours of 1-min bars with keepUpToDate=False.
+        # This returns quickly (no streaming setup) so the chart appears fast.
+        print("[Monitor] Stage 1 -- fetching 2-hour seed (1-min bars) ...")
+        seed_bars = self._ib.reqHistoricalData(
+            contract,
+            endDateTime="",
+            durationStr="7200 S",
+            barSizeSetting="1 min",
+            whatToShow="TRADES",
+            useRTH=False,
+            formatDate=1,
+            keepUpToDate=False,
+        )
+
+        for bar in seed_bars:
+            bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
+            self._current_date = bar_time.strftime("%Y-%m-%d")
+            self._last_minute  = bar_time.strftime("%Y-%m-%d %H:%M")
+            self._session_bars.append({
+                "Open": bar.open, "High": bar.high, "Low": bar.low,
+                "Close": bar.close, "Volume": bar.volume, "time": bar_time,
+            })
+
+        print(f"[Monitor] Stage 1 complete -- {len(self._session_bars)} seed bars loaded.")
+
+        # Clock fallback when HMDS returns no bars (Error 162 / weekend).
+        if self._current_date is None:
+            now_est = datetime.now(_EST)
+            self._current_date = now_est.strftime("%Y-%m-%d")
+            self._last_minute  = now_est.strftime("%Y-%m-%d %H:%M")
+            print(f"[Monitor] WARNING -- HMDS returned no bars, clock fallback: "
+                  f"date={self._current_date}  last_minute={self._last_minute}")
+
+        # Derive session window from the LAST seed bar so the chart is
+        # anchored to the most recent data, not 2 hours ago.
+        if self._session_bars:
+            self._derive_session_window(self._session_bars[-1]["time"])
+            print("[Monitor] Showing initial chart from seed data ...")
+            try:
+                self._run_pipeline()
+                self._minute_count = 0
+                print("[Monitor] Seed chart displayed.")
+            except Exception as exc:
+                print(f"[Monitor] WARNING -- seed chart failed: {exc}")
+        else:
+            print("[Monitor] No seed bars -- chart will appear on first live bar.")
+
+        # ── Stage 2: live 5-sec subscription ───────────────────────────────
+        # Short durationStr so IB sets up the stream quickly.
+        # keepUpToDate=True delivers new bars via _on_bar every 5 seconds.
+        print("[Monitor] Stage 2 -- subscribing to live 5-sec bars ...")
+        live_bars = self._ib.reqHistoricalData(
             contract,
             endDateTime="",
             durationStr="60 S",
@@ -224,49 +277,39 @@ class LiveMonitor:
             keepUpToDate=True,
         )
 
-        for bar in bars:
+        # Sync last_minute to the live seed so the first boundary fires right.
+        for bar in live_bars:
             bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
             self._current_date = bar_time.strftime("%Y-%m-%d")
             self._last_minute  = bar_time.strftime("%Y-%m-%d %H:%M")
 
-        # Clock fallback when HMDS returns no bars (Error 162 / weekend / maintenance).
-        if self._current_date is None:
-            now_est = datetime.now(_EST)
-            self._current_date = now_est.strftime("%Y-%m-%d")
-            self._last_minute  = now_est.strftime("%Y-%m-%d %H:%M")
-            log.warning(
-                "[Seed] HMDS returned no bars -- clock fallback: date=%s  last_minute=%s",
-                self._current_date, self._last_minute,
-            )
+        print(f"[Monitor] Live subscription ready.  last_minute={self._last_minute}")
+        print(f"[Monitor] Signals fire after {self.warmup_minutes}-min warm-up from "
+              f"first seed bar.  Chart updates every minute.")
 
-        log.info(
-            "Ready.  Waiting for live bars.  Signals start after %d-min warm-up.",
-            self.warmup_minutes,
-        )
-
-        bars.updateEvent += self._on_bar
+        live_bars.updateEvent += self._on_bar
 
         _pump_task = None
         if self.show_plot:
             try:
                 loop = asyncio.get_event_loop()
                 _pump_task = loop.create_task(self._gui_pump_loop())
-                log.info("[Monitor] GUI pump task scheduled.")
+                print("[Monitor] GUI pump task scheduled.")
             except Exception as exc:
-                log.warning("[Monitor] GUI pump task failed: %s", exc)
+                print(f"[Monitor] WARNING -- GUI pump task failed: {exc}")
 
-        log.info("Running -- press Ctrl+C to stop.")
+        print("[Monitor] Running -- press Ctrl+C to stop.")
         try:
             self._ib.run()
         except KeyboardInterrupt:
-            log.info("Interrupted by user.")
+            print("[Monitor] Interrupted by user.")
         finally:
             if _pump_task is not None:
                 _pump_task.cancel()
 
-        log.info("[Monitor] session ended  minutes_processed=%d", self._minute_count)
+        print(f"[Monitor] Session ended -- minutes_processed={self._minute_count}")
 
-        # Keep chart open after disconnect so you can inspect bars.
+        # Keep chart open after disconnect.
         if self.show_plot and self._live_chart is not None:
             try:
                 import matplotlib.pyplot as _plt
@@ -274,10 +317,10 @@ class LiveMonitor:
                 if plotter is not None:
                     plotter.create_navigation_buttons()
                     _plt.ioff()
-                    log.info("Chart window open -- close it to exit.")
+                    print("[Monitor] Chart window open -- close it to exit.")
                     _plt.show()
             except Exception as exc:
-                log.error("[Chart] final show: %s", exc)
+                print(f"[Monitor] ERROR -- final show: {exc}")
 
 
 # ---------------------------------------------------------------------------
