@@ -17,7 +17,6 @@ Usage:
     python test_live_try2.py --no-plot   # CSV-only, no chart window
 """
 
-import asyncio
 import os
 import sys
 import logging
@@ -166,9 +165,8 @@ class LiveMonitor:
         if self._session_start is None:
             self._derive_session_window(bar_time)
 
-        at_boundary  = (self._last_minute is not None and bar_min != self._last_minute)
-        is_first     = len(self._session_bars) == 0
-        prev_minute  = self._last_minute
+        at_boundary = (self._last_minute is not None and bar_min != self._last_minute)
+        prev_minute = self._last_minute
 
         self._last_minute = bar_min
         self._session_bars.append({
@@ -188,27 +186,18 @@ class LiveMonitor:
             self._ib.disconnect()
             return
 
-        # Update chart on minute boundary or immediately on the very first bar.
-        if at_boundary or is_first:
-            if at_boundary:
-                log.info("[OnBar] %s -> %s  (%d bars buffered)",
-                         prev_minute, bar_min, len(self._session_bars))
+        # Update chart on every minute boundary.
+        if at_boundary:
+            log.info("[OnBar] %s -> %s  (%d bars buffered)",
+                     prev_minute, bar_min, len(self._session_bars))
             try:
                 self._run_pipeline()
             except Exception as exc:
                 log.error("[OnBar] %s", exc)
-            if is_first:
-                self._minute_count = 0
 
-    # ------------------------------------------------------------------
-    # GUI pump (keeps Tkinter/matplotlib responsive inside ib.run())
-    # ------------------------------------------------------------------
-
-    async def _gui_pump_loop(self) -> None:
-        while True:
-            if self._live_chart is not None:
-                self._live_chart.pump()
-            await asyncio.sleep(0.05)
+        # Pump the chart window every 5-sec bar so Tkinter stays responsive.
+        if self._live_chart is not None:
+            self._live_chart.pump()
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -261,23 +250,11 @@ class LiveMonitor:
 
         live_bars.updateEvent += self._on_bar
 
-        _pump_task = None
-        if self.show_plot:
-            try:
-                loop = asyncio.get_event_loop()
-                _pump_task = loop.create_task(self._gui_pump_loop())
-                print("[Monitor] GUI pump task scheduled.")
-            except Exception as exc:
-                print(f"[Monitor] WARNING -- GUI pump task failed: {exc}")
-
         print("[Monitor] Running -- press Ctrl+C to stop.")
         try:
             self._ib.run()
         except KeyboardInterrupt:
             print("[Monitor] Interrupted by user.")
-        finally:
-            if _pump_task is not None:
-                _pump_task.cancel()
 
         print(f"[Monitor] Session ended -- minutes_processed={self._minute_count}")
 
