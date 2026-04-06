@@ -42,8 +42,8 @@ log = logging.getLogger(__name__)
 
 _EST = pytz.timezone("US/Eastern")
 TRACKING_ROOT  = r"C:\Users\Administrator\Desktop\IB_Live\tracking"
-WARMUP_MINUTES = 7    # bars before this minute are observation-only
-CHART_LOOKBACK = 90   # minutes used as the session window length
+WARMUP_MINUTES = 7       # minutes before signals are generated
+SESSION_END    = "10:30"  # auto-stop time (US/Eastern)
 
 
 class LiveMonitor:
@@ -65,24 +65,19 @@ class LiveMonitor:
         self._session_end:   Optional[str] = None   # session_start + CHART_LOOKBACK
         self._live_chart:    Optional[_LiveChartWindow] = None
         self._minute_count:  int = 0
+        self._stopped:       bool = False
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _derive_session_window(self, bar_time: datetime) -> None:
-        """Compute session_start / session_end centred around bar_time.
-
-        session_start is CHART_LOOKBACK minutes before bar_time so the
-        chart window covers the most recent data.
-        """
-        start_dt = bar_time - timedelta(minutes=CHART_LOOKBACK)
-        self._session_start = start_dt.strftime("%H:%M")
-        self._session_end   = (bar_time + timedelta(minutes=30)).strftime("%H:%M")
-        log.info(
-            "[Monitor] session window: %s – %s  (warmup=%d min)",
-            self._session_start, self._session_end, self.warmup_minutes,
-        )
+        """Set session_start from the first live bar; session_end is SESSION_END."""
+        self._session_start = bar_time.strftime("%H:%M")
+        self._session_end   = SESSION_END
+        signal_time = (bar_time + timedelta(minutes=self.warmup_minutes)).strftime("%H:%M")
+        print(f"[Monitor] Session window: {self._session_start} \u2013 {self._session_end}  "
+              f"(signals from {signal_time})")
 
     def _resample_to_minutes(self) -> pd.DataFrame:
         if not self._session_bars:
@@ -158,7 +153,7 @@ class LiveMonitor:
     # ------------------------------------------------------------------
 
     def _on_bar(self, bars, has_new_bar: bool) -> None:
-        if not has_new_bar or not bars:
+        if not has_new_bar or not bars or self._stopped:
             return
 
         bar      = bars[-1]
@@ -167,26 +162,43 @@ class LiveMonitor:
 
         self._current_date = bar_time.strftime("%Y-%m-%d")
 
-        # First live bar -- derive dynamic session window.
+        # First live bar -- derive session window from actual start time.
         if self._session_start is None:
             self._derive_session_window(bar_time)
 
-        # Minute boundary -- sealed minute is ready to process.
-        if self._last_minute is not None and bar_min != self._last_minute:
-            log.info(
-                "[OnBar] %s -> %s  (%d 5-sec bars buffered)",
-                self._last_minute, bar_min, len(self._session_bars),
-            )
-            try:
-                self._run_pipeline()
-            except Exception as exc:
-                log.error("[OnBar] %s", exc)
+        at_boundary  = (self._last_minute is not None and bar_min != self._last_minute)
+        is_first     = len(self._session_bars) == 0
+        prev_minute  = self._last_minute
 
         self._last_minute = bar_min
         self._session_bars.append({
             "Open": bar.open, "High": bar.high, "Low": bar.low,
             "Close": bar.close, "Volume": bar.volume, "time": bar_time,
         })
+
+        # Auto-stop: at or past SESSION_END run final pipeline then disconnect.
+        if bar_time.strftime("%H:%M") >= SESSION_END:
+            self._stopped = True
+            print(f"[Monitor] {SESSION_END} reached -- running final pipeline.")
+            try:
+                self._run_pipeline()
+            except Exception as exc:
+                log.error("[OnBar] final pipeline: %s", exc)
+            print("[Monitor] Disconnecting.")
+            self._ib.disconnect()
+            return
+
+        # Update chart on minute boundary or immediately on the very first bar.
+        if at_boundary or is_first:
+            if at_boundary:
+                log.info("[OnBar] %s -> %s  (%d bars buffered)",
+                         prev_minute, bar_min, len(self._session_bars))
+            try:
+                self._run_pipeline()
+            except Exception as exc:
+                log.error("[OnBar] %s", exc)
+            if is_first:
+                self._minute_count = 0
 
     # ------------------------------------------------------------------
     # GUI pump (keeps Tkinter/matplotlib responsive inside ib.run())
@@ -214,58 +226,10 @@ class LiveMonitor:
         print(f"[Monitor] Contract: {contract.localSymbol}  "
               f"expiry={contract.lastTradeDateOrContractMonth}")
 
-        # ── Stage 1: fast seed chart ────────────────────────────────────────
-        # Fetch last 2 hours of 1-min bars with keepUpToDate=False.
-        # This returns quickly (no streaming setup) so the chart appears fast.
-        print("[Monitor] Stage 1 -- fetching 2-hour seed (1-min bars) ...")
-        seed_bars = self._ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr="7200 S",
-            barSizeSetting="1 min",
-            whatToShow="TRADES",
-            useRTH=False,
-            formatDate=1,
-            keepUpToDate=False,
-        )
-
-        for bar in seed_bars:
-            bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
-            self._current_date = bar_time.strftime("%Y-%m-%d")
-            self._last_minute  = bar_time.strftime("%Y-%m-%d %H:%M")
-            self._session_bars.append({
-                "Open": bar.open, "High": bar.high, "Low": bar.low,
-                "Close": bar.close, "Volume": bar.volume, "time": bar_time,
-            })
-
-        print(f"[Monitor] Stage 1 complete -- {len(self._session_bars)} seed bars loaded.")
-
-        # Clock fallback when HMDS returns no bars (Error 162 / weekend).
-        if self._current_date is None:
-            now_est = datetime.now(_EST)
-            self._current_date = now_est.strftime("%Y-%m-%d")
-            self._last_minute  = now_est.strftime("%Y-%m-%d %H:%M")
-            print(f"[Monitor] WARNING -- HMDS returned no bars, clock fallback: "
-                  f"date={self._current_date}  last_minute={self._last_minute}")
-
-        # Derive session window from the LAST seed bar so the chart is
-        # anchored to the most recent data, not 2 hours ago.
-        if self._session_bars:
-            self._derive_session_window(self._session_bars[-1]["time"])
-            print("[Monitor] Showing initial chart from seed data ...")
-            try:
-                self._run_pipeline()
-                self._minute_count = 0
-                print("[Monitor] Seed chart displayed.")
-            except Exception as exc:
-                print(f"[Monitor] WARNING -- seed chart failed: {exc}")
-        else:
-            print("[Monitor] No seed bars -- chart will appear on first live bar.")
-
-        # ── Stage 2: live 5-sec subscription ───────────────────────────────
-        # Short durationStr so IB sets up the stream quickly.
-        # keepUpToDate=True delivers new bars via _on_bar every 5 seconds.
-        print("[Monitor] Stage 2 -- subscribing to live 5-sec bars ...")
+        # Prime _last_minute from a short historical window so the first live
+        # minute-boundary detection fires correctly.  No bars are added to
+        # _session_bars -- the chart starts clean from the current moment.
+        print("[Monitor] Subscribing to live 5-sec bars (starting fresh) ...")
         live_bars = self._ib.reqHistoricalData(
             contract,
             endDateTime="",
@@ -277,15 +241,23 @@ class LiveMonitor:
             keepUpToDate=True,
         )
 
-        # Sync last_minute to the live seed so the first boundary fires right.
+        # Only use seed bars to prime _last_minute -- do NOT add to session_bars.
         for bar in live_bars:
             bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
             self._current_date = bar_time.strftime("%Y-%m-%d")
             self._last_minute  = bar_time.strftime("%Y-%m-%d %H:%M")
 
-        print(f"[Monitor] Live subscription ready.  last_minute={self._last_minute}")
-        print(f"[Monitor] Signals fire after {self.warmup_minutes}-min warm-up from "
-              f"first seed bar.  Chart updates every minute.")
+        # Clock fallback (Error 162 / weekend / maintenance window).
+        if self._current_date is None:
+            now_est = datetime.now(_EST)
+            self._current_date = now_est.strftime("%Y-%m-%d")
+            self._last_minute  = now_est.strftime("%Y-%m-%d %H:%M")
+            print(f"[Monitor] WARNING -- no seed bars, clock fallback: "
+                  f"date={self._current_date}  last_minute={self._last_minute}")
+
+        print(f"[Monitor] Ready.  Session ends at {SESSION_END} ET.  "
+              f"Signals start {self.warmup_minutes} min after first bar.")
+        print("[Monitor] Chart will appear on the first live bar.")
 
         live_bars.updateEvent += self._on_bar
 
