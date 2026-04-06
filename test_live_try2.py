@@ -17,6 +17,7 @@ Usage:
     python test_live_try2.py --no-plot   # CSV-only, no chart window
 """
 
+import asyncio
 import os
 import sys
 import logging
@@ -63,8 +64,9 @@ class LiveMonitor:
         self._session_start: Optional[str] = None   # HH:MM of first live bar
         self._session_end:   Optional[str] = None   # session_start + CHART_LOOKBACK
         self._live_chart:    Optional[_LiveChartWindow] = None
-        self._minute_count:  int = 0
-        self._stopped:       bool = False
+        self._minute_count:    int = 0
+        self._stopped:         bool = False
+        self._pump_scheduled:  bool = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -100,6 +102,8 @@ class LiveMonitor:
         minute_df = self._resample_to_minutes()
         if minute_df.empty or self._session_start is None:
             return
+        if len(minute_df) < 2:
+            return
 
         config = AlgoConfig(warmup_minutes=self.warmup_minutes)
 
@@ -113,6 +117,7 @@ class LiveMonitor:
                 config,
             )
         except Exception as exc:
+            print(f"[Algo] ERROR: {exc}")
             log.error("[Algo] %s", exc)
             return
 
@@ -142,6 +147,7 @@ class LiveMonitor:
                     )
                 self._live_chart.update(algo_df)
             except Exception as exc:
+                print(f"[Chart] ERROR: {exc}")
                 log.error("[Chart] %s", exc)
 
         self._minute_count += 1
@@ -195,9 +201,24 @@ class LiveMonitor:
             except Exception as exc:
                 log.error("[OnBar] %s", exc)
 
-        # Pump the chart window every 5-sec bar so Tkinter stays responsive.
-        if self._live_chart is not None:
-            self._live_chart.pump()
+        # Schedule pump loop the first time the chart is created.
+        # ensure_future() is safe here because _on_bar runs inside ib.run()'s
+        # asyncio event loop, so the coroutine is scheduled on the right loop.
+        if (self.show_plot and not self._pump_scheduled
+                and self._live_chart is not None):
+            asyncio.ensure_future(self._gui_pump_loop())
+            self._pump_scheduled = True
+            print("[Monitor] GUI pump loop scheduled.")
+
+    # ------------------------------------------------------------------
+    # GUI pump (keeps Tkinter/matplotlib responsive inside ib.run())
+    # ------------------------------------------------------------------
+
+    async def _gui_pump_loop(self) -> None:
+        while True:
+            if self._live_chart is not None:
+                self._live_chart.pump()
+            await asyncio.sleep(0.05)
 
     # ------------------------------------------------------------------
     # Session lifecycle
