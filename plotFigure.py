@@ -210,6 +210,12 @@ class ChartPlotter:
         self.lines["low"].set_data(times,   current_data["Low"])
         self.lines["close"].set_data(times, current_data["Close"])
 
+        # Dynamically adjust y-axis so High/Low/Close always stay in view.
+        data_min = float(current_data["Low"].min())
+        data_max = float(current_data["High"].max())
+        padding  = max((data_max - data_min) * 0.15, 20.0)
+        self.ax.set_ylim(data_min - padding, data_max + padding)
+
     def _draw_ray(self, line_key, ann_attr,
                   start_time, start_price, end_price,
                   current_time, current_price, angle,
