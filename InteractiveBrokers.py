@@ -113,12 +113,10 @@ class _LiveChartWindow:
         """Redraw the chart at the latest frame with the current minute data."""
         import matplotlib.pyplot as _plt
 
-        # Rolling 9-minute window: 7 minutes of history to the left of the
-        # latest bar plus 2 minutes of empty space to the right so upcoming
-        # bars have room on the axis.  The window slides forward by one minute
-        # on every update call.
-        _x_start = algo_df.index[-1] - pd.Timedelta(minutes=7)
-        _x_end   = algo_df.index[-1] + pd.Timedelta(minutes=2)
+        # Anchor x-axis to the first bar in the data and extend 1 minute
+        # past the latest bar so the axis always runs left-to-right.
+        _x_start = algo_df.index[0]
+        _x_end   = algo_df.index[-1] + pd.Timedelta(minutes=1)
 
         is_first = self._plotter is None
         if is_first:
@@ -144,38 +142,36 @@ class _LiveChartWindow:
         frame = len(algo_df) - 1
         self._plotter.update_plot(frame)
         if is_first:
-            # show(block=False) registers the window; start_event_loop() runs
-            # the Tkinter event loop for 500 ms so the window is actually
-            # mapped, painted, and visible before control returns.
-            # start_event_loop() is preferred over plt.pause() because it
-            # targets only this canvas and returns cleanly after the timeout,
-            # avoiding re-entrancy issues if called from inside ib.run().
             _plt.show(block=False)
-            self._plotter.fig.canvas.draw()
-            # On Windows the new figure window often appears behind the
-            # terminal.  Temporarily set -topmost so the OS raises it to
-            # the front; the after() call reverts that flag once the window
-            # has been painted and presented to the user.
+            self._plotter.fig.canvas.draw_idle()
             try:
                 win = self._plotter.fig.canvas.manager.window
                 win.lift()
                 win.attributes("-topmost", True)
                 win.after(500, lambda: win.attributes("-topmost", False))
+                win.update_idletasks()
+                win.update()
             except Exception:
                 pass
-            self._plotter.fig.canvas.start_event_loop(0.5)
         else:
-            # draw() triggers an immediate synchronous redraw so the chart
-            # updates visually every minute even though asyncio owns the
-            # main thread (draw_idle() only schedules for the next Tkinter
-            # idle callback, which never fires in this context).
-            self._plotter.fig.canvas.draw()
+            self._plotter.fig.canvas.draw_idle()
+            try:
+                win = self._plotter.fig.canvas.manager.window
+                win.update_idletasks()
+                win.update()
+            except Exception:
+                pass
 
     def pump(self) -> None:
         """Pump the Tkinter event queue to keep the window responsive."""
         if self._plotter is not None and self._plotter.fig is not None:
             try:
-                self._plotter.fig.canvas.flush_events()
+                # draw_idle() schedules a redraw; update_idletasks() forces
+                # Tkinter to process it immediately on the main thread.
+                self._plotter.fig.canvas.draw_idle()
+                win = self._plotter.fig.canvas.manager.window
+                win.update_idletasks()
+                win.update()
             except Exception:
                 pass
 
@@ -225,7 +221,7 @@ class IBDataBridge:
         config: Optional[AlgoConfig] = None,
         dry_run: bool = False,
         start_time: str = "09:30",
-        end_time: str = "10:00",
+        end_time: str = "09:35",
         show_plot: bool = True,
         tracking_root: Optional[str] = None,
         image_root: Optional[str] = None,
@@ -233,13 +229,14 @@ class IBDataBridge:
         self.host = host
         self.port = port
         self.client_id = client_id
-        self.config = config or AlgoConfig()
+        self.config = config or AlgoConfig(warmup_minutes=7)
         self.dry_run = dry_run
         self.start_time = start_time
         self.end_time = end_time
         self.show_plot = show_plot
-        self.tracking_root = tracking_root
-        self.image_root = image_root
+        # Default save locations under ~/Desktop/IB_Live so data is always persisted.
+        self.tracking_root = tracking_root or os.path.join(_IB_LIVE_ROOT, "tracking")
+        self.image_root    = image_root    or os.path.join(_IB_LIVE_ROOT, "charts")
 
         self._ib = IB()
         self._session_bars: list[dict] = []
@@ -251,6 +248,9 @@ class IBDataBridge:
         self._raw_wb: Optional[Workbook] = None
         self._raw_ws = None
         self._raw_path: Optional[str] = None
+        self._session_ended: bool = False
+        self._window_set: bool = False
+        self._session_start_dt = None
 
     # -- connection -----------------------------------------------------------
 
@@ -270,43 +270,29 @@ class IBDataBridge:
     # -- real-time bar subscription -------------------------------------------
 
     def start(self) -> None:
-        """Subscribe to historical data with keepUpToDate and run the event loop."""
+        """Subscribe to real-time bars and run the event loop."""
         if self._contract is None:
             raise RuntimeError("Call connect() before start().")
 
-        bars = self._ib.reqHistoricalData(
+        # Always set the dynamic window from wall-clock now.
+        if not self._window_set:
+            self._apply_dynamic_window(None)
+
+        # reqRealTimeBars works on both live and paper accounts.
+        # It delivers a new 5-second bar every 5 seconds.
+        bars = self._ib.reqRealTimeBars(
             self._contract,
-            endDateTime="",
-            durationStr="3600 S",  # IB max for 5-sec bars; "1 D" exceeds the limit and returns empty
-            barSizeSetting="5 secs",
+            barSize=5,
             whatToShow="TRADES",
             useRTH=False,
-            formatDate=1,
-            keepUpToDate=True,
         )
 
-        for bar in bars:
-            bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
-            self._current_date = bar_time.strftime("%Y-%m-%d")
-            self._last_minute = bar_time.strftime("%Y-%m-%d %H:%M")
-            self._session_bars.append({
-                "Open":   bar.open,
-                "High":   bar.high,
-                "Low":    bar.low,
-                "Close":  bar.close,
-                "Volume": bar.volume,
-                "time":   bar_time,
-            })
-
-        if self._session_bars:
-            log.info(
-                "Pre-loaded %d historical bars for %s",
-                len(self._session_bars), self._current_date,
-            )
-
-        bars.updateEvent += self._on_bar
-        log.info("Subscribed to live bars for %s", self._contract.localSymbol)
+        bars.updateEvent += self._on_realtime_bar
+        log.info("Subscribed to real-time bars for %s", self._contract.localSymbol)
         log.info("Press Ctrl+C to stop.")
+
+        self._ib.setTimeout(0.2)
+        self._ib.timeoutEvent += self._on_timeout
 
         try:
             self._ib.run()
@@ -316,40 +302,56 @@ class IBDataBridge:
             self._on_session_end()
             self.disconnect()
 
+    # -- dynamic session window -----------------------------------------------
+
+    def _apply_dynamic_window(self, first_bar_time) -> None:
+        """Set start_time and end_time based on current wall-clock time."""
+        self._window_set = True
+        now = datetime.now(_EST)
+        end_dt = now + pd.Timedelta(minutes=10)
+        self.start_time = now.strftime("%H:%M")
+        self.end_time   = end_dt.strftime("%H:%M")
+        self._session_start_dt = now
+        log.info(
+            "[Window] session window set: %s – %s (10 min from now, signals after 7 min)",
+            self.start_time, self.end_time,
+        )
+
     # -- session finalisation -------------------------------------------------
 
     def _on_session_end(self) -> None:
-        """Finalise the current session: call run_live_session(), then reset state.
-
-        Triggered automatically on day rollover (first bar of a new date) or
-        when ``start()`` returns after a KeyboardInterrupt.
-        """
-        if self._live_chart is not None:
-            self._live_chart.close()
-            self._live_chart = None
+        """Finalise the current session: save image, CSV, then reset state."""
 
         if not self._session_bars or not self._current_date:
+            self._live_chart = None
             self._session_bars = []
             self._last_result = None
             self._last_minute = None
             return
 
-        log.info(
-            "[Session] %s ended -- running ReOrgMain.run_live_session()",
-            self._current_date,
-        )
+        log.info("[Session] %s ended — saving data and chart.", self._current_date)
 
-        # Always write the tracking CSV from all accumulated bars first.
-        # This guarantees a file appears in IB_Live/tracking even when the
-        # script is stopped before a minute boundary fires or outside the
-        # 09:30-10:00 session window.
+        # Save the chart image directly from the live figure before closing it.
+        if self._live_chart is not None and self._live_chart._plotter is not None:
+            try:
+                os.makedirs(self.image_root, exist_ok=True)
+                img_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}.jpg")
+                self._live_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+                log.info("[Session] chart image saved: %s", img_path)
+            except Exception as exc:
+                log.error("[Session] image save error: %s", exc)
+
+        if self._live_chart is not None:
+            self._live_chart.close()
+            self._live_chart = None
+
+        # Save tracking CSV.
         try:
             self._save_tracking_csv()
         except Exception as exc:
             log.error("[Session] _save_tracking_csv error: %s", exc)
 
-        # Resample raw 5-second bars to 1-minute before handing to
-        # run_live_session, which (like run_single_day) expects 1-minute data.
+        # Also run run_live_session for the full end-of-session pipeline.
         minute_df = self._resample_to_minutes()
         if not minute_df.empty:
             try:
@@ -358,7 +360,7 @@ class IBDataBridge:
                     target_date=self._current_date,
                     start_time=self.start_time,
                     end_time=self.end_time,
-                    show_plot=self.show_plot,
+                    show_plot=False,  # chart already shown live; don't reopen
                     tracking_root=self.tracking_root,
                     image_root=self.image_root,
                 )
@@ -371,14 +373,28 @@ class IBDataBridge:
         self._raw_wb = None
         self._raw_ws = None
         self._raw_path = None
+        self._session_ended = False
+        self._window_set = False
+        self._session_start_dt = None
 
-    def _resample_to_minutes(self) -> pd.DataFrame:
+    def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample the accumulated 5-second bars to 1-minute OHLCV bars."""
         if not self._session_bars:
             return pd.DataFrame()
         df = pd.DataFrame(self._session_bars).set_index("time")
         idx = pd.to_datetime(df.index)
         df.index = idx.tz_convert(_EST) if idx.tz is not None else idx.tz_localize(_EST)
+
+        if filter_to_session and self._session_start_dt is not None:
+            df = df[df.index >= self._session_start_dt]
+        elif lookback_minutes > 0:
+            # Look back from wall-clock now, not from the last historical bar.
+            cutoff = datetime.now(_EST) - pd.Timedelta(minutes=lookback_minutes)
+            df = df[df.index >= cutoff]
+
+        if df.empty:
+            return pd.DataFrame()
+
         return df.resample("1min").agg(
             Open=("Open", "first"),
             High=("High", "max"),
@@ -387,15 +403,18 @@ class IBDataBridge:
             Volume=("Volume", "sum"),
         ).dropna(subset=["Open"])
 
-    def _update_live_chart(self) -> None:
+    def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> None:
         """Resample bars to 1-min, run the algo, and refresh the live chart window."""
         if not self.show_plot or not self._session_bars:
+            log.info("[LiveChart] skipped — show_plot=%s  bars=%d", self.show_plot, len(self._session_bars))
             return
 
-        minute_df = self._resample_to_minutes()
+        minute_df = self._resample_to_minutes(filter_to_session=filter_to_session, lookback_minutes=lookback_minutes)
         if minute_df.empty:
+            log.info("[LiveChart] skipped — minute_df empty")
             return
 
+        log.info("[LiveChart] running algo on %d minute bars ...", len(minute_df))
         try:
             algo_df = run_trading_algo(
                 minute_df,
@@ -408,6 +427,7 @@ class IBDataBridge:
             log.error("[LiveChart] run_trading_algo error: %s", exc)
             return
 
+        log.info("[LiveChart] algo done — %d rows, updating chart ...", len(algo_df))
         if self._live_chart is None:
             self._live_chart = _LiveChartWindow(
                 target_date=self._current_date,
@@ -417,29 +437,21 @@ class IBDataBridge:
 
         try:
             self._live_chart.update(algo_df)
-            log.info(
-                "[LiveChart] refreshed  date=%s  bars=%d",
-                self._current_date, len(algo_df),
-            )
+            log.info("[LiveChart] chart updated OK  bars=%d", len(algo_df))
         except Exception as exc:
             log.error("[LiveChart] update error: %s", exc)
 
     # -- bar handler ----------------------------------------------------------
 
-    def _on_bar(self, bars: list[BarData], has_new_bar: bool) -> None:
-        """Accumulate each sealed 5-second bar and run the algo.
-
-        On each minute boundary, resamples the accumulated 5-second bars to
-        1-minute OHLCV and refreshes the live ``ChartPlotter`` window.
-        On a day rollover (bar date differs from ``_current_date``), calls
-        ``_on_session_end()`` to finalise the previous session first.
-        """
-        if not has_new_bar or not bars:
+    def _on_realtime_bar(self, bars, has_new_bar: bool) -> None:
+        """Handle each new 5-second real-time bar from reqRealTimeBars."""
+        if not bars:
             return
 
         bar = bars[-1]
-        bar_time = bar.date.astimezone(_EST) if bar.date.tzinfo else _EST.localize(bar.date)
-        bar_date = bar_time.strftime("%Y-%m-%d")
+        # bar.time is already a datetime object in UTC
+        bar_time = bar.time.astimezone(_EST)
+        bar_date   = bar_time.strftime("%Y-%m-%d")
         bar_minute = bar_time.strftime("%Y-%m-%d %H:%M")
 
         if self._current_date is not None and bar_date != self._current_date:
@@ -447,12 +459,10 @@ class IBDataBridge:
 
         self._current_date = bar_date
 
-        # Minute boundary — previous minute's bars are now sealed; run algo and redraw chart.
+        # Minute boundary — redraw chart and run algo.
         if self._last_minute is not None and bar_minute != self._last_minute:
-            log.info(
-                "[OnBar] minute boundary  %s → %s  buffered=%d",
-                self._last_minute, bar_minute, len(self._session_bars),
-            )
+            log.info("[OnBar] minute boundary  %s → %s  buffered=%d",
+                     self._last_minute, bar_minute, len(self._session_bars))
             try:
                 self._update_live_chart()
             except Exception as exc:
@@ -469,7 +479,7 @@ class IBDataBridge:
         self._last_minute = bar_minute
 
         self._session_bars.append({
-            "Open":   bar.open,
+            "Open":   bar.open_,
             "High":   bar.high,
             "Low":    bar.low,
             "Close":  bar.close,
@@ -477,6 +487,40 @@ class IBDataBridge:
             "time":   bar_time,
         })
         self._append_bar_to_excel(bar_time, bar)
+
+        # Show chart on the very first bar (after appending so data exists).
+        if len(self._session_bars) == 1:
+            log.info("[OnBar] first bar received — opening chart")
+            try:
+                self._update_live_chart()
+            except Exception as exc:
+                log.error("[OnBar] initial chart error: %s", exc)
+
+        # Auto-end session at end_time.
+        try:
+            end_naive = datetime.strptime(f"{bar_date} {self.end_time}:00", "%Y-%m-%d %H:%M:%S")
+            end_dt = _EST.localize(end_naive)
+            if bar_time >= end_dt and not self._session_ended:
+                self._session_ended = True
+                log.info("[OnBar] end_time %s reached — finalising session.", self.end_time)
+                self._on_session_end()
+                self._ib.disconnect()
+        except Exception as exc:
+            log.error("[OnBar] auto-end check error: %s", exc)
+
+    def _on_bar(self, bars, has_new_bar: bool) -> None:
+        """Legacy handler kept for compatibility — delegates to _on_realtime_bar."""
+        self._on_realtime_bar(bars, has_new_bar)
+
+    # -- Tkinter pump ---------------------------------------------------------
+
+    def _on_timeout(self, elapsed: float) -> None:
+        """Called every 200 ms by ib_insync to keep the chart window responsive."""
+        if self._live_chart is not None:
+            self._live_chart.pump()
+        else:
+            log.debug("[Timeout] no live chart yet")
+        self._ib.setTimeout(0.2)
 
     # -- raw 5-second Excel log ----------------------------------------------
 
@@ -496,7 +540,7 @@ class IBDataBridge:
 
         self._raw_ws.append([
             bar_time.strftime("%Y-%m-%d %H:%M:%S"),
-            bar.open, bar.high, bar.low, bar.close, bar.volume,
+            bar.open_, bar.high, bar.low, bar.close, bar.volume,
         ])
         self._raw_wb.save(self._raw_path)
 
@@ -640,10 +684,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Run connection test only, then exit.")
     p.add_argument("--dry-run",        action="store_true", dest="dry_run",
                    help="Log signals without placing orders.")
+    # start_time and end_time are set dynamically from the first bar received.
+    # These args are kept for manual override / backtesting use only.
     p.add_argument("--start-time",     default="09:30", dest="start_time",
-                   help="Session start time forwarded to ReOrgMain (default: 09:30).")
-    p.add_argument("--end-time",       default="10:00", dest="end_time",
-                   help="Session end time forwarded to ReOrgMain (default: 10:00).")
+                   help="Override session start time (default: auto from first bar).")
+    p.add_argument("--end-time",       default="09:40", dest="end_time",
+                   help="Override session end time (default: 10 min after first bar).")
     p.add_argument("--no-plot",         action="store_false", dest="show_plot",
                    help="Disable the live interactive chart.")
     p.set_defaults(show_plot=True)

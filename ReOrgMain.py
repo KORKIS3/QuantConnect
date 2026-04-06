@@ -24,7 +24,7 @@ from plotFigure import ChartPlotter
 def run_single_day(
     target_date: str,
     start_time: str = "09:30",
-    end_time: str = "10:00",
+    end_time: str = "09:35",
     csv_root: Optional[str] = None,
     show_plot: bool = True,
     image_root: Optional[str] = None,
@@ -147,7 +147,7 @@ def run_live_session(
     data: pd.DataFrame,
     target_date: str,
     start_time: str = "09:30",
-    end_time: str = "10:00",
+    end_time: str = "09:35",
     show_plot: bool = True,
     image_root: Optional[str] = None,
     tracking_root: Optional[str] = None,
