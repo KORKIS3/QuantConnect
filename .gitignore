@@ -37,6 +37,10 @@ wheels/
 # Test output
 htmlcov/
 .coverage
+TestResults/
+
+# Data files
+*.xlsx
 
 # OS
 .DS_Store
