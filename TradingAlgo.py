@@ -138,32 +138,26 @@ class RayManager:
         purple_slope = self.purple_ray.calculate_slope(x_per_unit, y_per_unit)
         blue_slope = self.blue_ray.calculate_slope(x_per_unit, y_per_unit)
 
-        # Orange ray tracks highs with -5 deg angle
+        # Orange ray: anchors at the highest high seen, descends at fixed angle.
+        # Only re-anchors when a new high exceeds the current anchor — never adjusts slope mid-ray.
         for i in range(1, len(current_data)):
             current_high = float(current_data["High"].iloc[i])
             current_idx = current_data.index[i]
-            if current_high >= self.orange_ray.start_price:
+            if current_high > self.orange_ray.start_price:
                 self.orange_ray.start_price = current_high
                 self.orange_ray.start_time = current_idx
                 orange_slope = self.orange_ray.calculate_slope(x_per_unit, y_per_unit)
-            else:
-                expected_price = self.orange_ray.get_price_at_time(current_idx, orange_slope)
-                if current_high > expected_price:
-                    orange_slope = self.orange_ray.update_for_crossover(current_high, current_idx, orange_slope)
         self.orange_ray.adjusted_slope = orange_slope
 
-        # Yellow ray tracks lows with +5 deg angle
+        # Yellow ray: anchors at the lowest low seen, ascends at fixed angle.
+        # Only re-anchors when a new low is below the current anchor.
         for i in range(1, len(current_data)):
             current_low = float(current_data["Low"].iloc[i])
             current_idx = current_data.index[i]
-            if current_low <= self.yellow_ray.start_price:
+            if current_low < self.yellow_ray.start_price:
                 self.yellow_ray.start_price = current_low
                 self.yellow_ray.start_time = current_idx
                 yellow_slope = self.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
-            else:
-                expected_price = self.yellow_ray.get_price_at_time(current_idx, yellow_slope)
-                if current_low < expected_price:
-                    yellow_slope = self.yellow_ray.update_for_crossover(current_low, current_idx, yellow_slope)
         self.yellow_ray.adjusted_slope = yellow_slope
 
         # Purple/blue trendlines using TrendLineAutomation
@@ -394,15 +388,17 @@ def run_trading_algo(
     # giving approximate axes fractions:
     #   width  = 0.85 - 0.125 = 0.725  (right - left default)
     #   height = 0.88 - 0.11  = 0.770  (top - bottom defaults)
+    # Compute aspect ratio using a fixed 75-minute rolling window so that
+    # visual angles in the algo match what you see on the live chart.
+    # This means 45° in the algo = 45° on screen regardless of session length.
     _fig_w = 16.0
     _fig_h = 9.0
     _ax_w_in = _fig_w * (0.85 - 0.125)   # ≈ 11.6 inches
     _ax_h_in = _fig_h * (0.88 - 0.11)    # ≈ 6.93 inches
 
-    _x_range = (
-        mdates.date2num(full_data.index[-1])
-        - mdates.date2num(full_data.index[0])
-    )
+    _WINDOW_MINUTES = 75
+    _x_range = _WINDOW_MINUTES / (24 * 60)  # 75 mins as fraction of a day
+
     _y_range = (
         float(full_data["High"].max()) + 20.0
         - (float(full_data["Low"].min()) - 20.0)
@@ -507,32 +503,12 @@ def run_trading_algo(
             # Long  → liquidate on a downward cross of blue only.
             # Short → liquidate on an upward  cross of purple only.
             liquidated_this_bar = False
-            ## if temp_position != "flat":
-            ##     if temp_position == "long":
-            ##         triggered = prev_blue is not None and prev_close >= prev_blue and current_close < prev_blue
-            ##     else:  # short
-            ##         triggered = prev_purple is not None and prev_close <= prev_purple and current_close > prev_purple
-            ##     if triggered:
-            ##         if temp_position == "long" and time not in sell_signals:
-            ##             if temp_entry_price is not None:
-            ##                 session_realized_pl += current_close - temp_entry_price
-            ##             sell_signals[time] = current_close
-            ##             liquidation_timestamps.add(time)
-            ##         elif temp_position == "short" and time not in buy_signals:
-            ##             if temp_entry_price is not None:
-            ##                 session_realized_pl += temp_entry_price - current_close
-            ##             buy_signals[time] = current_close
-            ##             liquidation_timestamps.add(time)
-            ##         temp_position = "flat"
-            ##         temp_entry_price = None
-            ##         liquidated_this_bar = True
-            ##         if session_realized_pl <= -100.0:
-            ##             trading_halted = True
-            ##             halt_time = time
 
-            # BUY signals - can trigger from flat or short (position reversal).
-            # Purple crosses are suppressed when close is within 50 pts of orange 
-            # in that case the orange cross acts as the entry trigger instead.
+            # Determine if this is the last bar of the session (go flat, not reverse).
+            is_last_bar = (i == len(full_data) - 1)
+
+            # BUY signals - triggers from flat or short (reversal).
+            # Purple crosses suppressed when close is within proximity_points of orange.
             if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
                 buy_triggered = False
 
@@ -546,7 +522,6 @@ def run_trading_algo(
                     if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
                         within_50 = (
                             abs(current_close - curr_orange) <= cfg.proximity_points
-                          ##  or abs(current_close - curr_yellow) <= cfg.proximity_points
                         )
                         if not within_50:
                             buy_triggered = True
@@ -555,19 +530,16 @@ def run_trading_algo(
                     if temp_position == "short" and temp_entry_price is not None:
                         session_realized_pl += temp_entry_price - current_close
                     buy_signals[time] = current_close
-                    if session_realized_pl <= -100.0:
-                        liquidation_timestamps.add(time)
-                        trading_halted = True
-                        halt_time = time
+                    if is_last_bar:
+                        # End of session — go flat, don't open new long.
                         temp_position = "flat"
                         temp_entry_price = None
                     else:
                         temp_position = "long"
                         temp_entry_price = current_close
 
-            # SELL signals - can trigger from flat or long (position reversal).
-            # Blue crosses are suppressed when close is within 50 pts of  yellow;
-            # in that case the yellow cross acts as the entry trigger instead.
+            # SELL signals - triggers from flat or long (reversal).
+            # Blue crosses suppressed when close is within proximity_points of yellow.
             if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
                 sell_triggered = False
 
@@ -580,8 +552,7 @@ def run_trading_algo(
                     blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
                     if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
                         within_50 = (
-                            ##abs(current_close - curr_orange) <= cfg.proximity_points or
-                             abs(current_close - curr_yellow) <= cfg.proximity_points
+                            abs(current_close - curr_yellow) <= cfg.proximity_points
                         )
                         if not within_50:
                             sell_triggered = True
@@ -590,40 +561,13 @@ def run_trading_algo(
                     if temp_position == "long" and temp_entry_price is not None:
                         session_realized_pl += current_close - temp_entry_price
                     sell_signals[time] = current_close
-                    if session_realized_pl <= -100.0:
-                        liquidation_timestamps.add(time)
-                        trading_halted = True
-                        halt_time = time
+                    if is_last_bar:
+                        # End of session — go flat, don't open new short.
                         temp_position = "flat"
                         temp_entry_price = None
                     else:
                         temp_position = "short"
                         temp_entry_price = current_close
-
-            # Profit target: exit and halt when a single trade reaches +100 pts.
-            ## if not trading_halted and temp_position != "flat" and temp_entry_price is not None:
-            ##     if temp_position == "long":
-            ##         pl = current_close - temp_entry_price
-            ##         if pl >= 100.0:
-            ##             if time not in sell_signals:
-            ##                 sell_signals[time] = current_close
-            ##                 liquidation_timestamps.add(time)
-            ##             session_realized_pl += pl
-            ##             temp_position = "flat"
-            ##             temp_entry_price = None
-            ##             trading_halted = True
-            ##             halt_time = time
-            ##     else:  # short
-            ##         pl = temp_entry_price - current_close
-            ##         if pl >= 100.0:
-            ##             if time not in buy_signals:
-            ##                 buy_signals[time] = current_close
-            ##                 liquidation_timestamps.add(time)
-            ##             session_realized_pl += pl
-            ##             temp_position = "flat"
-            ##             temp_entry_price = None
-            ##             trading_halted = True
-            ##             halt_time = time
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).

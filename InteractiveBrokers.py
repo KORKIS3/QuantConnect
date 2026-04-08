@@ -44,6 +44,8 @@ from openpyxl import Workbook
 from TradingAlgo import AlgoConfig, run_trading_algo
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
+from Emailer import send_session_summary
+# from Notifier import send_signal_alert
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -113,10 +115,9 @@ class _LiveChartWindow:
         """Redraw the chart at the latest frame with the current minute data."""
         import matplotlib.pyplot as _plt
 
-        # Anchor x-axis to the first bar in the data and extend 1 minute
-        # past the latest bar so the axis always runs left-to-right.
-        _x_start = algo_df.index[0]
+        # Fixed 75-minute rolling window so visual angles stay consistent.
         _x_end   = algo_df.index[-1] + pd.Timedelta(minutes=1)
+        _x_start = _x_end - pd.Timedelta(minutes=75)
 
         is_first = self._plotter is None
         if is_first:
@@ -229,7 +230,11 @@ class IBDataBridge:
         self.host = host
         self.port = port
         self.client_id = client_id
-        self.config = config or AlgoConfig(warmup_minutes=7)
+        self.config = config or AlgoConfig(
+            warmup_minutes=7,
+            steep_angle_threshold=65.0,  # allow crosses up to 65° — catches real breaks
+            proximity_points=15.0,       # tighten from 50 → only suppress if very close to yellow
+        )
         self.dry_run = dry_run
         self.start_time = start_time
         self.end_time = end_time
@@ -308,12 +313,12 @@ class IBDataBridge:
         """Set start_time and end_time based on current wall-clock time."""
         self._window_set = True
         now = datetime.now(_EST)
-        end_dt = now + pd.Timedelta(minutes=10)
+        end_dt = now + pd.Timedelta(minutes=60)
         self.start_time = now.strftime("%H:%M")
         self.end_time   = end_dt.strftime("%H:%M")
         self._session_start_dt = now
         log.info(
-            "[Window] session window set: %s – %s (10 min from now, signals after 7 min)",
+            "[Window] session window set: %s – %s (60 min from now, signals after 7 min)",
             self.start_time, self.end_time,
         )
 
@@ -332,11 +337,13 @@ class IBDataBridge:
         log.info("[Session] %s ended — saving data and chart.", self._current_date)
 
         # Save the chart image directly from the live figure before closing it.
+        saved_image_path = None
         if self._live_chart is not None and self._live_chart._plotter is not None:
             try:
                 os.makedirs(self.image_root, exist_ok=True)
                 img_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}.jpg")
                 self._live_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+                saved_image_path = img_path
                 log.info("[Session] chart image saved: %s", img_path)
             except Exception as exc:
                 log.error("[Session] image save error: %s", exc)
@@ -351,21 +358,29 @@ class IBDataBridge:
         except Exception as exc:
             log.error("[Session] _save_tracking_csv error: %s", exc)
 
-        # Also run run_live_session for the full end-of-session pipeline.
-        minute_df = self._resample_to_minutes()
-        if not minute_df.empty:
-            try:
-                run_live_session(
-                    minute_df,
-                    target_date=self._current_date,
-                    start_time=self.start_time,
-                    end_time=self.end_time,
-                    show_plot=False,  # chart already shown live; don't reopen
-                    tracking_root=self.tracking_root,
-                    image_root=self.image_root,
-                )
-            except Exception as exc:
-                log.error("[Session] run_live_session error: %s", exc)
+        # NOTE: We do NOT call run_live_session here because it re-runs the
+        # algo with hard start/end time filters which produces different signals
+        # than what was shown on the live chart. The correct image is already
+        # saved above directly from the live figure, and the CSV is saved by
+        # _save_tracking_csv.
+
+        # Send session summary email with chart image and final P/L.
+        try:
+            final_pl = 0.0
+            final_position = "flat"
+            if self._last_result is not None and not self._last_result.empty:
+                final_pl = float(self._last_result["pl"].iloc[-1])
+                final_position = str(self._last_result["position"].iloc[-1])
+            send_session_summary(
+                target_date=self._current_date,
+                start_time=self.start_time,
+                end_time=self.end_time,
+                final_pl=final_pl,
+                image_path=saved_image_path,
+                position=final_position,
+            )
+        except Exception as exc:
+            log.error("[Session] email error: %s", exc)
 
         self._session_bars = []
         self._last_result = None
@@ -378,7 +393,11 @@ class IBDataBridge:
         self._session_start_dt = None
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
-        """Resample the accumulated 5-second bars to 1-minute OHLCV bars."""
+        """Resample accumulated 5-second bars to OHLCV bars.
+
+        Uses 1-minute bars during 9:30-10:30 ET and 5-minute bars outside
+        that window, then concatenates into a single DataFrame.
+        """
         if not self._session_bars:
             return pd.DataFrame()
         df = pd.DataFrame(self._session_bars).set_index("time")
@@ -388,20 +407,40 @@ class IBDataBridge:
         if filter_to_session and self._session_start_dt is not None:
             df = df[df.index >= self._session_start_dt]
         elif lookback_minutes > 0:
-            # Look back from wall-clock now, not from the last historical bar.
             cutoff = datetime.now(_EST) - pd.Timedelta(minutes=lookback_minutes)
             df = df[df.index >= cutoff]
 
         if df.empty:
             return pd.DataFrame()
 
-        return df.resample("1min").agg(
-            Open=("Open", "first"),
-            High=("High", "max"),
-            Low=("Low", "min"),
-            Close=("Close", "last"),
-            Volume=("Volume", "sum"),
-        ).dropna(subset=["Open"])
+        def _agg(d, freq):
+            return d.resample(freq).agg(
+                Open=("Open", "first"),
+                High=("High", "max"),
+                Low=("Low", "min"),
+                Close=("Close", "last"),
+                Volume=("Volume", "sum"),
+            ).dropna(subset=["Open"])
+
+        # Split into core window (1-min) and outside window (5-min).
+        date_str = df.index[0].strftime("%Y-%m-%d")
+        core_start = pd.Timestamp(f"{date_str} 09:30:00", tz=_EST)
+        core_end   = pd.Timestamp(f"{date_str} 10:30:00", tz=_EST)
+
+        df_core    = df[(df.index >= core_start) & (df.index <= core_end)]
+        df_outside = df[(df.index < core_start) | (df.index > core_end)]
+
+        parts = []
+        if not df_outside.empty:
+            parts.append(_agg(df_outside, "5min"))
+        if not df_core.empty:
+            parts.append(_agg(df_core, "1min"))
+
+        if not parts:
+            return pd.DataFrame()
+
+        result = pd.concat(parts).sort_index()
+        return result
 
     def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> None:
         """Resample bars to 1-min, run the algo, and refresh the live chart window."""
@@ -617,6 +656,7 @@ class IBDataBridge:
             else:
                 log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
                 self._place_order("BUY")
+                # send_signal_alert("BUY", price, target_date, minute_df.index[-1])
         elif signal == "SELL":
             if is_liq:
                 log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
@@ -624,6 +664,7 @@ class IBDataBridge:
             else:
                 log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
                 self._place_order("SELL")
+                # send_signal_alert("SELL", price, target_date, minute_df.index[-1])
 
     # -- order execution ------------------------------------------------------
 

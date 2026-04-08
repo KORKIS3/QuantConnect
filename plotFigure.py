@@ -271,7 +271,7 @@ class ChartPlotter:
         self.lines["ray_dark_purple"].set_data([], [])
 
     def update_annotations(self, current_data):
-        """Draw High / Low / Close labels for the most recent bar only."""
+        """Draw High / Low / Close labels for every bar."""
         for ann in getattr(self, "annotations", []):
             try:
                 ann.remove()
@@ -282,29 +282,28 @@ class ChartPlotter:
         if len(current_data) == 0:
             return
 
-        time = current_data.index[-1]
-        row  = current_data.iloc[-1]
+        for time, row in current_data.iterrows():
+            t = time.strftime("%H:%M")
+            ann = self.ax.annotate(
+                f"{int(row['High'])}\n{t}", xy=(time, row["High"]),
+                xytext=(0, 7), textcoords="offset points", ha="center", va="bottom",
+                fontsize=7, color="darkgreen", fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="lightgreen", alpha=0.7, edgecolor="green"))
+            self.annotations.append(ann)
 
-        ann = self.ax.annotate(
-            str(int(row["High"])), xy=(time, row["High"]),
-            xytext=(0, 8), textcoords="offset points", ha="center", va="bottom",
-            fontsize=8, color="darkgreen", fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.8, edgecolor="green"))
-        self.annotations.append(ann)
+            ann = self.ax.annotate(
+                f"{int(row['Low'])}\n{t}", xy=(time, row["Low"]),
+                xytext=(0, -7), textcoords="offset points", ha="center", va="top",
+                fontsize=7, color="darkred", fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="lightcoral", alpha=0.7, edgecolor="red"))
+            self.annotations.append(ann)
 
-        ann = self.ax.annotate(
-            str(int(row["Low"])), xy=(time, row["Low"]),
-            xytext=(0, -8), textcoords="offset points", ha="center", va="top",
-            fontsize=8, color="darkred", fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightcoral", alpha=0.8, edgecolor="red"))
-        self.annotations.append(ann)
-
-        ann = self.ax.annotate(
-            str(int(row["Close"])), xy=(time, row["Close"]),
-            xytext=(8, 0), textcoords="offset points", ha="left", va="center",
-            fontsize=8, color="black", fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8, edgecolor="black"))
-        self.annotations.append(ann)
+            ann = self.ax.annotate(
+                f"{int(row['Close'])}\n{t}", xy=(time, row["Close"]),
+                xytext=(7, 0), textcoords="offset points", ha="left", va="center",
+                fontsize=7, color="black", fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="lightgray", alpha=0.7, edgecolor="black"))
+            self.annotations.append(ann)
 
     def update_signal_markers(self, current_data):
         for marker in self.signal_markers["buy"] + self.signal_markers["sell"] + self.signal_markers["halt"]:
