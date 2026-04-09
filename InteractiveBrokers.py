@@ -226,20 +226,21 @@ class IBDataBridge:
         show_plot: bool = True,
         tracking_root: Optional[str] = None,
         image_root: Optional[str] = None,
+        session_duration_minutes: int = 60,
     ) -> None:
         self.host = host
         self.port = port
         self.client_id = client_id
         self.config = config or AlgoConfig(
             warmup_minutes=7,
-            steep_angle_threshold=65.0,  # allow crosses up to 65° — catches real breaks
-            proximity_points=15.0,       # tighten from 50 → only suppress if very close to yellow
+            steep_angle_threshold=65.0,
+            proximity_points=15.0,
         )
         self.dry_run = dry_run
         self.start_time = start_time
         self.end_time = end_time
         self.show_plot = show_plot
-        # Default save locations under ~/Desktop/IB_Live so data is always persisted.
+        self._session_duration_minutes = session_duration_minutes
         self.tracking_root = tracking_root or os.path.join(_IB_LIVE_ROOT, "tracking")
         self.image_root    = image_root    or os.path.join(_IB_LIVE_ROOT, "charts")
 
@@ -313,13 +314,13 @@ class IBDataBridge:
         """Set start_time and end_time based on current wall-clock time."""
         self._window_set = True
         now = datetime.now(_EST)
-        end_dt = now + pd.Timedelta(minutes=60)
+        end_dt = now + pd.Timedelta(minutes=self._session_duration_minutes)
         self.start_time = now.strftime("%H:%M")
         self.end_time   = end_dt.strftime("%H:%M")
         self._session_start_dt = now
         log.info(
-            "[Window] session window set: %s – %s (60 min from now, signals after 7 min)",
-            self.start_time, self.end_time,
+            "[Window] session window set: %s – %s (%d min from now)",
+            self.start_time, self.end_time, self._session_duration_minutes,
         )
 
     # -- session finalisation -------------------------------------------------
@@ -731,7 +732,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override session start time (default: auto from first bar).")
     p.add_argument("--end-time",       default="09:40", dest="end_time",
                    help="Override session end time (default: 10 min after first bar).")
-    p.add_argument("--no-plot",         action="store_false", dest="show_plot",
+    p.add_argument("--duration",       type=int, default=60, dest="duration",
+                   help="Session duration in minutes (default: 60).")
+    p.add_argument("--no-plot",        action="store_false", dest="show_plot",
                    help="Disable the live interactive chart.")
     p.set_defaults(show_plot=True)
     p.add_argument("--tracking-root",  default=os.path.join(_IB_LIVE_ROOT, "tracking"), dest="tracking_root",
@@ -759,6 +762,7 @@ if __name__ == "__main__":
             show_plot=args.show_plot,
             tracking_root=args.tracking_root,
             image_root=args.image_root,
+            session_duration_minutes=args.duration,
         )
         bridge.connect()
         bridge.start()
