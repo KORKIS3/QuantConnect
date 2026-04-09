@@ -499,10 +499,20 @@ class IBDataBridge:
 
         self._current_date = bar_date
 
-        # Minute boundary — redraw chart and run algo.
-        if self._last_minute is not None and bar_minute != self._last_minute:
-            log.info("[OnBar] minute boundary  %s → %s  buffered=%d",
-                     self._last_minute, bar_minute, len(self._session_bars))
+        # Determine the correct bar boundary based on time of day.
+        # 1-min bars during 09:30-10:30 ET, 5-min bars outside that window.
+        bar_hhmm = bar_time.hour * 60 + bar_time.minute
+        in_core_window = (9 * 60 + 30) <= bar_hhmm <= (10 * 60 + 30)
+        if in_core_window:
+            bar_boundary = bar_minute
+        else:
+            rounded_min = (bar_time.minute // 5) * 5
+            bar_boundary = bar_time.strftime(f"%Y-%m-%d %H:{rounded_min:02d}")
+
+        # Fire at the correct boundary (1-min or 5-min depending on time of day).
+        if self._last_minute is not None and bar_boundary != self._last_minute:
+            log.info("[OnBar] bar boundary  %s → %s  buffered=%d",
+                     self._last_minute, bar_boundary, len(self._session_bars))
             try:
                 self._update_live_chart()
             except Exception as exc:
@@ -516,7 +526,7 @@ class IBDataBridge:
             except Exception as exc:
                 log.error("[OnBar] _save_tracking_csv error: %s", exc)
 
-        self._last_minute = bar_minute
+        self._last_minute = bar_boundary
 
         self._session_bars.append({
             "Open":   bar.open_,
@@ -540,6 +550,11 @@ class IBDataBridge:
         try:
             end_naive = datetime.strptime(f"{bar_date} {self.end_time}:00", "%Y-%m-%d %H:%M:%S")
             end_dt = _EST.localize(end_naive)
+            # If end_time is earlier than start_time it's an overnight session —
+            # use tomorrow's date for the end.
+            if end_dt <= self._session_start_dt:
+                from datetime import timedelta
+                end_dt = end_dt + timedelta(days=1)
             if bar_time >= end_dt and not self._session_ended:
                 self._session_ended = True
                 log.info("[OnBar] end_time %s reached — finalising session.", self.end_time)
