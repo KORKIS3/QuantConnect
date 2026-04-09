@@ -474,7 +474,7 @@ def run_trading_algo(
     for i, (time, row) in enumerate(full_data.iterrows()):
         current_close = float(row["Close"])
 
-        if time >= cutoff_time and i > 0 and not trading_halted:
+        if time >= cutoff_time and i >= 3 and not trading_halted:
             # Compute "previous-minute" values using the ray state that has
             # already been updated through the prior bar. This mirrors the
             # incremental logic in the interactive plotter, so crossings use
