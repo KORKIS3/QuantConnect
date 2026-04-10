@@ -90,11 +90,19 @@ class RayManager:
         self.purple_ray: Optional[Ray] = None
         self.blue_ray: Optional[Ray] = None
         self.dark_purple_ray: Optional[Ray] = None
+        self.magenta_ray: Optional[Ray] = None   # local swing high ray
+        self.lime_ray: Optional[Ray] = None      # local swing low ray
         self.purple_intersections = 0
         self.purple_anchor_time = None
         self.blue_anchor_time = None
         self.purple_anchor_price: Optional[float] = None
         self.blue_anchor_price: Optional[float] = None
+        self.magenta_anchor_time = None
+        self.magenta_anchor_price: Optional[float] = None
+        self.lime_anchor_time = None
+        self.lime_anchor_price: Optional[float] = None
+        self._magenta_slope_frozen: bool = False
+        self._lime_slope_frozen: bool = False
 
     def initialize_rays(self, current_data: pd.DataFrame, x_per_unit: float, y_per_unit: float) -> None:
         """Initialize all rays from current data (first bar)."""
@@ -231,6 +239,68 @@ class RayManager:
             self.blue_ray.start_price = float(support_intercept)
             self.blue_ray.start_time = window_data_blue.index[0]
             self.blue_ray.adjusted_slope = float(support_slope_time)
+
+        # --- Magenta ray: local swing high (50+ pt above neighbours) ---
+        # --- Lime ray:    local swing low  (50+ pt below neighbours)  ---
+        SWING_THRESHOLD = 50.0
+        if len(current_data) >= 3:
+            # Scan for swing highs/lows — need at least 1 bar on each side.
+            for j in range(1, len(current_data) - 1):
+                h     = float(current_data["High"].iloc[j])
+                h_prev = float(current_data["High"].iloc[j - 1])
+                h_next = float(current_data["High"].iloc[j + 1])
+                if h - h_prev >= SWING_THRESHOLD and h - h_next >= SWING_THRESHOLD:
+                    # Valid swing high — update magenta anchor if higher.
+                    if self.magenta_anchor_price is None or h > float(self.magenta_anchor_price):
+                        self.magenta_anchor_time  = current_data.index[j]
+                        self.magenta_anchor_price = h
+                        self._magenta_slope_frozen = False
+
+                l      = float(current_data["Low"].iloc[j])
+                l_prev = float(current_data["Low"].iloc[j - 1])
+                l_next = float(current_data["Low"].iloc[j + 1])
+                if l_prev - l >= SWING_THRESHOLD and l_next - l >= SWING_THRESHOLD:
+                    # Valid swing low — update lime anchor if lower.
+                    if self.lime_anchor_price is None or l < float(self.lime_anchor_price):
+                        self.lime_anchor_time  = current_data.index[j]
+                        self.lime_anchor_price = l
+                        self._lime_slope_frozen = False
+
+            # Build magenta ray from swing anchor through most recent lower high.
+            if self.magenta_anchor_time is not None and not self._magenta_slope_frozen:
+                after = current_data.loc[self.magenta_anchor_time:]
+                candidates = after[(after["High"] < float(self.magenta_anchor_price)) &
+                                   (after.index != self.magenta_anchor_time)]
+                if not candidates.empty:
+                    best_idx = candidates["High"].idxmax()
+                    t0 = mdates.date2num(self.magenta_anchor_time)
+                    t1 = mdates.date2num(best_idx)
+                    if t1 != t0:
+                        slope = (float(candidates.loc[best_idx, "High"]) - float(self.magenta_anchor_price)) / (t1 - t0)
+                        if self.magenta_ray is None:
+                            self.magenta_ray = Ray(-45.0, float(self.magenta_anchor_price), self.magenta_anchor_time, "magenta", "Swing High Ray")
+                        self.magenta_ray.start_price = float(self.magenta_anchor_price)
+                        self.magenta_ray.start_time  = self.magenta_anchor_time
+                        self.magenta_ray.adjusted_slope = float(slope)
+                        self._magenta_slope_frozen = True
+
+            # Build lime ray from swing anchor through most recent higher low.
+            if self.lime_anchor_time is not None and not self._lime_slope_frozen:
+                after = current_data.loc[self.lime_anchor_time:]
+                candidates = after[(after["Low"] > float(self.lime_anchor_price)) &
+                                   (after.index != self.lime_anchor_time)]
+                if not candidates.empty:
+                    best_idx = candidates["Low"].idxmin()
+                    t0 = mdates.date2num(self.lime_anchor_time)
+                    t1 = mdates.date2num(best_idx)
+                    if t1 != t0:
+                        slope = (float(candidates.loc[best_idx, "Low"]) - float(self.lime_anchor_price)) / (t1 - t0)
+                        if self.lime_ray is None:
+                            self.lime_ray = Ray(45.0, float(self.lime_anchor_price), self.lime_anchor_time, "lime", "Swing Low Ray")
+                        self.lime_ray.start_price = float(self.lime_anchor_price)
+                        self.lime_ray.start_time  = self.lime_anchor_time
+                        self.lime_ray.adjusted_slope = float(slope)
+                        self._lime_slope_frozen = True
 
 
 def _display_angle_from_slope(slope: float, x_per_unit: float = 1.0, y_per_unit: float = 1.0) -> float:
@@ -461,6 +531,9 @@ def run_trading_algo(
     blue_ray_start_prices = []
     blue_ray_start_times = []
 
+    magenta_prices = []
+    lime_prices = []
+
     orange_angles = []
     yellow_angles = []
     purple_angles = []
@@ -494,6 +567,10 @@ def run_trading_algo(
             prev_purple = rm.purple_ray.get_price_at_time(prev_time, prev_purple_slope)
             prev_blue = rm.blue_ray.get_price_at_time(prev_time, prev_blue_slope)
 
+            # Magenta and lime ray values at prev bar.
+            prev_magenta = rm.magenta_ray.get_price_at_time(prev_time, rm.magenta_ray.adjusted_slope) if rm.magenta_ray is not None and rm.magenta_ray.adjusted_slope is not None else None
+            prev_lime    = rm.lime_ray.get_price_at_time(prev_time, rm.lime_ray.adjusted_slope)       if rm.lime_ray    is not None and rm.lime_ray.adjusted_slope    is not None else None
+
             # Current-bar orange/yellow prices used for the 50-point proximity check.
             curr_orange = rm.orange_ray.get_price_at_time(time, prev_orange_slope)
             curr_yellow = rm.yellow_ray.get_price_at_time(time, prev_yellow_slope)
@@ -526,6 +603,16 @@ def run_trading_algo(
                         if not within_50:
                             buy_triggered = True
 
+                # Magenta swing high ray BUY trigger.
+                if not buy_triggered and prev_magenta is not None:
+                    mag_slope = rm.magenta_ray.adjusted_slope
+                    mag_angle = _display_angle_from_slope(mag_slope, x_per_unit, y_per_unit)
+                    curr_magenta = rm.magenta_ray.get_price_at_time(time, mag_slope)
+                    if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_magenta and current_close > prev_magenta:
+                        within_50 = abs(current_close - curr_orange) <= cfg.proximity_points
+                        if not within_50:
+                            buy_triggered = True
+
                 if buy_triggered:
                     if temp_position == "short" and temp_entry_price is not None:
                         session_realized_pl += temp_entry_price - current_close
@@ -554,6 +641,16 @@ def run_trading_algo(
                         within_50 = (
                             abs(current_close - curr_yellow) <= cfg.proximity_points
                         )
+                        if not within_50:
+                            sell_triggered = True
+
+                # Lime swing low ray SELL trigger.
+                if not sell_triggered and prev_lime is not None:
+                    lime_slope = rm.lime_ray.adjusted_slope
+                    lime_angle = _display_angle_from_slope(lime_slope, x_per_unit, y_per_unit)
+                    curr_lime = rm.lime_ray.get_price_at_time(time, lime_slope)
+                    if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
+                        within_50 = abs(current_close - curr_yellow) <= cfg.proximity_points
                         if not within_50:
                             sell_triggered = True
 
@@ -596,6 +693,17 @@ def run_trading_algo(
         yellow_prices.append(float(rm.yellow_ray.get_price_at_time(time, yellow_slope_now)))
         purple_prices.append(float(rm.purple_ray.get_price_at_time(time, purple_slope_now)))
         blue_prices.append(float(rm.blue_ray.get_price_at_time(time, blue_slope_now)))
+
+        # Magenta and lime swing rays.
+        if rm.magenta_ray is not None and rm.magenta_ray.adjusted_slope is not None:
+            magenta_prices.append(float(rm.magenta_ray.get_price_at_time(time, rm.magenta_ray.adjusted_slope)))
+        else:
+            magenta_prices.append(float("nan"))
+
+        if rm.lime_ray is not None and rm.lime_ray.adjusted_slope is not None:
+            lime_prices.append(float(rm.lime_ray.get_price_at_time(time, rm.lime_ray.adjusted_slope)))
+        else:
+            lime_prices.append(float("nan"))
 
         # Anchor meta so the plotter/debug tools can see exactly where
         # the steep rays are based.
@@ -642,7 +750,9 @@ def run_trading_algo(
     result["orange_ray"] = orange_prices
     result["yellow_ray"] = yellow_prices
     result["purple_ray"] = purple_prices
-    result["blue_ray"] = blue_prices
+    result["blue_ray"]   = blue_prices
+    result["magenta_ray"] = magenta_prices
+    result["lime_ray"]    = lime_prices
 
     result["orange_slope"] = orange_slopes
     result["yellow_slope"] = yellow_slopes

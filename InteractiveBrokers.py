@@ -552,7 +552,7 @@ class IBDataBridge:
             end_dt = _EST.localize(end_naive)
             # If end_time is earlier than start_time it's an overnight session —
             # use tomorrow's date for the end.
-            if end_dt <= self._session_start_dt:
+            if self._session_start_dt is not None and end_dt <= self._session_start_dt:
                 from datetime import timedelta
                 end_dt = end_dt + timedelta(days=1)
             if bar_time >= end_dt and not self._session_ended:

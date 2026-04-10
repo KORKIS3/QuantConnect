@@ -154,6 +154,8 @@ class ChartPlotter:
         self.lines["ray_purple"],      = self.ax.plot([], [], color="darkviolet", linewidth=2, label="Purple ray",  alpha=0.9)
         self.lines["ray_blue"],        = self.ax.plot([], [], color="blue",       linewidth=2, label="Blue ray",    alpha=0.9)
         self.lines["ray_dark_purple"], = self.ax.plot([], [], color="indigo",     linewidth=2, label="Dark purple", alpha=0.9)
+        self.lines["ray_magenta"],     = self.ax.plot([], [], color="magenta",    linewidth=1.5, label="Swing High", alpha=0.85, linestyle="--")
+        self.lines["ray_lime"],        = self.ax.plot([], [], color="limegreen",  linewidth=1.5, label="Swing Low",  alpha=0.85, linestyle="--")
 
         self.ax.set_ylabel("Price", fontsize=12)
         self.ax.set_xlabel("Time (ET)", fontsize=12)
@@ -270,6 +272,30 @@ class ChartPlotter:
 
         self.lines["ray_dark_purple"].set_data([], [])
 
+        # Magenta swing high ray.
+        if "magenta_ray" in current_data.columns:
+            valid = current_data["magenta_ray"].dropna()
+            if not valid.empty and not pd.isna(row.get("magenta_ray")):
+                self.lines["ray_magenta"].set_data(
+                    [valid.index[0], current_time],
+                    [float(valid.iloc[0]), float(row["magenta_ray"])])
+            else:
+                self.lines["ray_magenta"].set_data([], [])
+        else:
+            self.lines["ray_magenta"].set_data([], [])
+
+        # Lime swing low ray.
+        if "lime_ray" in current_data.columns:
+            valid = current_data["lime_ray"].dropna()
+            if not valid.empty and not pd.isna(row.get("lime_ray")):
+                self.lines["ray_lime"].set_data(
+                    [valid.index[0], current_time],
+                    [float(valid.iloc[0]), float(row["lime_ray"])])
+            else:
+                self.lines["ray_lime"].set_data([], [])
+        else:
+            self.lines["ray_lime"].set_data([], [])
+
     def update_annotations(self, current_data):
         """Draw High / Low / Close labels for every bar."""
         for ann in getattr(self, "annotations", []):
@@ -373,8 +399,8 @@ class ChartPlotter:
         max_high      = float(row["rolling_max_high"])
         min_low       = float(row["rolling_min_low"])
         price_range   = float(row["rolling_range"])
-        max_time      = row["rolling_max_high_time"].strftime("%H:%M")
-        min_time      = row["rolling_min_low_time"].strftime("%H:%M")
+        max_time      = pd.Timestamp(row["rolling_max_high_time"]).strftime("%H:%M")
+        min_time      = pd.Timestamp(row["rolling_min_low_time"]).strftime("%H:%M")
         n_buy         = int(row["rolling_buy_count"])
         n_sell        = int(row["rolling_sell_count"])
         pl            = float(row.get("pl", 0.0))
