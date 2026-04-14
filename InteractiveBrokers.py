@@ -235,6 +235,7 @@ class IBDataBridge:
             warmup_minutes=7,
             steep_angle_threshold=65.0,
             proximity_points=15.0,
+            min_reversal_minutes=10,
         )
         self.dry_run = dry_run
         self.start_time = start_time

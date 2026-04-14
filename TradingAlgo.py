@@ -39,6 +39,7 @@ class AlgoConfig:
     steep_angle_threshold: float = 45.0
     proximity_points: float = 50.0
     warmup_minutes: Optional[int] = None
+    min_reversal_minutes: int = 10  # minimum minutes before allowing a position reversal
 
 
 class Ray:
@@ -495,6 +496,7 @@ def run_trading_algo(
 
     temp_position = "flat"
     temp_entry_price: Optional[float] = None
+    temp_entry_time = None
     trading_halted = False
     halt_time = None
 
@@ -584,87 +586,108 @@ def run_trading_algo(
             # Determine if this is the last bar of the session (go flat, not reverse).
             is_last_bar = (i == len(full_data) - 1)
 
+            # Reversal guard: block reversals within min_reversal_minutes of entry.
+            mins_since_entry = (
+                (time - temp_entry_time).total_seconds() / 60
+                if temp_entry_time is not None else 999
+            )
+            reversal_blocked = (
+                cfg.min_reversal_minutes > 0
+                and mins_since_entry < cfg.min_reversal_minutes
+            )
+
             # BUY signals - triggers from flat or short (reversal).
             # Purple crosses suppressed when close is within proximity_points of orange.
             if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
-                buy_triggered = False
+                # Block reversal from short if not enough time has passed.
+                if temp_position == "short" and reversal_blocked:
+                    pass
+                else:
+                    buy_triggered = False
 
-                if prev_close is not None and prev_orange is not None:
-                    if prev_close <= prev_orange and current_close > prev_orange:
-                        buy_triggered = True
-
-                if not buy_triggered and prev_close is not None and prev_purple is not None:
-                    angle_slope = prev_purple_slope
-                    purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
-                        within_50 = (
-                            abs(current_close - curr_orange) <= cfg.proximity_points
-                        )
-                        if not within_50:
+                    if prev_close is not None and prev_orange is not None:
+                        if prev_close <= prev_orange and current_close > prev_orange:
                             buy_triggered = True
 
-                # Magenta swing high ray BUY trigger.
-                if not buy_triggered and prev_magenta is not None:
-                    mag_slope = rm.magenta_ray.adjusted_slope
-                    mag_angle = _display_angle_from_slope(mag_slope, x_per_unit, y_per_unit)
-                    curr_magenta = rm.magenta_ray.get_price_at_time(time, mag_slope)
-                    if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_magenta and current_close > prev_magenta:
-                        within_50 = abs(current_close - curr_orange) <= cfg.proximity_points
-                        if not within_50:
-                            buy_triggered = True
+                    if not buy_triggered and prev_close is not None and prev_purple is not None:
+                        angle_slope = prev_purple_slope
+                        purple_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
+                        if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
+                            within_50 = (
+                                abs(current_close - curr_orange) <= cfg.proximity_points
+                            )
+                            if not within_50:
+                                buy_triggered = True
 
-                if buy_triggered:
-                    if temp_position == "short" and temp_entry_price is not None:
-                        session_realized_pl += temp_entry_price - current_close
-                    buy_signals[time] = current_close
-                    if is_last_bar:
-                        # End of session — go flat, don't open new long.
-                        temp_position = "flat"
-                        temp_entry_price = None
-                    else:
-                        temp_position = "long"
-                        temp_entry_price = current_close
+                    # Magenta swing high ray BUY trigger.
+                    if not buy_triggered and prev_magenta is not None:
+                        mag_slope = rm.magenta_ray.adjusted_slope
+                        mag_angle = _display_angle_from_slope(mag_slope, x_per_unit, y_per_unit)
+                        curr_magenta = rm.magenta_ray.get_price_at_time(time, mag_slope)
+                        if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_magenta and current_close > prev_magenta:
+                            within_50 = abs(current_close - curr_orange) <= cfg.proximity_points
+                            if not within_50:
+                                buy_triggered = True
 
+                    if buy_triggered:
+                        if temp_position == "short" and temp_entry_price is not None:
+                            session_realized_pl += temp_entry_price - current_close
+                        buy_signals[time] = current_close
+                        if is_last_bar:
+                            temp_position = "flat"
+                            temp_entry_price = None
+                            temp_entry_time  = None
+                        else:
+                            temp_position    = "long"
+                            temp_entry_price = current_close
+                            temp_entry_time  = time
+
+            # SELL signals - triggers from flat or long (reversal).
             # SELL signals - triggers from flat or long (reversal).
             # Blue crosses suppressed when close is within proximity_points of yellow.
             if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
-                sell_triggered = False
+                # Block reversal from long if not enough time has passed.
+                if temp_position == "long" and reversal_blocked:
+                    pass
+                else:
+                    sell_triggered = False
 
-                if prev_close is not None and prev_yellow is not None:
-                    if prev_close >= prev_yellow and current_close < prev_yellow:
-                        sell_triggered = True
-
-                if not sell_triggered and prev_close is not None and prev_blue is not None:
-                    angle_slope = prev_blue_slope
-                    blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
-                    if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
-                        within_50 = (
-                            abs(current_close - curr_yellow) <= cfg.proximity_points
-                        )
-                        if not within_50:
+                    if prev_close is not None and prev_yellow is not None:
+                        if prev_close >= prev_yellow and current_close < prev_yellow:
                             sell_triggered = True
 
-                # Lime swing low ray SELL trigger.
-                if not sell_triggered and prev_lime is not None:
-                    lime_slope = rm.lime_ray.adjusted_slope
-                    lime_angle = _display_angle_from_slope(lime_slope, x_per_unit, y_per_unit)
-                    curr_lime = rm.lime_ray.get_price_at_time(time, lime_slope)
-                    if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
-                        within_50 = abs(current_close - curr_yellow) <= cfg.proximity_points
-                        if not within_50:
-                            sell_triggered = True
+                    if not sell_triggered and prev_close is not None and prev_blue is not None:
+                        angle_slope = prev_blue_slope
+                        blue_angle = _display_angle_from_slope(angle_slope, x_per_unit, y_per_unit)
+                        if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
+                            within_50 = (
+                                abs(current_close - curr_yellow) <= cfg.proximity_points
+                            )
+                            if not within_50:
+                                sell_triggered = True
 
-                if sell_triggered:
-                    if temp_position == "long" and temp_entry_price is not None:
-                        session_realized_pl += current_close - temp_entry_price
-                    sell_signals[time] = current_close
-                    if is_last_bar:
-                        # End of session — go flat, don't open new short.
-                        temp_position = "flat"
-                        temp_entry_price = None
-                    else:
-                        temp_position = "short"
-                        temp_entry_price = current_close
+                    # Lime swing low ray SELL trigger.
+                    if not sell_triggered and prev_lime is not None:
+                        lime_slope = rm.lime_ray.adjusted_slope
+                        lime_angle = _display_angle_from_slope(lime_slope, x_per_unit, y_per_unit)
+                        curr_lime = rm.lime_ray.get_price_at_time(time, lime_slope)
+                        if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
+                            within_50 = abs(current_close - curr_yellow) <= cfg.proximity_points
+                            if not within_50:
+                                sell_triggered = True
+
+                    if sell_triggered:
+                        if temp_position == "long" and temp_entry_price is not None:
+                            session_realized_pl += current_close - temp_entry_price
+                        sell_signals[time] = current_close
+                        if is_last_bar:
+                            temp_position    = "flat"
+                            temp_entry_price = None
+                            temp_entry_time  = None
+                        else:
+                            temp_position    = "short"
+                            temp_entry_price = current_close
+                            temp_entry_time  = time
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).
