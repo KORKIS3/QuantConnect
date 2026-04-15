@@ -33,9 +33,19 @@ def fetch_ib_data(start: pd.Timestamp, end: pd.Timestamp, port: int = 4002) -> p
     ib.connect("127.0.0.1", port, clientId=20)
     print(f"Connected to IB at port {port}")
 
-    contract = Future(symbol="YM", exchange="CBOT", currency="USD")
-    contract = ib.reqContractDetails(contract)[0].contract
-    print(f"Contract: {contract.localSymbol}")
+    # Find the correct front-month contract for the requested date.
+    base = Future(symbol="YM", exchange="CBOT", currency="USD", includeExpired=True)
+    all_details = ib.reqContractDetails(base)
+    all_contracts = sorted(
+        [d.contract for d in all_details],
+        key=lambda c: c.lastTradeDateOrContractMonth
+    )
+    date_str = start.strftime("%Y%m%d")
+    contract = next(
+        (c for c in all_contracts if c.lastTradeDateOrContractMonth >= date_str),
+        all_contracts[-1]
+    )
+    print(f"Contract: {contract.localSymbol}  expiry={contract.lastTradeDateOrContractMonth}")
 
     # Request enough history to cover the window — use UTC end time.
     duration_secs = int((end - start).total_seconds()) + 600  # add 10 min buffer
@@ -118,7 +128,7 @@ def run(start_str: str, end_str: str, port: int = 4002) -> None:
     print(minute_df[["Open","High","Low","Close"]].to_string())
 
     # 3. Run trading algo.
-    config = AlgoConfig(warmup_minutes=7, steep_angle_threshold=65.0, proximity_points=15.0)
+    config = AlgoConfig(warmup_minutes=8, steep_angle_threshold=70.0, proximity_points=15.0, min_reversal_minutes=10)
     algo_df = run_trading_algo(minute_df, target_date, start_time, end_time, config=config)
 
     # 4. Print signals and P/L.

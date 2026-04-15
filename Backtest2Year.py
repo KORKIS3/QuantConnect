@@ -136,7 +136,8 @@ def calc_pl(filtered: list, last_close: float) -> list:
 
 def run_variant(algo_df: pd.DataFrame, variant: str,
                 min_profit: float = 0, min_minutes: int = 0,
-                min_cross_pts: float = 0) -> dict:
+                min_cross_pts: float = 0,
+                steep_angle_threshold: float = 65.0) -> dict:
 
     signals = algo_df[algo_df["signal"].isin(["BUY", "SELL"])].copy()
     last_close = float(algo_df["Close"].iloc[-1])
@@ -233,19 +234,15 @@ def run_backtest() -> None:
     ])
     print(f"\nRunning backtest on {len(csv_files)} days ...\n")
 
-    config = AlgoConfig(warmup_minutes=7, steep_angle_threshold=65.0, proximity_points=15.0)
-
     variants = [
-        ("baseline",   dict()),
-        ("time_5min",  dict(min_minutes=5)),
-        ("time_7min",  dict(min_minutes=7)),
-        ("time_10min", dict(min_minutes=10)),
-        ("time_12min", dict(min_minutes=12)),
-        ("time_15min", dict(min_minutes=15)),
-        ("time_18min", dict(min_minutes=18)),
-        ("time_20min", dict(min_minutes=20)),
-        ("time_25min", dict(min_minutes=25)),
-        ("time_30min", dict(min_minutes=30)),
+        ("no_threshold",   dict(steep_angle_threshold=999)),
+        ("threshold_45",   dict(steep_angle_threshold=45)),
+        ("threshold_55",   dict(steep_angle_threshold=55)),
+        ("threshold_65",   dict(steep_angle_threshold=65)),
+        ("threshold_70",   dict(steep_angle_threshold=70)),
+        ("threshold_75",   dict(steep_angle_threshold=75)),
+        ("threshold_80",   dict(steep_angle_threshold=80)),
+        ("threshold_90",   dict(steep_angle_threshold=90)),
     ]
 
     totals = {v[0]: {"trades":0,"pl_pts":0.0,"winners":0,"losers":0} for v in variants}
@@ -262,14 +259,21 @@ def run_backtest() -> None:
         except Exception:
             continue
 
-        try:
-            algo_df = run_trading_algo(df, target_date, "09:30", "10:30", config=config)
-        except Exception:
-            continue
-
         days_run += 1
+        if days_run % 50 == 0:
+            print(f"  ... {days_run}/{len(csv_files)} days processed")
         for vname, vkwargs in variants:
-            result = run_variant(algo_df, vname, **vkwargs)
+            try:
+                algo_df = run_trading_algo(df, target_date, "09:30", "10:30",
+                    config=AlgoConfig(
+                        warmup_minutes=7,
+                        steep_angle_threshold=vkwargs.get("steep_angle_threshold", 65.0),
+                        proximity_points=15.0,
+                        min_reversal_minutes=0,  # filter applied by run_variant below
+                    ))
+            except Exception:
+                continue
+            result = run_variant(algo_df, vname, min_minutes=10)
             if result:
                 totals[vname]["trades"]  += result["trades"]
                 totals[vname]["pl_pts"]  += result["pl_pts"]
