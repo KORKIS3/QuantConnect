@@ -128,7 +128,7 @@ def run(start_str: str, end_str: str, port: int = 4002) -> None:
     print(minute_df[["Open","High","Low","Close"]].to_string())
 
     # 3. Run trading algo.
-    config = AlgoConfig(warmup_minutes=8, steep_angle_threshold=70.0, proximity_points=15.0, min_reversal_minutes=10)
+    config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0, proximity_points=15.0, min_reversal_minutes=10)
     algo_df = run_trading_algo(minute_df, target_date, start_time, end_time, config=config)
 
     # 4. Print signals and P/L.

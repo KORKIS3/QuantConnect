@@ -232,7 +232,7 @@ class IBDataBridge:
         self.port = port
         self.client_id = client_id
         self.config = config or AlgoConfig(
-            warmup_minutes=8,
+            warmup_minutes=12,
             steep_angle_threshold=70.0,
             proximity_points=15.0,
             min_reversal_minutes=10,
