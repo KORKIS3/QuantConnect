@@ -117,6 +117,8 @@ from sim trade analysis sessions with the user (Kevin Orkis, student of Mike Ast
 - User exits near 10:30 when a steeper trailing line is crossed, even if the original lines haven't been crossed.
 - On strong trend days, user holds the entire session with minimal reversals.
 - On choppy days, user may reverse 2-3 times but keeps losses small.
+- User reads **market structure** (higher highs/higher lows) to decide whether to hold through pullbacks — not just line crosses.
+- **Low/high water marks** — horizontal support/resistance at **price cluster levels** where multiple bar lows or highs have congregated (within ±10 points of each other). NOT the absolute session high/low (those are already covered by orange/yellow rays). These are mid-session pivot levels where price has repeatedly bounced. Example: on 02/13/26, ~49,350 was touched by multiple pullback lows and acted as a floor. A close below such a cluster = stronger sell. A close above = stronger buy. To be tested as additional signal triggers.
 
 
 

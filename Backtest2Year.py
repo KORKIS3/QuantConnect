@@ -1,11 +1,12 @@
 """Backtest2Year.py
 
-Downloads 2 years of YM 9:30-10:30 ET data from IB, runs the trading algo
-with multiple reversal filter variants, and prints a comparison table.
+Downloads 2 years of YM 9:30-10:30 ET data from IB and backtests
+the trading algo with configurable variants.
 
 Usage:
-    python Backtest2Year.py --port 4001
-    python Backtest2Year.py --skip-download   # use existing CSVs
+    python Backtest2Year.py --port 4001              # download + backtest
+    python Backtest2Year.py --skip-download          # backtest only
+    python Backtest2Year.py --skip-download --max-days 50  # quick sample
 """
 
 import argparse
@@ -15,12 +16,11 @@ import pandas as pd
 import pytz
 from datetime import date, timedelta
 from ib_insync import IB, Future
-
 from TradingAlgo import run_trading_algo, AlgoConfig
 
 _EST        = pytz.timezone("US/Eastern")
 _DATA_ROOT  = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "930_1000")
-_CONTRACTS  = 100
+_CONTRACTS  = 2
 _MULTIPLIER = 5
 
 
@@ -41,19 +41,14 @@ def download_all(port: int) -> None:
     ib.connect("127.0.0.1", port, clientId=20)
     print(f"Connected to IB port {port}")
 
-    # Get all YM contracts including expired ones.
-    base = Future(symbol="YM", exchange="CBOT", currency="USD",
-                  includeExpired=True)
-    all_details = ib.reqContractDetails(base)
-    # Sort by expiry ascending.
+    base = Future(symbol="YM", exchange="CBOT", currency="USD", includeExpired=True)
     all_contracts = sorted(
-        [d.contract for d in all_details],
+        [d.contract for d in ib.reqContractDetails(base)],
         key=lambda c: c.lastTradeDateOrContractMonth
     )
-    print(f"Found {len(all_contracts)} YM contracts (including expired)")
+    print(f"Found {len(all_contracts)} YM contracts")
 
-    def front_month_for(d: date) -> object:
-        """Return the contract whose expiry is on or after date d."""
+    def front_month_for(d: date):
         d_str = d.strftime("%Y%m%d")
         for c in all_contracts:
             if c.lastTradeDateOrContractMonth >= d_str:
@@ -65,14 +60,13 @@ def download_all(port: int) -> None:
     start_date = end_date - timedelta(days=365 * 2 + 30)
     days = list(trading_days(start_date, end_date))
     print(f"Downloading {len(days)} days ...")
+
     for idx, d in enumerate(days):
         fname = os.path.join(_DATA_ROOT, f"CBOT_MINI_YM1_{d}.csv")
         if os.path.exists(fname):
             continue
         contract = front_month_for(d)
-        end_ts  = pd.Timestamp(f"{d} 10:35:00").tz_localize(_EST).astimezone(pytz.utc)
-        end_utc = end_ts.strftime("%Y%m%d-%H:%M:%S")
-
+        end_utc  = pd.Timestamp(f"{d} 10:35:00").tz_localize(_EST).astimezone(pytz.utc).strftime("%Y%m%d-%H:%M:%S")
         try:
             bars = ib.reqHistoricalData(contract, endDateTime=end_utc,
                 durationStr="4200 S", barSizeSetting="1 min",
@@ -89,167 +83,105 @@ def download_all(port: int) -> None:
             df.index = df.index.tz_localize("UTC").tz_convert(_EST)
         else:
             df.index = df.index.tz_convert(_EST)
-        # Filter strictly to 09:30-10:30 ET.
-        t_start = pd.Timestamp(f"{d} 09:30:00", tz=_EST)
-        t_end   = pd.Timestamp(f"{d} 10:30:00", tz=_EST)
-        df = df[(df.index >= t_start) & (df.index <= t_end)]
+        df = df[(df.index >= pd.Timestamp(f"{d} 09:30", tz=_EST)) &
+                (df.index <= pd.Timestamp(f"{d} 10:30", tz=_EST))]
         if len(df) < 10:
             continue
         df.to_csv(fname)
         print(f"  [{idx+1}/{len(days)}] {d}: {len(df)} bars")
         time.sleep(0.5)
+
     ib.disconnect()
     print("Download complete.")
 
 
 # ---------------------------------------------------------------------------
-# Core P/L calculator from a filtered signal list
+# P/L calculator
 # ---------------------------------------------------------------------------
 
-def calc_pl(filtered: list, last_close: float) -> list:
-    """Given [(ts, sig, price), ...] return list of per-trade P/L points."""
-    trade_pls = []
-    position  = "flat"
-    entry_price = None
-    for ts, sig, price in filtered:
-        if sig == "BUY":
-            if position == "short" and entry_price is not None:
-                trade_pls.append(entry_price - price)
-            position    = "long"
-            entry_price = price
-        elif sig == "SELL":
-            if position == "long" and entry_price is not None:
-                trade_pls.append(price - entry_price)
-            position    = "short"
-            entry_price = price
-    if position != "flat" and entry_price is not None:
-        if position == "long":
-            trade_pls.append(last_close - entry_price)
-        else:
-            trade_pls.append(entry_price - last_close)
-    return trade_pls
-
-
-# ---------------------------------------------------------------------------
-# Variant runner
-# ---------------------------------------------------------------------------
-
-def run_variant(algo_df: pd.DataFrame, variant: str,
-                min_profit: float = 0, min_minutes: int = 0,
-                min_cross_pts: float = 0,
-                steep_angle_threshold: float = 65.0) -> dict:
-
-    signals = algo_df[algo_df["signal"].isin(["BUY", "SELL"])].copy()
-    last_close = float(algo_df["Close"].iloc[-1])
-
-    if signals.empty:
-        return {"variant": variant, "trades": 0, "pl_pts": 0.0,
-                "winners": 0, "losers": 0}
-
-    # Option 2: min_cross_pts — require close to be X pts beyond the ray.
-    # We approximate this by checking the distance between close and the
-    # triggering ray at signal time.
-    def cross_distance(row):
-        sig = row["signal"]
-        price = float(row["buy_price"] if sig == "BUY" else row["sell_price"])
-        if sig == "BUY":
-            ray = min(
-                float(row.get("orange_ray", float("inf"))),
-                float(row.get("purple_ray", float("inf"))),
-                float(row.get("magenta_ray", float("inf"))),
-            )
-            return price - ray if ray != float("inf") else 999
-        else:
-            ray = max(
-                float(row.get("yellow_ray", float("-inf"))),
-                float(row.get("blue_ray",   float("-inf"))),
-                float(row.get("lime_ray",   float("-inf"))),
-            )
-            return ray - price if ray != float("-inf") else 999
+def calc_pl(signals_df: pd.DataFrame, last_close: float,
+            min_minutes: int = 0, flat_window: tuple = None) -> list:
+    """Calculate per-trade P/L applying the time-based reversal filter.
+    
+    flat_window: optional (start_minute, end_minute) tuple e.g. (58, 62)
+    meaning go flat at :58 and resume at :02. Minutes are relative to the hour.
+    """
+    rows = signals_df[signals_df["signal"].isin(["BUY","SELL"])].copy()
+    if rows.empty:
+        return []
 
     filtered = []
-    for ts, row in signals.iterrows():
+    for ts, row in rows.iterrows():
         sig   = row["signal"]
         price = float(row["buy_price"] if sig == "BUY" else row["sell_price"])
 
-        # Option 2 filter — apply to ALL signals, not just reversals.
-        if min_cross_pts > 0:
-            dist = cross_distance(row)
-            if dist < min_cross_pts:
+        # Skip signals during the flat window (9:58 - 10:02)
+        if flat_window is not None:
+            bar_hhmm = ts.hour * 60 + ts.minute
+            flat_start = 9 * 60 + flat_window[0]  # e.g. 9:58
+            flat_end   = 10 * 60 + flat_window[1]  # e.g. 10:02
+            if flat_start <= bar_hhmm <= flat_end:
                 continue
 
         if not filtered:
             filtered.append((ts, sig, price))
             continue
-
         last_ts, last_sig, last_price = filtered[-1]
-        is_reversal = (last_sig != sig)
-
-        if is_reversal:
+        if last_sig != sig:  # reversal
             mins_held = (ts - last_ts).total_seconds() / 60
-            if last_sig == "BUY":
-                profit_so_far = price - last_price
-            else:
-                profit_so_far = last_price - price
-
-            allow = True
-            profit_ok = (min_profit == 0 or profit_so_far >= min_profit)
-            time_ok   = (min_minutes == 0 or mins_held >= min_minutes)
-
-            if min_profit > 0 and min_minutes > 0:
-                # combined: need EITHER profit OR time
-                allow = profit_ok or time_ok
-            elif min_profit > 0:
-                allow = profit_ok
-            elif min_minutes > 0:
-                allow = time_ok
-
-            if allow:
+            if min_minutes == 0 or mins_held >= min_minutes:
                 filtered.append((ts, sig, price))
         else:
             filtered.append((ts, sig, price))
 
-    trade_pls = calc_pl(filtered, last_close)
-    if not trade_pls:
-        return {"variant": variant, "trades": 0, "pl_pts": 0.0,
-                "winners": 0, "losers": 0}
+    # If flat_window active, force close any open position at flat_start
+    # and reopen after flat_end if a signal fires.
+    # For simplicity, we handle this by just skipping signals in the window above.
 
-    return {
-        "variant":  variant,
-        "trades":   len(trade_pls),
-        "pl_pts":   round(sum(trade_pls), 1),
-        "winners":  sum(1 for p in trade_pls if p > 0),
-        "losers":   sum(1 for p in trade_pls if p <= 0),
-    }
+    trade_pls = []
+    position = "flat"
+    entry_price = None
+    for ts, sig, price in filtered:
+        if sig == "BUY":
+            if position == "short" and entry_price is not None:
+                trade_pls.append(entry_price - price)
+            position, entry_price = "long", price
+        elif sig == "SELL":
+            if position == "long" and entry_price is not None:
+                trade_pls.append(price - entry_price)
+            position, entry_price = "short", price
+    if position != "flat" and entry_price is not None:
+        trade_pls.append((last_close - entry_price) if position == "long"
+                         else (entry_price - last_close))
+    return trade_pls
 
 
 # ---------------------------------------------------------------------------
 # Main backtest
 # ---------------------------------------------------------------------------
 
-def run_backtest() -> None:
+def run_backtest(max_days: int = 0) -> None:
     csv_files = sorted([
         f for f in os.listdir(_DATA_ROOT)
         if f.startswith("CBOT_MINI_YM1_") and f.endswith(".csv")
     ])
+    if max_days > 0:
+        csv_files = csv_files[-max_days:]
     print(f"\nRunning backtest on {len(csv_files)} days ...\n")
 
+    # Define variants: (label, warmup_minutes, min_reversal_minutes, shallow_warmup_minutes)
+    # shallow_warmup_minutes: earlier cutoff for orange/yellow crosses only (0 = same as warmup)
+    # Define variants: (label, warmup_minutes, min_reversal_minutes, shallow_warmup, max_loss)
     variants = [
-        ("no_threshold",   dict(steep_angle_threshold=999)),
-        ("threshold_45",   dict(steep_angle_threshold=45)),
-        ("threshold_55",   dict(steep_angle_threshold=55)),
-        ("threshold_65",   dict(steep_angle_threshold=65)),
-        ("threshold_70",   dict(steep_angle_threshold=70)),
-        ("threshold_75",   dict(steep_angle_threshold=75)),
-        ("threshold_80",   dict(steep_angle_threshold=80)),
-        ("threshold_90",   dict(steep_angle_threshold=90)),
+        ("full_session",       12, 10, 0, 0),   # 9:42 - 10:30
+        ("flat_at_10am",       12, 10, 0, 0),   # 9:42 - 9:58, flat 9:58-10:02, resume 10:02 - 10:30
     ]
 
-    totals = {v[0]: {"trades":0,"pl_pts":0.0,"winners":0,"losers":0} for v in variants}
+    totals = {v[0]: {"trades":0,"pl_pts":0.0,"winners":0,"losers":0,"daily_pls":[]} for v in variants}
     days_run = 0
 
     for fname in csv_files:
-        target_date = fname.replace("CBOT_MINI_YM1_", "").replace(".csv", "")
+        target_date = fname.replace("CBOT_MINI_YM1_","").replace(".csv","")
         fpath = os.path.join(_DATA_ROOT, fname)
         try:
             df = pd.read_csv(fpath, index_col=0, parse_dates=True)
@@ -260,45 +192,80 @@ def run_backtest() -> None:
             continue
 
         days_run += 1
-        if days_run % 50 == 0:
+        if days_run % 100 == 0:
             print(f"  ... {days_run}/{len(csv_files)} days processed")
-        for vname, vkwargs in variants:
+
+        # Skip April 2025 — extreme tariff volatility, not tradeable
+        if target_date.startswith("2025-04"):
+            continue
+
+        for vname, warmup, rev_min, shallow_warmup, max_loss in variants:
+            effective_warmup = shallow_warmup if shallow_warmup > 0 else warmup
             try:
                 algo_df = run_trading_algo(df, target_date, "09:30", "10:30",
                     config=AlgoConfig(
-                        warmup_minutes=7,
-                        steep_angle_threshold=vkwargs.get("steep_angle_threshold", 65.0),
+                        warmup_minutes=effective_warmup,
+                        steep_angle_threshold=70.0,
                         proximity_points=15.0,
-                        min_reversal_minutes=0,  # filter applied by run_variant below
+                        min_reversal_minutes=0,
+                        max_loss_per_trade=max_loss,
                     ))
             except Exception:
                 continue
-            result = run_variant(algo_df, vname, min_minutes=10)
-            if result:
-                totals[vname]["trades"]  += result["trades"]
-                totals[vname]["pl_pts"]  += result["pl_pts"]
-                totals[vname]["winners"] += result["winners"]
-                totals[vname]["losers"]  += result["losers"]
+
+            flat_window = (58, 2) if "flat_at_10am" in vname else None
+            trade_pls = calc_pl(algo_df, float(algo_df["Close"].iloc[-1]), rev_min, flat_window=flat_window)
+            if not trade_pls:
+                continue
+            day_pl = sum(trade_pls)
+            totals[vname]["trades"]  += len(trade_pls)
+            totals[vname]["pl_pts"]  += day_pl
+            totals[vname]["winners"] += sum(1 for p in trade_pls if p > 0)
+            totals[vname]["losers"]  += sum(1 for p in trade_pls if p <= 0)
+            totals[vname]["daily_pls"].append(day_pl)
 
     print(f"Days analysed: {days_run}")
     print(f"Contracts:     {_CONTRACTS} x ${_MULTIPLIER}/pt\n")
-    print(f"{'Variant':<18} {'Trades':>7} {'Winners':>8} {'Losers':>7} {'Win%':>6} {'P/L pts':>10} {'P/L USD':>14}")
+    print(f"{'Variant':<22} {'Trades':>7} {'Winners':>8} {'Losers':>7} {'Win%':>6} {'Total Pts':>10} {'P/L USD':>12}")
     print("-" * 80)
-    for vname, _ in variants:
+    for vname, _, _, _, _ in variants:
         t = totals[vname]
         trades   = t["trades"]
         win_rate = t["winners"] / trades * 100 if trades else 0
         pl_usd   = t["pl_pts"] * _CONTRACTS * _MULTIPLIER
-        print(f"{vname:<18} {trades:>7} {t['winners']:>8} {t['losers']:>7} "
-              f"{win_rate:>5.1f}% {t['pl_pts']:>10.0f} ${pl_usd:>13,.0f}")
+        print(f"{vname:<22} {trades:>7} {t['winners']:>8} {t['losers']:>7} "
+              f"{win_rate:>5.1f}% {t['pl_pts']:>10.0f} ${pl_usd:>11,.0f}")
     print()
+
+    # Daily P/L summary
+    import numpy as np
+    for vname, _, _, _, _ in variants:
+        daily = totals[vname]["daily_pls"]
+        if not daily:
+            continue
+        daily = sorted(daily)
+        win_days  = [d for d in daily if d > 0]
+        lose_days = [d for d in daily if d <= 0]
+        print(f"\n--- Daily P/L Summary ({vname}) ---")
+        print(f"  Trading days:    {len(daily)}")
+        print(f"  Winning days:    {len(win_days)} ({len(win_days)/len(daily)*100:.0f}%)")
+        print(f"  Losing days:     {len(lose_days)} ({len(lose_days)/len(daily)*100:.0f}%)")
+        print(f"  Avg daily P/L:   {np.mean(daily):+.1f} pts  ${np.mean(daily)*_CONTRACTS*_MULTIPLIER:+,.0f}")
+        print(f"  Avg winning day: {np.mean(win_days):+.1f} pts" if win_days else "")
+        print(f"  Avg losing day:  {np.mean(lose_days):+.1f} pts" if lose_days else "")
+        print(f"  Best day:        {max(daily):+.0f} pts")
+        print(f"  Worst day:       {min(daily):+.0f} pts")
+        print(f"  Top 5 worst days: {daily[:5]}")
+        print(f"  Top 5 best days:  {daily[-5:]}")
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--port",          type=int, default=4001)
     p.add_argument("--skip-download", action="store_true", dest="skip_download")
+    p.add_argument("--max-days",      type=int, default=0, dest="max_days",
+                   help="Limit to most recent N days (0 = all)")
     args = p.parse_args()
     if not args.skip_download:
         download_all(args.port)
-    run_backtest()
+    run_backtest(max_days=args.max_days)

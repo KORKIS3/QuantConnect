@@ -55,8 +55,10 @@ AlgoConfig(
 
 ### To implement after sim analysis complete:
 1. **Trailing stop line** — ~60° line from most recent swing low/high after entry. Exit when price closes across it. Tighten as trade moves in favor.
-2. **Loss protection reversal** — allow early reversal (before 10 min) when unrealized loss exceeds X points AND opposing line is crossed. Need to find optimal X.
-3. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering (reduces false signals).
+2. **Swing low/high trailing stop** — track the most recent swing low (for longs) or swing high (for shorts). Exit if price closes below/above it. More adaptive than fixed-angle line — follows actual market structure (higher highs/higher lows pattern).
+3. **Low/high water marks** — horizontal lines at the session's running low and high. Mike Aston calls these "low water marks" and "high water marks." A close below the low water mark = significant breakdown signal. A close above the high water mark = significant breakout signal. Test as additional entry/exit triggers alongside the angled rays.
+4. **Loss protection reversal** — allow early reversal (before 10 min) when unrealized loss exceeds X points AND opposing line is crossed. Need to find optimal X.
+5. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering (reduces false signals).
 
 ### Remaining sim screenshots to analyze:
 - 02/13/26

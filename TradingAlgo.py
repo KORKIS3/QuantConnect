@@ -40,6 +40,7 @@ class AlgoConfig:
     proximity_points: float = 50.0
     warmup_minutes: Optional[int] = None
     min_reversal_minutes: int = 10  # minimum minutes before allowing a position reversal
+    max_loss_per_trade: float = 0.0  # hard stop-loss per trade in points (0 = disabled)
 
 
 class Ray:
@@ -583,17 +584,66 @@ def run_trading_algo(
             # Short → liquidate on an upward  cross of purple only.
             liquidated_this_bar = False
 
+            # Hard stop-loss: if unrealized loss exceeds max_loss_per_trade,
+            # exit immediately. If max_loss > 0: go flat. If max_loss < 0: reverse.
+            stop_threshold = abs(cfg.max_loss_per_trade)
+            stop_reverse   = cfg.max_loss_per_trade < 0
+            if stop_threshold > 0 and temp_position != "flat" and temp_entry_price is not None:
+                if temp_position == "long":
+                    unrealized = current_close - temp_entry_price
+                else:
+                    unrealized = temp_entry_price - current_close
+                if unrealized <= -stop_threshold:
+                    if temp_position == "long":
+                        session_realized_pl += current_close - temp_entry_price
+                        sell_signals[time] = current_close
+                        liquidation_timestamps.add(time)
+                        if stop_reverse:
+                            temp_position    = "short"
+                            temp_entry_price = current_close
+                            temp_entry_time  = time
+                        else:
+                            temp_position    = "flat"
+                            temp_entry_price = None
+                            temp_entry_time  = None
+                    else:
+                        session_realized_pl += temp_entry_price - current_close
+                        buy_signals[time] = current_close
+                        liquidation_timestamps.add(time)
+                        if stop_reverse:
+                            temp_position    = "long"
+                            temp_entry_price = current_close
+                            temp_entry_time  = time
+                        else:
+                            temp_position    = "flat"
+                            temp_entry_price = None
+                            temp_entry_time  = None
+                    liquidated_this_bar = True
+
             # Determine if this is the last bar of the session (go flat, not reverse).
             is_last_bar = (i == len(full_data) - 1)
 
             # Reversal guard: block reversals within min_reversal_minutes of entry.
+            # EXCEPTION: if orange or yellow line is crossed, always allow (safety line override).
             mins_since_entry = (
                 (time - temp_entry_time).total_seconds() / 60
                 if temp_entry_time is not None else 999
             )
+
+            # Check if orange or yellow line is being crossed this bar.
+            orange_cross_buy  = (prev_close is not None and prev_orange is not None and
+                                 prev_close <= prev_orange and current_close > prev_orange)
+            yellow_cross_sell = (prev_close is not None and prev_yellow is not None and
+                                 prev_close >= prev_yellow and current_close < prev_yellow)
+            safety_line_override = (
+                (temp_position == "short" and orange_cross_buy) or
+                (temp_position == "long"  and yellow_cross_sell)
+            )
+
             reversal_blocked = (
                 cfg.min_reversal_minutes > 0
                 and mins_since_entry < cfg.min_reversal_minutes
+                and not safety_line_override
             )
 
             # BUY signals - triggers from flat or short (reversal).
