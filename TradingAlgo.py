@@ -501,6 +501,12 @@ def run_trading_algo(
     trading_halted = False
     halt_time = None
 
+    # Trailing stop state: tracks a ~60° line from the most recent swing point.
+    trailing_stop_price: Optional[float] = None  # current trailing stop level
+    trailing_stop_anchor_time = None
+    trailing_stop_anchor_price: Optional[float] = None
+    _TRAILING_ANGLE_DEG = 60.0  # angle of the trailing stop line
+
     buy_signals: Dict[pd.Timestamp, float] = {}
     sell_signals: Dict[pd.Timestamp, float] = {}
     liquidation_timestamps: set = set()
@@ -620,6 +626,117 @@ def run_trading_algo(
                             temp_entry_time  = None
                     liquidated_this_bar = True
 
+            # --- Trailing stop line ---
+            # Activates after 75+ pts profit. Tightens after higher-high (long)
+            # or lower-low (short) confirmation following a pullback.
+            if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5:
+                if temp_position == "long":
+                    unrealized_profit = current_close - temp_entry_price
+                else:
+                    unrealized_profit = temp_entry_price - current_close
+
+                if unrealized_profit >= 75:
+                    # Determine if we've had a higher-high confirmation.
+                    # Look for: high > prev_high AND a pullback low exists between them.
+                    has_hh_confirmation = False
+                    confirmation_swing_price = None
+                    confirmation_swing_time  = None
+
+                    if temp_position == "long" and i >= 4:
+                        # Scan backwards for pattern: high, pullback, higher high
+                        highs = [float(full_data["High"].iloc[j]) for j in range(max(0, i-10), i+1)]
+                        lows  = [float(full_data["Low"].iloc[j])  for j in range(max(0, i-10), i+1)]
+                        times = [full_data.index[j] for j in range(max(0, i-10), i+1)]
+                        # Find the highest high before current bar
+                        if len(highs) >= 3:
+                            for k in range(len(highs)-1, 1, -1):
+                                if highs[k] > highs[k-2]:  # current high > high 2 bars ago
+                                    # Check if there's a dip in between
+                                    mid_low = lows[k-1]
+                                    if highs[k] - mid_low >= 30:  # meaningful pullback
+                                        has_hh_confirmation = True
+                                        confirmation_swing_price = mid_low
+                                        confirmation_swing_time  = times[k-1]
+                                        break
+
+                    elif temp_position == "short" and i >= 4:
+                        highs = [float(full_data["High"].iloc[j]) for j in range(max(0, i-10), i+1)]
+                        lows  = [float(full_data["Low"].iloc[j])  for j in range(max(0, i-10), i+1)]
+                        times = [full_data.index[j] for j in range(max(0, i-10), i+1)]
+                        if len(lows) >= 3:
+                            for k in range(len(lows)-1, 1, -1):
+                                if lows[k] < lows[k-2]:  # current low < low 2 bars ago
+                                    mid_high = highs[k-1]
+                                    if mid_high - lows[k] >= 30:
+                                        has_hh_confirmation = True
+                                        confirmation_swing_price = mid_high
+                                        confirmation_swing_time  = times[k-1]
+                                        break
+
+                    # Set angle based on confirmation and profit level.
+                    if has_hh_confirmation and unrealized_profit >= 150:
+                        trail_angle = 60.0  # tight after confirmed trend + big profit
+                    elif has_hh_confirmation:
+                        trail_angle = 50.0  # moderate after confirmed trend
+                    else:
+                        trail_angle = 40.0  # loose before confirmation
+
+                    trailing_slope = np.tan(np.deg2rad(trail_angle)) * (y_per_unit / x_per_unit)
+
+                    # Use confirmation swing as anchor if available, else most recent swing.
+                    anchor_price = None
+                    anchor_time  = None
+
+                    if has_hh_confirmation and confirmation_swing_price is not None:
+                        anchor_price = confirmation_swing_price
+                        anchor_time  = confirmation_swing_time
+                    else:
+                        # Fallback: find most recent significant swing in last 15 bars.
+                        SWING_MIN = 50.0
+                        for j in range(max(1, i-15), i):
+                            if j >= len(full_data) - 1:
+                                continue
+                            if temp_position == "long":
+                                lo = float(full_data["Low"].iloc[j])
+                                prev_lo = float(full_data["Low"].iloc[j-1])
+                                next_lo = float(full_data["Low"].iloc[j+1])
+                                if prev_lo - lo >= SWING_MIN * 0.3 and next_lo - lo >= SWING_MIN * 0.3:
+                                    if anchor_price is None or lo > anchor_price:
+                                        anchor_price = lo
+                                        anchor_time  = full_data.index[j]
+                            else:
+                                hi = float(full_data["High"].iloc[j])
+                                prev_hi = float(full_data["High"].iloc[j-1])
+                                next_hi = float(full_data["High"].iloc[j+1])
+                                if hi - prev_hi >= SWING_MIN * 0.3 and hi - next_hi >= SWING_MIN * 0.3:
+                                    if anchor_price is None or hi < anchor_price:
+                                        anchor_price = hi
+                                        anchor_time  = full_data.index[j]
+
+                    if anchor_price is not None and anchor_time is not None:
+                        t_diff = mdates.date2num(time) - mdates.date2num(anchor_time)
+                        if t_diff > 0:
+                            if temp_position == "long":
+                                stop_level = anchor_price + trailing_slope * t_diff
+                                if current_close < stop_level:
+                                    session_realized_pl += current_close - temp_entry_price
+                                    sell_signals[time] = current_close
+                                    liquidation_timestamps.add(time)
+                                    temp_position = "flat"
+                                    temp_entry_price = None
+                                    temp_entry_time  = None
+                                    liquidated_this_bar = True
+                            else:
+                                stop_level = anchor_price - trailing_slope * t_diff
+                                if current_close > stop_level:
+                                    session_realized_pl += temp_entry_price - current_close
+                                    buy_signals[time] = current_close
+                                    liquidation_timestamps.add(time)
+                                    temp_position = "flat"
+                                    temp_entry_price = None
+                                    temp_entry_time  = None
+                                    liquidated_this_bar = True
+
             # Determine if this is the last bar of the session (go flat, not reverse).
             is_last_bar = (i == len(full_data) - 1)
 
@@ -691,6 +808,9 @@ def run_trading_algo(
                             temp_position    = "long"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            trailing_stop_price = None
+                            trailing_stop_anchor_price = None
+                            trailing_stop_anchor_time  = None
 
             # SELL signals - triggers from flat or long (reversal).
             # SELL signals - triggers from flat or long (reversal).
@@ -738,6 +858,9 @@ def run_trading_algo(
                             temp_position    = "short"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            trailing_stop_price = None
+                            trailing_stop_anchor_price = None
+                            trailing_stop_anchor_time  = None
 
         # Update steep rays for the next iteration (this will be the
         # "previous-minute" state on the next loop iteration).

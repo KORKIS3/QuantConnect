@@ -13,9 +13,12 @@ AlgoConfig(
 )
 ```
 
-## Backtest Results (535 trading days, 9:30-10:30 ET, 2 contracts)
+## Backtest Results (505 trading days excl April 2025, 9:30-10:30 ET, 2 contracts)
 - Baseline (no filters): -$495,500
-- 10-min reversal filter: **+$123,810** ← current best (warmup=12min)
+- 10-min reversal filter: +$115,960
+- With trailing stop v3: **+$116,490** ← current best
+  - Worst day: -208 (vs -438 without trailing stop)
+  - Avg losing day: -50 pts (vs -70 without)
 - Angle threshold sweep: 70° is optimal
 - Loss protection overrides (50/65/80 pts): all worse than plain 10-min hold
 

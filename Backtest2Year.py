@@ -172,9 +172,11 @@ def run_backtest(max_days: int = 0) -> None:
     # Define variants: (label, warmup_minutes, min_reversal_minutes, shallow_warmup_minutes)
     # shallow_warmup_minutes: earlier cutoff for orange/yellow crosses only (0 = same as warmup)
     # Define variants: (label, warmup_minutes, min_reversal_minutes, shallow_warmup, max_loss)
+    # max_loss=0 means trailing stop is active (built into algo now)
+    # To test without trailing stop, we'd need a separate config flag — for now
+    # just run the current code which has trailing stop enabled.
     variants = [
-        ("full_session",       12, 10, 0, 0),   # 9:42 - 10:30
-        ("flat_at_10am",       12, 10, 0, 0),   # 9:42 - 9:58, flat 9:58-10:02, resume 10:02 - 10:30
+        ("with_trailing_stop",   12, 10, 0, 0),
     ]
 
     totals = {v[0]: {"trades":0,"pl_pts":0.0,"winners":0,"losers":0,"daily_pls":[]} for v in variants}
@@ -213,8 +215,7 @@ def run_backtest(max_days: int = 0) -> None:
             except Exception:
                 continue
 
-            flat_window = (58, 2) if "flat_at_10am" in vname else None
-            trade_pls = calc_pl(algo_df, float(algo_df["Close"].iloc[-1]), rev_min, flat_window=flat_window)
+            trade_pls = calc_pl(algo_df, float(algo_df["Close"].iloc[-1]), rev_min)
             if not trade_pls:
                 continue
             day_pl = sum(trade_pls)
