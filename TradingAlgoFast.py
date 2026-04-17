@@ -188,21 +188,12 @@ def run_trading_algo_fast(
     blue_slopes         = np.zeros(n)
 
     for i in range(n):
-        # Update anchors (same as original update_all_rays)
-        max_h = highs_arr[:i+1].max()
-        max_h_idx = np.where(highs_arr[:i+1] == max_h)[0][-1]
-        min_l = lows_arr[:i+1].min()
-        min_l_idx = np.where(lows_arr[:i+1] == min_l)[0][-1]
+        # Update anchors incrementally — only on strictly new high/low (matches original)
+        if highs_arr[i] > p_anchor_p:
+            p_anchor_p = highs_arr[i]; p_anchor_idx = i
 
-        if p_anchor_idx == 0 and i == 0:
-            p_anchor_p = max_h; p_anchor_idx = max_h_idx
-        elif max_h > p_anchor_p:
-            p_anchor_p = max_h; p_anchor_idx = max_h_idx
-
-        if b_anchor_idx == 0 and i == 0:
-            b_anchor_p = min_l; b_anchor_idx = min_l_idx
-        elif min_l < b_anchor_p:
-            b_anchor_p = min_l; b_anchor_idx = min_l_idx
+        if lows_arr[i] < b_anchor_p:
+            b_anchor_p = lows_arr[i]; b_anchor_idx = i
 
         # Purple and blue windows — if EITHER is too small, skip BOTH (matches original)
         pw_start = p_anchor_idx
@@ -256,53 +247,56 @@ def run_trading_algo_fast(
     lime_anchor_price = None; lime_anchor_idx = -1; lime_slope_frozen = False; lime_slope = 0.0
     magenta_vals = np.full(n, np.nan)
     lime_vals    = np.full(n, np.nan)
+    magenta_slopes = np.full(n, np.nan)
+    lime_slopes_arr = np.full(n, np.nan)
+    # Track best candidate for slope (highest high below anchor / lowest low above anchor)
+    _mag_best_h = -1e9; _mag_best_idx = -1
+    _lime_best_l = 1e9; _lime_best_idx = -1
 
     for i in range(n):
-        # Re-scan all bars 1..i-1 for swing highs/lows (same as original)
+        # Only check bar i-1 as a new swing (it just got confirmed by bar i)
         if i >= 2:
-            for j in range(1, i):
-                if j >= n - 1: continue
+            j = i - 1
+            if j < n - 1:
                 h = highs_arr[j]; h_prev = highs_arr[j-1]; h_next = highs_arr[j+1]
                 if h - h_prev >= SWING_THRESHOLD and h - h_next >= SWING_THRESHOLD:
                     if mag_anchor_price is None or h > mag_anchor_price:
-                        if mag_anchor_idx != j:  # only reset if anchor actually changed
-                            mag_anchor_price = h; mag_anchor_idx = j; mag_slope_frozen = False
+                        mag_anchor_price = h; mag_anchor_idx = j; mag_slope_frozen = False
+                        _mag_best_h = -1e9; _mag_best_idx = -1  # reset candidate search
 
                 lo = lows_arr[j]; lo_prev = lows_arr[j-1]; lo_next = lows_arr[j+1]
                 if lo_prev - lo >= SWING_THRESHOLD and lo_next - lo >= SWING_THRESHOLD:
                     if lime_anchor_price is None or lo < lime_anchor_price:
-                        if lime_anchor_idx != j:
-                            lime_anchor_price = lo; lime_anchor_idx = j; lime_slope_frozen = False
+                        lime_anchor_price = lo; lime_anchor_idx = j; lime_slope_frozen = False
+                        _lime_best_l = 1e9; _lime_best_idx = -1
 
-        # Build magenta ray
+        # Build magenta ray — only check new bar i as candidate
         if mag_anchor_idx >= 0 and not mag_slope_frozen:
-            candidates_h = -1e9; candidates_idx = -1
-            for j in range(mag_anchor_idx + 1, i + 1):
-                if highs_arr[j] < mag_anchor_price and highs_arr[j] > candidates_h:
-                    candidates_h = highs_arr[j]; candidates_idx = j
-            if candidates_idx >= 0:
-                dt = times_num[candidates_idx] - times_num[mag_anchor_idx]
+            if i > mag_anchor_idx and highs_arr[i] < mag_anchor_price and highs_arr[i] > _mag_best_h:
+                _mag_best_h = highs_arr[i]; _mag_best_idx = i
+            if _mag_best_idx >= 0:
+                dt = times_num[_mag_best_idx] - times_num[mag_anchor_idx]
                 if dt != 0:
-                    mag_slope = (candidates_h - mag_anchor_price) / dt
+                    mag_slope = (_mag_best_h - mag_anchor_price) / dt
                     mag_slope_frozen = True
 
         if mag_slope_frozen and mag_anchor_idx >= 0:
             magenta_vals[i] = mag_anchor_price + mag_slope * (times_num[i] - times_num[mag_anchor_idx])
+            magenta_slopes[i] = mag_slope
 
-        # Build lime ray
+        # Build lime ray — only check new bar i as candidate
         if lime_anchor_idx >= 0 and not lime_slope_frozen:
-            candidates_l = 1e9; candidates_idx = -1
-            for j in range(lime_anchor_idx + 1, i + 1):
-                if lows_arr[j] > lime_anchor_price and lows_arr[j] < candidates_l:
-                    candidates_l = lows_arr[j]; candidates_idx = j
-            if candidates_idx >= 0:
-                dt = times_num[candidates_idx] - times_num[lime_anchor_idx]
+            if i > lime_anchor_idx and lows_arr[i] > lime_anchor_price and lows_arr[i] < _lime_best_l:
+                _lime_best_l = lows_arr[i]; _lime_best_idx = i
+            if _lime_best_idx >= 0:
+                dt = times_num[_lime_best_idx] - times_num[lime_anchor_idx]
                 if dt != 0:
-                    lime_slope = (candidates_l - lime_anchor_price) / dt
+                    lime_slope = (_lime_best_l - lime_anchor_price) / dt
                     lime_slope_frozen = True
 
         if lime_slope_frozen and lime_anchor_idx >= 0:
             lime_vals[i] = lime_anchor_price + lime_slope * (times_num[i] - times_num[lime_anchor_idx])
+            lime_slopes_arr[i] = lime_slope
 
     # --- Signal detection using pre-computed arrays ---
     buy_signals: Dict = {}
@@ -323,8 +317,11 @@ def run_trading_algo_fast(
         prev_yellow = yellow_vals[i-1]
         prev_purple = purple_vals[i-1]
         prev_blue   = blue_vals[i-1]
-        curr_orange = orange_vals[i]
-        curr_yellow = yellow_vals[i]
+        # curr_orange/curr_yellow: project from bar i-1's state to bar i's time
+        # (matches original which computes these BEFORE update_all_rays at bar i)
+        _dt = times_num[i] - times_num[i-1]
+        curr_orange = orange_vals[i-1] + orange_slope_val * _dt
+        curr_yellow = yellow_vals[i-1] + yellow_slope_val * _dt
 
         # Previous slopes for angle calculation
         prev_purple_slope = purple_slopes[i-1] if i > 0 else 0.0
@@ -420,10 +417,12 @@ def run_trading_algo_fast(
                     if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
                         if abs(current_close - curr_orange) > cfg.proximity_points:
                             buy_triggered = True
-                # Magenta swing ray BUY
+                # Magenta swing ray BUY (angle check matches original)
                 if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
                     prev_mag = magenta_vals[i-1]
-                    if prev_close <= prev_mag and current_close > prev_mag:
+                    _mag_slope = magenta_slopes[i-1]
+                    mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
+                    if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
                         if abs(current_close - curr_orange) > cfg.proximity_points:
                             buy_triggered = True
                 if buy_triggered:
@@ -448,10 +447,12 @@ def run_trading_algo_fast(
                     if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
                         if abs(current_close - curr_yellow) > cfg.proximity_points:
                             sell_triggered = True
-                # Lime swing ray SELL
+                # Lime swing ray SELL (angle check matches original)
                 if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
                     prev_lime = lime_vals[i-1]
-                    if prev_close >= prev_lime and current_close < prev_lime:
+                    _lime_slope = lime_slopes_arr[i-1]
+                    lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
+                    if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
                         if abs(current_close - curr_yellow) > cfg.proximity_points:
                             sell_triggered = True
                 if sell_triggered:

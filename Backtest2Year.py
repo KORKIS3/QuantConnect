@@ -10,7 +10,13 @@ _EST        = pytz.timezone("US/Eastern")
 _DATA_ROOT  = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")
 _CONTRACTS  = 2
 _MULTIPLIER = 5
-END_TIMES   = ["10:00", "10:30", "11:00", "11:30", "12:00", "13:00", "14:00", "15:00", "16:00"]
+END_TIMES   = [
+    "10:00", "10:30", "11:00", "11:30", "12:00",
+    "13:00", "14:00", "15:00", "16:00",
+    "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00",
+    "00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00",
+    "07:00", "08:00", "09:00", "09:30",
+]
 
 
 def trading_days(start, end):
@@ -62,7 +68,7 @@ def run_backtest(max_days=0):
     print(f"\nRunning backtest on {len(csv_files)} days ...\n")
 
     config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0,
-                        proximity_points=15.0, min_reversal_minutes=0, max_loss_per_trade=0)
+                        proximity_points=15.0, min_reversal_minutes=10, max_loss_per_trade=0)
 
     totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[]} for et in END_TIMES}
     days_done = 0
@@ -77,12 +83,13 @@ def run_backtest(max_days=0):
             if len(df) < 10: days_done += 1; continue
         except: days_done += 1; continue
 
-        # Run fast algo ONCE on full day data
+        # Run fast algo ONCE on full day data (all 23 hours)
         try:
-            algo_df = run_trading_algo_fast(df, target_date, "09:30", "16:00", config=config)
+            algo_df = run_trading_algo_fast(df, target_date, "09:30", "09:29", config=config)
         except: days_done += 1; continue
 
         # Slice by end times and calc P/L with 10-min reversal filter
+        # For end times after midnight (00:00-09:30), we need next-day timestamps
         for et in END_TIMES:
             try:
                 end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
@@ -94,12 +101,7 @@ def run_backtest(max_days=0):
                 for ts, row in rows.iterrows():
                     sig = row["signal"]
                     price = float(row["buy_price"] if sig=="BUY" else row["sell_price"])
-                    if not filtered: filtered.append((ts, sig, price)); continue
-                    last_ts, last_sig, _ = filtered[-1]
-                    if last_sig != sig:
-                        if (ts - last_ts).total_seconds()/60 >= 10:
-                            filtered.append((ts, sig, price))
-                    else: filtered.append((ts, sig, price))
+                    filtered.append((ts, sig, price))
                 last_close = float(sliced["Close"].iloc[-1])
                 tpls = []; pos, ep = "flat", None
                 for ts, sig, price in filtered:
