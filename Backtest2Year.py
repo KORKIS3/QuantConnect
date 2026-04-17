@@ -1,4 +1,8 @@
-"""Backtest2Year.py — Two-session backtesting: Day (9:30-17:00) + Overnight (18:00-09:00)."""
+"""Backtest2Year.py — Two-session backtesting with proven strategy.
+Strategy: min_reversal_minutes=0 in algo, post-hoc 10-min reversal filter.
+Day session: 9:30-17:00 (fresh start each day)
+Overnight session: 18:00-09:00 (fresh start each night)
+"""
 
 import argparse, os, time
 import pandas as pd, pytz, numpy as np
@@ -57,17 +61,31 @@ def download_all(port):
     ib.disconnect(); print("Download complete.")
 
 
-def _calc_pl(algo_df, start_ts, end_ts):
-    """Slice algo_df between start_ts and end_ts, compute trade P/L."""
+def _filter_and_calc_pl(algo_df, start_ts, end_ts):
+    """Slice, apply post-hoc 10-min reversal filter, compute trade-level P/L."""
     sliced = algo_df[(algo_df.index >= start_ts) & (algo_df.index <= end_ts)]
     if len(sliced) < 2: return None
     rows = sliced[sliced["signal"].isin(["BUY","SELL"])]
     if rows.empty: return None
-    trades = [(ts, row["signal"], float(row["buy_price"] if row["signal"]=="BUY" else row["sell_price"]))
-              for ts, row in rows.iterrows()]
+
+    # Post-hoc 10-min reversal filter
+    filtered = []
+    for ts, row in rows.iterrows():
+        sig = row["signal"]
+        price = float(row["buy_price"] if sig == "BUY" else row["sell_price"])
+        if not filtered:
+            filtered.append((ts, sig, price)); continue
+        last_ts, last_sig, _ = filtered[-1]
+        if last_sig != sig:
+            if (ts - last_ts).total_seconds() / 60 >= 10:
+                filtered.append((ts, sig, price))
+        else:
+            filtered.append((ts, sig, price))
+
+    if not filtered: return None
     last_close = float(sliced["Close"].iloc[-1])
     tpls = []; pos, ep = "flat", None
-    for ts, sig, price in trades:
+    for ts, sig, price in filtered:
         if sig == "BUY":
             if pos == "short" and ep: tpls.append(ep - price)
             pos, ep = "long", price
@@ -76,8 +94,7 @@ def _calc_pl(algo_df, start_ts, end_ts):
             pos, ep = "short", price
     if pos != "flat" and ep:
         tpls.append((last_close - ep) if pos == "long" else (ep - last_close))
-    if not tpls: return None
-    return tpls
+    return tpls if tpls else None
 
 
 def run_backtest(max_days=0):
@@ -86,30 +103,28 @@ def run_backtest(max_days=0):
     if max_days > 0: csv_files = csv_files[-max_days:]
     print(f"\nRunning backtest on {len(csv_files)} days ...\n")
 
+    # PROVEN: min_reversal=0, post-hoc 10-min filter
     config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0,
-                        proximity_points=15.0, min_reversal_minutes=10, max_loss_per_trade=0)
+                        proximity_points=15.0, min_reversal_minutes=0, max_loss_per_trade=0)
 
     all_end_times = DAY_END_TIMES + NIGHT_END_TIMES
     totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[],"session":""}
               for et in all_end_times}
     for et in DAY_END_TIMES: totals[et]["session"] = "DAY"
     for et in NIGHT_END_TIMES: totals[et]["session"] = "NIGHT"
-
     days_done = 0
-    prev_date = None  # for overnight: need previous day's file
 
-    for fidx, fname in enumerate(csv_files):
+    for fname in csv_files:
         target_date = fname.replace("CBOT_MINI_YM1_","").replace(".csv","")
-        if target_date.startswith("2025-04"): days_done += 1; prev_date = target_date; continue
+        if target_date.startswith("2025-04"): days_done += 1; continue
         fpath = os.path.join(_DATA_ROOT, fname)
         try:
             df = pd.read_csv(fpath, index_col=0, parse_dates=True)
             df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
-            if len(df) < 10: days_done += 1; prev_date = target_date; continue
-        except: days_done += 1; prev_date = target_date; continue
+            if len(df) < 10: days_done += 1; continue
+        except: days_done += 1; continue
 
-        # === SESSION 1: DAY (9:30 - 17:00) ===
-        # Slice data from 9:30 onward, run algo fresh
+        # === DAY SESSION: 9:30-17:00 (fresh start) ===
         day_start = pd.Timestamp(f"{target_date} 09:30", tz=_EST)
         day_end   = pd.Timestamp(f"{target_date} 16:59", tz=_EST)
         day_data  = df[(df.index >= day_start) & (df.index <= day_end)]
@@ -119,7 +134,7 @@ def run_backtest(max_days=0):
                 day_algo = run_trading_algo_fast(day_data, target_date, "09:30", "17:00", config=config)
                 for et in DAY_END_TIMES:
                     end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _calc_pl(day_algo, day_start, end_ts)
+                    tpls = _filter_and_calc_pl(day_algo, day_start, end_ts)
                     if tpls:
                         day_pl = sum(tpls)
                         totals[et]["trades"] += len(tpls)
@@ -129,9 +144,7 @@ def run_backtest(max_days=0):
                         totals[et]["daily_pls"].append(day_pl)
             except: pass
 
-        # === SESSION 2: OVERNIGHT (18:00 prev day - 09:00 this day) ===
-        # The full_day CSV for target_date has data from ~18:00 (target_date - 1) to 16:59 (target_date)
-        # Overnight = 18:00 on (target_date - 1) to 09:00 on target_date
+        # === OVERNIGHT SESSION: 18:00 prev day - 09:00 this day (fresh start) ===
         night_start = pd.Timestamp(f"{target_date} 18:00", tz=_EST) - pd.Timedelta(days=1)
         night_end   = pd.Timestamp(f"{target_date} 09:00", tz=_EST)
         night_data  = df[(df.index >= night_start) & (df.index <= night_end)]
@@ -141,12 +154,11 @@ def run_backtest(max_days=0):
                 night_algo = run_trading_algo_fast(night_data, target_date, "18:00", "09:00", config=config)
                 for et in NIGHT_END_TIMES:
                     h = int(et.split(":")[0])
-                    # 19-23 are on the previous day, 00-09 are on target_date
                     if h >= 18:
                         end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST) - pd.Timedelta(days=1)
                     else:
                         end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _calc_pl(night_algo, night_start, end_ts)
+                    tpls = _filter_and_calc_pl(night_algo, night_start, end_ts)
                     if tpls:
                         day_pl = sum(tpls)
                         totals[et]["trades"] += len(tpls)
@@ -157,12 +169,11 @@ def run_backtest(max_days=0):
             except: pass
 
         days_done += 1
-        prev_date = target_date
         print(f"  [{days_done}/{len(csv_files)}] {int(days_done/len(csv_files)*100)}%", end="\r")
 
-    # Print results
     print(f"\nDays processed: {days_done}")
-    print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt\n")
+    print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
+    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter\n")
 
     print("=== DAY SESSION (9:30 start, fresh each day) ===")
     print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
