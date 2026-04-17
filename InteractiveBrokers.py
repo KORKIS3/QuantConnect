@@ -226,7 +226,7 @@ class IBDataBridge:
         show_plot: bool = True,
         tracking_root: Optional[str] = None,
         image_root: Optional[str] = None,
-        session_duration_minutes: int = 60,
+        session_duration_minutes: int = 105,
     ) -> None:
         self.host = host
         self.port = port
@@ -748,8 +748,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override session start time (default: auto from first bar).")
     p.add_argument("--end-time",       default="09:40", dest="end_time",
                    help="Override session end time (default: 10 min after first bar).")
-    p.add_argument("--duration",       type=int, default=60, dest="duration",
-                   help="Session duration in minutes (default: 60).")
+    p.add_argument("--duration",       type=int, default=105, dest="duration",
+                   help="Session duration in minutes (default: 105 = 9:30-11:15).")
     p.add_argument("--no-plot",        action="store_false", dest="show_plot",
                    help="Disable the live interactive chart.")
     p.set_defaults(show_plot=True)

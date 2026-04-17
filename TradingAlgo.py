@@ -629,7 +629,7 @@ def run_trading_algo(
             # --- Trailing stop line ---
             # Activates after 75+ pts profit. Tightens after higher-high (long)
             # or lower-low (short) confirmation following a pullback.
-            if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5:
+            if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5 and cfg.max_loss_per_trade != 999:
                 if temp_position == "long":
                     unrealized_profit = current_close - temp_entry_price
                 else:

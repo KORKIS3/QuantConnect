@@ -50,24 +50,26 @@ AlgoConfig(
 | 02/09/26 | +171 pts | +268 pts | Algo actually better — held long to session end |
 | 02/10/26 | +130 pts | -160 pts | Algo reversed at wrong price (10-min rule delayed by 4 min) |
 | 02/11/26 | +362 pts | +207 pts | Algo went wrong direction at 9:40 |
+| 02/13/26 | -48 pts | +137 pts | Algo better — correctly identified downtrend |
+| 02/17/26 | -48 pts | +137 pts | Algo better — correctly identified downtrend |
+| 02/18/26 | +157 pts | +56 pts | Algo entry late, exit worse |
+| 02/20/26 | +312 pts | +24 pts | CRUSHER: Algo missed spike exit — needs "take the gift" rule |
+| 02/23/26 | +549 pts | +380 pts | CRUSHER: Algo whipsawed 7 times, user held 1 trade with trailing stop |
 
 ## Pending Tests / Work Items
 
 ### Currently running:
 - Warmup sweep: 8, 10, 12, 15 minutes — does longer warmup reduce wrong-direction first entries?
 
-### To implement after sim analysis complete:
-1. **Trailing stop line** — ~60° line from most recent swing low/high after entry. Exit when price closes across it. Tighten as trade moves in favor.
-2. **Swing low/high trailing stop** — track the most recent swing low (for longs) or swing high (for shorts). Exit if price closes below/above it. More adaptive than fixed-angle line — follows actual market structure (higher highs/higher lows pattern).
-3. **Low/high water marks** — horizontal lines at the session's running low and high. Mike Aston calls these "low water marks" and "high water marks." A close below the low water mark = significant breakdown signal. A close above the high water mark = significant breakout signal. Test as additional entry/exit triggers alongside the angled rays.
-4. **Loss protection reversal** — allow early reversal (before 10 min) when unrealized loss exceeds X points AND opposing line is crossed. Need to find optimal X.
-5. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering (reduces false signals).
+### To implement / test next:
+1. **Trailing stop line (v4)** — current v3 activates at 75pts, needs tuning. Key insight from 02/23: the trailing line should adjust angle when wicks push it but only exit on a CLOSE above/below. Avoid unnecessary reversals on strong trend days.
+2. **Spike profit take** — if a single bar moves 200+ points in your favor, exit at the close of that bar. Captures "gift" moves like 02/20 spike. Rare but hugely profitable.
+3. **Low/high water marks** — horizontal lines at price cluster levels where multiple bar lows or highs have congregated (Mike Aston's concept).
+4. **Hourly session optimization** — test which hours of the day are most profitable. Full day data downloaded.
+5. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering.
 
-### Remaining sim screenshots to analyze:
-- 02/13/26
-- 02/17/26
-- 02/18/26
-- 03/08/26 (2 screenshots)
+### Sim screenshots analyzed:
+All February 2026 days complete. User to capture more examples.
 
 ## Architecture
 - `InteractiveBrokers.py` — live IB bridge, real-time bars via reqRealTimeBars

@@ -1,0 +1,109 @@
+"""Emailer.py
+
+Sends a session summary email with the chart image attached and final P/L in the body.
+
+Configuration is read from environment variables so credentials are never hardcoded:
+
+    IB_EMAIL_FROM     sender address        e.g. you@gmail.com
+    IB_EMAIL_TO       recipient address     e.g. you@gmail.com
+    IB_EMAIL_PASS     app password          (Gmail: 16-char app password)
+    IB_EMAIL_HOST     SMTP host             default: smtp.gmail.com
+    IB_EMAIL_PORT     SMTP port             default: 587
+
+Gmail setup:
+    1. Enable 2-Step Verification on your Google account.
+    2. Go to myaccount.google.com → Security → App passwords.
+    3. Create an app password and set IB_EMAIL_PASS to that value.
+"""
+
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from typing import Optional
+import logging
+
+log = logging.getLogger(__name__)
+
+
+def send_session_summary(
+    target_date: str,
+    start_time: str,
+    end_time: str,
+    final_pl: float,
+    image_path: Optional[str] = None,
+    position: str = "flat",
+) -> None:
+    """Send a session summary email.
+
+    Parameters
+    ----------
+    target_date:  e.g. '2026-04-06'
+    start_time:   e.g. '10:25'
+    end_time:     e.g. '11:25'
+    final_pl:     cumulative P/L in points at session end
+    image_path:   path to the saved chart JPEG (attached if provided and exists)
+    position:     final position ('flat', 'long', 'short')
+    """
+    sender    = os.environ.get("IB_EMAIL_FROM", "orkiskevin@gmail.com")
+    recipient = os.environ.get("IB_EMAIL_TO",   "orkiskevin@gmail.com")
+    password  = os.environ.get("IB_EMAIL_PASS")
+    host     = os.environ.get("IB_EMAIL_HOST", "smtp.gmail.com")
+    port     = int(os.environ.get("IB_EMAIL_PORT", "587"))
+
+    if not sender or not recipient or not password:
+        log.warning(
+            "[Email] Skipped — set IB_EMAIL_FROM, IB_EMAIL_TO, IB_EMAIL_PASS env vars to enable."
+        )
+        return
+
+    pl_sign  = "+" if final_pl >= 0 else ""
+    pl_emoji = "🟢" if final_pl > 0 else ("🔴" if final_pl < 0 else "⚪")
+    subject  = f"YM Session {target_date} {pl_emoji} P/L: {pl_sign}{final_pl:.0f} pts"
+
+    body = (
+        f"YM Futures Session Summary\n"
+        f"{'─' * 35}\n"
+        f"Date:       {target_date}\n"
+        f"Window:     {start_time} – {end_time} ET\n"
+        f"Final P/L:  {pl_sign}{final_pl:.0f} points\n"
+        f"Position:   {position}\n"
+        f"{'─' * 35}\n"
+    )
+    if image_path and os.path.exists(image_path):
+        body += f"Chart attached: {os.path.basename(image_path)}\n"
+    else:
+        body += "No chart image available.\n"
+
+    msg = MIMEMultipart()
+    msg["From"]    = sender
+    msg["To"]      = recipient
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    # Attach chart image if available.
+    if image_path and os.path.exists(image_path):
+        try:
+            with open(image_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename={os.path.basename(image_path)}",
+            )
+            msg.attach(part)
+        except Exception as exc:
+            log.warning("[Email] Could not attach image: %s", exc)
+
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(sender, password)
+            server.sendmail(sender, recipient, msg.as_string())
+        log.info("[Email] Session summary sent to %s", recipient)
+    except Exception as exc:
+        log.error("[Email] Failed to send: %s", exc)
