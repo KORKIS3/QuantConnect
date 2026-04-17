@@ -4,13 +4,13 @@ import argparse, os, time
 import pandas as pd, pytz, numpy as np
 from datetime import date, timedelta
 from TradingAlgo import AlgoConfig
-from TradingAlgoFast import run_day_all_endtimes
+from TradingAlgoFast import run_trading_algo_fast
 
 _EST        = pytz.timezone("US/Eastern")
 _DATA_ROOT  = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")
 _CONTRACTS  = 2
 _MULTIPLIER = 5
-END_TIMES   = ["10:30", "11:00", "11:30", "12:00", "13:00", "14:00", "15:00", "16:00"]
+END_TIMES   = ["10:00", "10:30", "11:00", "11:30", "12:00", "13:00", "14:00", "15:00", "16:00"]
 
 
 def trading_days(start, end):
@@ -61,6 +61,9 @@ def run_backtest(max_days=0):
     if max_days > 0: csv_files = csv_files[-max_days:]
     print(f"\nRunning backtest on {len(csv_files)} days ...\n")
 
+    config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0,
+                        proximity_points=15.0, min_reversal_minutes=0, max_loss_per_trade=0)
+
     totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[]} for et in END_TIMES}
     days_done = 0
 
@@ -71,20 +74,54 @@ def run_backtest(max_days=0):
         try:
             df = pd.read_csv(fpath, index_col=0, parse_dates=True)
             df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
-            # Use full day data — no filtering
             if len(df) < 10: days_done += 1; continue
         except: days_done += 1; continue
 
-        result = run_day_all_endtimes(df, target_date, END_TIMES)
+        # Run fast algo ONCE on full day data
+        try:
+            algo_df = run_trading_algo_fast(df, target_date, "09:30", "16:00", config=config)
+        except: days_done += 1; continue
+
+        # Slice by end times and calc P/L with 10-min reversal filter
+        for et in END_TIMES:
+            try:
+                end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
+                sliced = algo_df[algo_df.index <= end_ts]
+                if len(sliced) < 10: continue
+                rows = sliced[sliced["signal"].isin(["BUY","SELL"])]
+                if rows.empty: continue
+                filtered = []
+                for ts, row in rows.iterrows():
+                    sig = row["signal"]
+                    price = float(row["buy_price"] if sig=="BUY" else row["sell_price"])
+                    if not filtered: filtered.append((ts, sig, price)); continue
+                    last_ts, last_sig, _ = filtered[-1]
+                    if last_sig != sig:
+                        if (ts - last_ts).total_seconds()/60 >= 10:
+                            filtered.append((ts, sig, price))
+                    else: filtered.append((ts, sig, price))
+                last_close = float(sliced["Close"].iloc[-1])
+                tpls = []; pos, ep = "flat", None
+                for ts, sig, price in filtered:
+                    if sig == "BUY":
+                        if pos == "short" and ep: tpls.append(ep - price)
+                        pos, ep = "long", price
+                    elif sig == "SELL":
+                        if pos == "long" and ep: tpls.append(price - ep)
+                        pos, ep = "short", price
+                if pos != "flat" and ep:
+                    tpls.append((last_close - ep) if pos == "long" else (ep - last_close))
+                if tpls:
+                    day_pl = sum(tpls)
+                    totals[et]["trades"] += len(tpls)
+                    totals[et]["pl"] += day_pl
+                    totals[et]["winners"] += sum(1 for p in tpls if p > 0)
+                    totals[et]["losers"] += sum(1 for p in tpls if p <= 0)
+                    totals[et]["daily_pls"].append(day_pl)
+            except: continue
+
         days_done += 1
         print(f"  [{days_done}/{len(csv_files)}] {int(days_done/len(csv_files)*100)}%", end="\r")
-
-        for et, data in result.items():
-            totals[et]["trades"]  += data["trades"]
-            totals[et]["pl"]     += data["pl"]
-            totals[et]["winners"] += data["winners"]
-            totals[et]["losers"]  += data["losers"]
-            totals[et]["daily_pls"].append(data["pl"])
 
     print(f"\nDays processed: {days_done}")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt\n")
