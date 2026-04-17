@@ -138,11 +138,14 @@ def run_trading_algo_fast(
     times_idx  = full_data.index  # keep as DatetimeIndex for mdates
     times_num  = np.array([mdates.date2num(t) for t in times_idx])
 
-    # Aspect ratio
+    # Aspect ratio — use first 121 bars (or all if fewer) to match the
+    # geometry that was proven on the 930_1130 data window.  This keeps
+    # ray angles consistent regardless of how much data is passed in.
     _ax_w_in = 16.0 * (0.85 - 0.125)
     _ax_h_in = 9.0 * (0.88 - 0.11)
     _x_range = 75 / (24 * 60)
-    _y_range = highs_arr.max() + 20.0 - (lows_arr.min() - 20.0)
+    _ar_n = min(n, 121)
+    _y_range = highs_arr[:_ar_n].max() + 20.0 - (lows_arr[:_ar_n].min() - 20.0)
     x_per_unit = _x_range / _ax_w_in
     y_per_unit = _y_range / _ax_h_in
 
