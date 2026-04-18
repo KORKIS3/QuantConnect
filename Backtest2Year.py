@@ -277,23 +277,28 @@ def run_backtest(max_days=0):
     print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars) + wm shield 12pts\n")
 
     print("=== DAY SESSION (9:30 start, 2c partial TP @50pts) ===")
-    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
+    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Pts/Day':>8}")
     print("-" * 80)
     for et in DAY_END_TIMES:
         t = totals[et]
         tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
         # With partial TP, each tpl entry is 1 contract's pts, so multiply by $5 only
-        usd = t["pl"]*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
-        print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
+        usd = t["pl"]*_MULTIPLIER
+        # Avg pts/day per contract: total_usd / days / contracts / multiplier
+        n_days = len(t["daily_pls"]) if t["daily_pls"] else 1
+        avg_pts = t["pl"] / _CONTRACTS / n_days if n_days else 0
+        print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg_pts:>+7.1f}")
 
     print(f"\n=== OVERNIGHT SESSION (18:00 start, 2c no partial TP) ===")
-    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
+    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Pts/Day':>8}")
     print("-" * 80)
     for et in NIGHT_END_TIMES:
         t = totals[et]
         tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
-        usd = t["pl"]*_CONTRACTS*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
-        print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
+        usd = t["pl"]*_CONTRACTS*_MULTIPLIER
+        n_days = len(t["daily_pls"]) if t["daily_pls"] else 1
+        avg_pts = t["pl"] / n_days if n_days else 0
+        print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg_pts:>+7.1f}")
     print()
 
 
