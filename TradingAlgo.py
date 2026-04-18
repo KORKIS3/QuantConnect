@@ -863,7 +863,9 @@ def run_trading_algo(
                                 buy_triggered = True
 
                     # Water mark shield: suppress BUY reversal if high cluster (resistance) is nearby
-                    if buy_triggered and temp_position == "short" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback:
+                    # Only active during day session (9:30-17:00 ET) — hurts overnight performance
+                    _in_day_session = 9 <= time.hour < 17
+                    if buy_triggered and temp_position == "short" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback and _in_day_session:
                         ws = max(0, i - cfg.wm_lookback)
                         wm_highs = [float(full_data["High"].iloc[j]) for j in range(ws, i)]
                         wm_times = [full_data.index[j] for j in range(ws, i)]
@@ -924,7 +926,9 @@ def run_trading_algo(
                                 sell_triggered = True
 
                     # Water mark shield: suppress SELL reversal if low cluster (support) is nearby
-                    if sell_triggered and temp_position == "long" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback:
+                    # Only active during day session (9:30-17:00 ET) — hurts overnight performance
+                    _in_day_session = 9 <= time.hour < 17
+                    if sell_triggered and temp_position == "long" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback and _in_day_session:
                         ws = max(0, i - cfg.wm_lookback)
                         wm_lows = [float(full_data["Low"].iloc[j]) for j in range(ws, i)]
                         wm_times = [full_data.index[j] for j in range(ws, i)]

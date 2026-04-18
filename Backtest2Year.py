@@ -62,12 +62,44 @@ def download_all(port):
     ib.disconnect(); print("Download complete.")
 
 
-def _filter_and_calc_pl(algo_df, start_ts, end_ts):
-    """Slice, apply post-hoc 10-min reversal filter + spike profit take, compute trade-level P/L.
+def _find_wm_clusters(values, times, tolerance=12.0, min_touches=4, min_span=15.0):
+    """Find price clusters for water mark shield."""
+    if len(values) < min_touches:
+        return []
+    indexed = sorted(zip(values, times), key=lambda x: x[0])
+    clusters = []
+    used = set()
+    for i in range(len(indexed)):
+        if i in used:
+            continue
+        base = indexed[i][0]
+        group = [(indexed[i][0], indexed[i][1])]
+        used.add(i)
+        for j in range(i + 1, len(indexed)):
+            if j in used:
+                continue
+            if abs(indexed[j][0] - base) <= tolerance:
+                group.append((indexed[j][0], indexed[j][1]))
+                used.add(j)
+            elif indexed[j][0] - base > tolerance:
+                break
+        if len(group) >= min_touches:
+            tt = sorted([g[1] for g in group])
+            span = (tt[-1] - tt[0]).total_seconds() / 60
+            if span >= min_span:
+                clusters.append((float(np.mean([g[0] for g in group])), len(group)))
+    return clusters
+
+
+def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
+    """Slice, apply post-hoc 10-min reversal filter + spike profit take + water mark shield.
     Spike rule: if unrealized profit >= 100 pts within 5 bars of entry, exit at that bar's close.
+    Shield rule: suppress reversal if water mark cluster within 12 pts supports current position.
     """
     _SPIKE_PTS = 100
     _SPIKE_BARS = 5
+    _WM_SHIELD = 12.0 if use_wm_shield else 0.0
+    _WM_LOOKBACK = 30
 
     sliced = algo_df[(algo_df.index >= start_ts) & (algo_df.index <= end_ts)]
     if len(sliced) < 2: return None
@@ -90,8 +122,10 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts):
 
     if not filtered: return None
 
-    # Bar-by-bar replay with spike profit take
+    # Bar-by-bar replay with spike profit take + water mark shield
     closes = sliced["Close"].values.astype(float)
+    highs = sliced["High"].values.astype(float)
+    lows = sliced["Low"].values.astype(float)
     times = sliced.index
     sig_idx = 0
     tpls = []
@@ -101,10 +135,25 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts):
         # Check if this bar has a filtered signal
         if sig_idx < len(filtered) and times[i] == filtered[sig_idx][0]:
             ts, sig, price = filtered[sig_idx]; sig_idx += 1
-            if pos == "long" and sig == "SELL": tpls.append(price - ep)
-            elif pos == "short" and sig == "BUY": tpls.append(ep - price)
-            if sig == "BUY": pos, ep, entry_bar = "long", price, i
-            else: pos, ep, entry_bar = "short", price, i
+
+            # Water mark shield: suppress reversals if cluster supports current position
+            shielded = False
+            if _WM_SHIELD > 0 and pos != "flat" and i >= _WM_LOOKBACK:
+                ws = max(0, i - _WM_LOOKBACK)
+                if pos == "long" and sig == "SELL":
+                    for lvl, _ in _find_wm_clusters(lows[ws:i], times[ws:i]):
+                        if lvl < closes[i] and (closes[i] - lvl) <= _WM_SHIELD:
+                            shielded = True; break
+                elif pos == "short" and sig == "BUY":
+                    for lvl, _ in _find_wm_clusters(highs[ws:i], times[ws:i]):
+                        if lvl > closes[i] and (lvl - closes[i]) <= _WM_SHIELD:
+                            shielded = True; break
+
+            if not shielded:
+                if pos == "long" and sig == "SELL": tpls.append(price - ep)
+                elif pos == "short" and sig == "BUY": tpls.append(ep - price)
+                if sig == "BUY": pos, ep, entry_bar = "long", price, i
+                else: pos, ep, entry_bar = "short", price, i
             continue
 
         # Check spike exit: unrealized >= 100 pts within 5 bars of entry
@@ -184,7 +233,7 @@ def run_backtest(max_days=0):
                         end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST) - pd.Timedelta(days=1)
                     else:
                         end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _filter_and_calc_pl(night_algo, night_start, end_ts)
+                    tpls = _filter_and_calc_pl(night_algo, night_start, end_ts, use_wm_shield=False)
                     if tpls:
                         day_pl = sum(tpls)
                         totals[et]["trades"] += len(tpls)
@@ -199,7 +248,7 @@ def run_backtest(max_days=0):
 
     print(f"\nDays processed: {days_done}")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
-    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars)\n")
+    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars) + wm shield 12pts\n")
 
     print("=== DAY SESSION (9:30 start, fresh each day) ===")
     print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
