@@ -44,6 +44,11 @@ class AlgoConfig:
     confirmation_bars: int = 0  # 0=enter on first cross, 1=require next bar also beyond ray
     spike_profit_pts: float = 100.0  # exit if unrealized profit >= this within spike_profit_bars of entry
     spike_profit_bars: int = 5       # number of bars after entry to check for spike profit (0 = disabled)
+    wm_shield_distance: float = 12.0  # suppress exit if water mark cluster within this many pts (0 = disabled)
+    wm_tolerance: float = 12.0        # pts tolerance for clustering bar lows/highs
+    wm_min_touches: int = 4           # minimum bars touching a level to form a cluster
+    wm_min_span: float = 15.0         # minimum minutes the touches must span
+    wm_lookback: int = 30             # bars to look back for clusters
 
 
 class Ray:
@@ -407,6 +412,36 @@ def _build_signals_frame(
     df["pl"] = pls
 
     return df
+
+
+def _find_wm_clusters(values, times, tolerance, min_touches, min_span_minutes):
+    """Find price clusters where multiple bar lows/highs land within tolerance pts.
+    Returns list of (level, touch_count) for clusters spanning min_span_minutes."""
+    if len(values) < min_touches:
+        return []
+    indexed = sorted(zip(values, times), key=lambda x: x[0])
+    clusters = []
+    used = set()
+    for i in range(len(indexed)):
+        if i in used:
+            continue
+        base = indexed[i][0]
+        group = [(indexed[i][0], indexed[i][1])]
+        used.add(i)
+        for j in range(i + 1, len(indexed)):
+            if j in used:
+                continue
+            if abs(indexed[j][0] - base) <= tolerance:
+                group.append((indexed[j][0], indexed[j][1]))
+                used.add(j)
+            elif indexed[j][0] - base > tolerance:
+                break
+        if len(group) >= min_touches:
+            touch_times = sorted([g[1] for g in group])
+            span = (touch_times[-1] - touch_times[0]).total_seconds() / 60
+            if span >= min_span_minutes:
+                clusters.append((float(np.mean([g[0] for g in group])), len(group)))
+    return clusters
 
 
 def run_trading_algo(
@@ -827,6 +862,16 @@ def run_trading_algo(
                             if not within_50:
                                 buy_triggered = True
 
+                    # Water mark shield: suppress BUY reversal if high cluster (resistance) is nearby
+                    if buy_triggered and temp_position == "short" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback:
+                        ws = max(0, i - cfg.wm_lookback)
+                        wm_highs = [float(full_data["High"].iloc[j]) for j in range(ws, i)]
+                        wm_times = [full_data.index[j] for j in range(ws, i)]
+                        for lvl, _ in _find_wm_clusters(wm_highs, wm_times, cfg.wm_tolerance, cfg.wm_min_touches, cfg.wm_min_span):
+                            if lvl > current_close and (lvl - current_close) <= cfg.wm_shield_distance:
+                                buy_triggered = False
+                                break
+
                     if buy_triggered:
                         if temp_position == "short" and temp_entry_price is not None:
                             session_realized_pl += temp_entry_price - current_close
@@ -877,6 +922,16 @@ def run_trading_algo(
                             within_50 = abs(current_close - curr_yellow) <= cfg.proximity_points
                             if not within_50:
                                 sell_triggered = True
+
+                    # Water mark shield: suppress SELL reversal if low cluster (support) is nearby
+                    if sell_triggered and temp_position == "long" and cfg.wm_shield_distance > 0 and i >= cfg.wm_lookback:
+                        ws = max(0, i - cfg.wm_lookback)
+                        wm_lows = [float(full_data["Low"].iloc[j]) for j in range(ws, i)]
+                        wm_times = [full_data.index[j] for j in range(ws, i)]
+                        for lvl, _ in _find_wm_clusters(wm_lows, wm_times, cfg.wm_tolerance, cfg.wm_min_touches, cfg.wm_min_span):
+                            if lvl < current_close and (current_close - lvl) <= cfg.wm_shield_distance:
+                                sell_triggered = False
+                                break
 
                     if sell_triggered:
                         if temp_position == "long" and temp_entry_price is not None:
