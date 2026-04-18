@@ -29,7 +29,8 @@ def trading_days(start, end):
 
 def download_all(port):
     from ib_insync import IB, Future
-    ib = IB(); ib.connect("127.0.0.1", port, clientId=20)
+    ib = IB(); ib.connect("127.0.0.1", port, clientId=50, timeout=120)
+    # Get all YM contracts including expired for front-month mapping
     base = Future(symbol="YM", exchange="CBOT", currency="USD", includeExpired=True)
     all_contracts = sorted([d.contract for d in ib.reqContractDetails(base)],
                            key=lambda c: c.lastTradeDateOrContractMonth)
@@ -40,7 +41,7 @@ def download_all(port):
             if c.lastTradeDateOrContractMonth >= d_str: return c
         return all_contracts[-1]
     os.makedirs(_DATA_ROOT, exist_ok=True)
-    end_date = date.today(); start_date = end_date - timedelta(days=365*2+30)
+    end_date = date.today(); start_date = end_date - timedelta(days=365*5+30)
     days = list(trading_days(start_date, end_date))
     print(f"Downloading {len(days)} days ...")
     for idx, d in enumerate(days):
@@ -58,7 +59,7 @@ def download_all(port):
         df.index = pd.to_datetime(df.index)
         df.index = df.index.tz_localize("UTC").tz_convert(_EST) if df.index.tz is None else df.index.tz_convert(_EST)
         if len(df) < 10: continue
-        df.to_csv(fname); print(f"  [{idx+1}/{len(days)}] {d}: {len(df)} bars"); time.sleep(0.5)
+        df.to_csv(fname); print(f"  [{idx+1}/{len(days)}] {d} ({contract.localSymbol}): {len(df)} bars"); time.sleep(0.5)
     ib.disconnect(); print("Download complete.")
 
 
