@@ -306,6 +306,10 @@ def run_trading_algo_fast(
     temp_position = "flat"
     temp_entry_price = None
     temp_entry_time = None
+    # Confirmation bar state: pending signal waits for next bar confirmation
+    _pending_buy = False   # True if a BUY cross happened on the previous bar
+    _pending_sell = False  # True if a SELL cross happened on the previous bar
+    _pending_ray_val = 0.0 # The ray value the close must stay beyond
 
     for i in range(max(cutoff_idx, 3), n):
         time = times_idx[i]
@@ -407,24 +411,51 @@ def run_trading_algo_fast(
         # BUY signals
         if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
             if temp_position == "short" and reversal_blocked:
-                pass
+                _pending_buy = False
             else:
                 buy_triggered = False
-                if prev_close <= prev_orange and current_close > prev_orange:
-                    buy_triggered = True
-                if not buy_triggered:
-                    purple_angle = _display_angle_from_slope(prev_purple_slope, x_per_unit, y_per_unit)
-                    if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
-                        if abs(current_close - curr_orange) > cfg.proximity_points:
-                            buy_triggered = True
-                # Magenta swing ray BUY (angle check matches original)
-                if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
-                    prev_mag = magenta_vals[i-1]
-                    _mag_slope = magenta_slopes[i-1]
-                    mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
-                    if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
-                        if abs(current_close - curr_orange) > cfg.proximity_points:
-                            buy_triggered = True
+
+                # Check confirmation bar: if pending from last bar, confirm now
+                if cfg.confirmation_bars >= 1 and _pending_buy:
+                    if current_close > _pending_ray_val:
+                        buy_triggered = True
+                    _pending_buy = False
+                elif cfg.confirmation_bars >= 1:
+                    # Check for new cross — set pending instead of triggering
+                    _new_cross = False
+                    if prev_close <= prev_orange and current_close > prev_orange:
+                        _new_cross = True; _pending_ray_val = prev_orange
+                    if not _new_cross:
+                        purple_angle = _display_angle_from_slope(prev_purple_slope, x_per_unit, y_per_unit)
+                        if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
+                            if abs(current_close - curr_orange) > cfg.proximity_points:
+                                _new_cross = True; _pending_ray_val = prev_purple
+                    if not _new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
+                        prev_mag = magenta_vals[i-1]
+                        _mag_slope = magenta_slopes[i-1]
+                        mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
+                        if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
+                            if abs(current_close - curr_orange) > cfg.proximity_points:
+                                _new_cross = True; _pending_ray_val = prev_mag
+                    if _new_cross:
+                        _pending_buy = True; _pending_sell = False
+                else:
+                    # No confirmation — original behavior
+                    if prev_close <= prev_orange and current_close > prev_orange:
+                        buy_triggered = True
+                    if not buy_triggered:
+                        purple_angle = _display_angle_from_slope(prev_purple_slope, x_per_unit, y_per_unit)
+                        if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
+                            if abs(current_close - curr_orange) > cfg.proximity_points:
+                                buy_triggered = True
+                    if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
+                        prev_mag = magenta_vals[i-1]
+                        _mag_slope = magenta_slopes[i-1]
+                        mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
+                        if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
+                            if abs(current_close - curr_orange) > cfg.proximity_points:
+                                buy_triggered = True
+
                 if buy_triggered:
                     if temp_position == "short" and temp_entry_price is not None:
                         session_realized_pl += temp_entry_price - current_close
@@ -437,24 +468,51 @@ def run_trading_algo_fast(
         # SELL signals
         if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
             if temp_position == "long" and reversal_blocked:
-                pass
+                _pending_sell = False
             else:
                 sell_triggered = False
-                if prev_close >= prev_yellow and current_close < prev_yellow:
-                    sell_triggered = True
-                if not sell_triggered:
-                    blue_angle = _display_angle_from_slope(prev_blue_slope, x_per_unit, y_per_unit)
-                    if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
-                        if abs(current_close - curr_yellow) > cfg.proximity_points:
-                            sell_triggered = True
-                # Lime swing ray SELL (angle check matches original)
-                if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
-                    prev_lime = lime_vals[i-1]
-                    _lime_slope = lime_slopes_arr[i-1]
-                    lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
-                    if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
-                        if abs(current_close - curr_yellow) > cfg.proximity_points:
-                            sell_triggered = True
+
+                # Check confirmation bar: if pending from last bar, confirm now
+                if cfg.confirmation_bars >= 1 and _pending_sell:
+                    if current_close < _pending_ray_val:
+                        sell_triggered = True
+                    _pending_sell = False
+                elif cfg.confirmation_bars >= 1:
+                    # Check for new cross — set pending instead of triggering
+                    _new_cross = False
+                    if prev_close >= prev_yellow and current_close < prev_yellow:
+                        _new_cross = True; _pending_ray_val = prev_yellow
+                    if not _new_cross:
+                        blue_angle = _display_angle_from_slope(prev_blue_slope, x_per_unit, y_per_unit)
+                        if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
+                            if abs(current_close - curr_yellow) > cfg.proximity_points:
+                                _new_cross = True; _pending_ray_val = prev_blue
+                    if not _new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
+                        prev_lime = lime_vals[i-1]
+                        _lime_slope = lime_slopes_arr[i-1]
+                        lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
+                        if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
+                            if abs(current_close - curr_yellow) > cfg.proximity_points:
+                                _new_cross = True; _pending_ray_val = prev_lime
+                    if _new_cross:
+                        _pending_sell = True; _pending_buy = False
+                else:
+                    # No confirmation — original behavior
+                    if prev_close >= prev_yellow and current_close < prev_yellow:
+                        sell_triggered = True
+                    if not sell_triggered:
+                        blue_angle = _display_angle_from_slope(prev_blue_slope, x_per_unit, y_per_unit)
+                        if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
+                            if abs(current_close - curr_yellow) > cfg.proximity_points:
+                                sell_triggered = True
+                    if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
+                        prev_lime = lime_vals[i-1]
+                        _lime_slope = lime_slopes_arr[i-1]
+                        lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
+                        if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
+                            if abs(current_close - curr_yellow) > cfg.proximity_points:
+                                sell_triggered = True
+
                 if sell_triggered:
                     if temp_position == "long" and temp_entry_price is not None:
                         session_realized_pl += current_close - temp_entry_price

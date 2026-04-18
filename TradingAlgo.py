@@ -41,6 +41,9 @@ class AlgoConfig:
     warmup_minutes: Optional[int] = None
     min_reversal_minutes: int = 10  # minimum minutes before allowing a position reversal
     max_loss_per_trade: float = 0.0  # hard stop-loss per trade in points (0 = disabled)
+    confirmation_bars: int = 0  # 0=enter on first cross, 1=require next bar also beyond ray
+    spike_profit_pts: float = 100.0  # exit if unrealized profit >= this within spike_profit_bars of entry
+    spike_profit_bars: int = 5       # number of bars after entry to check for spike profit (0 = disabled)
 
 
 class Ray:
@@ -498,6 +501,7 @@ def run_trading_algo(
     temp_position = "flat"
     temp_entry_price: Optional[float] = None
     temp_entry_time = None
+    temp_entry_bar: int = 0
     trading_halted = False
     halt_time = None
 
@@ -608,6 +612,7 @@ def run_trading_algo(
                             temp_position    = "short"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            temp_entry_bar   = i
                         else:
                             temp_position    = "flat"
                             temp_entry_price = None
@@ -620,6 +625,7 @@ def run_trading_algo(
                             temp_position    = "long"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            temp_entry_bar   = i
                         else:
                             temp_position    = "flat"
                             temp_entry_price = None
@@ -737,6 +743,31 @@ def run_trading_algo(
                                     temp_entry_time  = None
                                     liquidated_this_bar = True
 
+            # --- Spike profit take ---
+            # If unrealized profit >= spike_profit_pts within spike_profit_bars
+            # of entry, exit flat immediately. Locks in explosive early gains.
+            if (not liquidated_this_bar and temp_position != "flat"
+                    and temp_entry_price is not None and temp_entry_time is not None
+                    and cfg.spike_profit_bars > 0 and cfg.spike_profit_pts > 0):
+                bars_since_entry = i - temp_entry_bar
+                if 0 < bars_since_entry <= cfg.spike_profit_bars:
+                    if temp_position == "long":
+                        spike_unrealized = current_close - temp_entry_price
+                    else:
+                        spike_unrealized = temp_entry_price - current_close
+                    if spike_unrealized >= cfg.spike_profit_pts:
+                        if temp_position == "long":
+                            session_realized_pl += current_close - temp_entry_price
+                            sell_signals[time] = current_close
+                        else:
+                            session_realized_pl += temp_entry_price - current_close
+                            buy_signals[time] = current_close
+                        liquidation_timestamps.add(time)
+                        temp_position = "flat"
+                        temp_entry_price = None
+                        temp_entry_time = None
+                        liquidated_this_bar = True
+
             # Determine if this is the last bar of the session (go flat, not reverse).
             is_last_bar = (i == len(full_data) - 1)
 
@@ -808,6 +839,7 @@ def run_trading_algo(
                             temp_position    = "long"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            temp_entry_bar   = i
                             trailing_stop_price = None
                             trailing_stop_anchor_price = None
                             trailing_stop_anchor_time  = None
@@ -858,6 +890,7 @@ def run_trading_algo(
                             temp_position    = "short"
                             temp_entry_price = current_close
                             temp_entry_time  = time
+                            temp_entry_bar   = i
                             trailing_stop_price = None
                             trailing_stop_anchor_price = None
                             trailing_stop_anchor_time  = None

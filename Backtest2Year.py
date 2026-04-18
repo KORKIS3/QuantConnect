@@ -1,5 +1,6 @@
 """Backtest2Year.py — Two-session backtesting with proven strategy.
-Strategy: min_reversal_minutes=0 in algo, post-hoc 10-min reversal filter.
+Strategy: min_reversal_minutes=0 in algo, post-hoc 10-min reversal filter,
+          spike profit take (exit if unrealized >= 100 pts within 5 bars of entry).
 Day session: 9:30-17:00 (fresh start each day)
 Overnight session: 18:00-09:00 (fresh start each night)
 """
@@ -62,7 +63,12 @@ def download_all(port):
 
 
 def _filter_and_calc_pl(algo_df, start_ts, end_ts):
-    """Slice, apply post-hoc 10-min reversal filter, compute trade-level P/L."""
+    """Slice, apply post-hoc 10-min reversal filter + spike profit take, compute trade-level P/L.
+    Spike rule: if unrealized profit >= 100 pts within 5 bars of entry, exit at that bar's close.
+    """
+    _SPIKE_PTS = 100
+    _SPIKE_BARS = 5
+
     sliced = algo_df[(algo_df.index >= start_ts) & (algo_df.index <= end_ts)]
     if len(sliced) < 2: return None
     rows = sliced[sliced["signal"].isin(["BUY","SELL"])]
@@ -83,17 +89,38 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts):
             filtered.append((ts, sig, price))
 
     if not filtered: return None
-    last_close = float(sliced["Close"].iloc[-1])
-    tpls = []; pos, ep = "flat", None
-    for ts, sig, price in filtered:
-        if sig == "BUY":
-            if pos == "short" and ep: tpls.append(ep - price)
-            pos, ep = "long", price
-        elif sig == "SELL":
-            if pos == "long" and ep: tpls.append(price - ep)
-            pos, ep = "short", price
-    if pos != "flat" and ep:
+
+    # Bar-by-bar replay with spike profit take
+    closes = sliced["Close"].values.astype(float)
+    times = sliced.index
+    sig_idx = 0
+    tpls = []
+    pos, ep, entry_bar = "flat", None, 0
+
+    for i in range(len(sliced)):
+        # Check if this bar has a filtered signal
+        if sig_idx < len(filtered) and times[i] == filtered[sig_idx][0]:
+            ts, sig, price = filtered[sig_idx]; sig_idx += 1
+            if pos == "long" and sig == "SELL": tpls.append(price - ep)
+            elif pos == "short" and sig == "BUY": tpls.append(ep - price)
+            if sig == "BUY": pos, ep, entry_bar = "long", price, i
+            else: pos, ep, entry_bar = "short", price, i
+            continue
+
+        # Check spike exit: unrealized >= 100 pts within 5 bars of entry
+        if pos != "flat" and ep is not None and i > entry_bar:
+            bars_held = i - entry_bar
+            if bars_held <= _SPIKE_BARS:
+                move = (closes[i] - ep) if pos == "long" else (ep - closes[i])
+                if move >= _SPIKE_PTS:
+                    tpls.append(move)
+                    pos, ep, entry_bar = "flat", None, 0
+
+    # Close any open position at slice end
+    if pos != "flat" and ep is not None:
+        last_close = closes[-1]
         tpls.append((last_close - ep) if pos == "long" else (ep - last_close))
+
     return tpls if tpls else None
 
 
@@ -173,7 +200,7 @@ def run_backtest(max_days=0):
 
     print(f"\nDays processed: {days_done}")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
-    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter\n")
+    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars)\n")
 
     print("=== DAY SESSION (9:30 start, fresh each day) ===")
     print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
