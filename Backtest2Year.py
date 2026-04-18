@@ -143,7 +143,6 @@ def run_backtest(max_days=0):
 
     for fname in csv_files:
         target_date = fname.replace("CBOT_MINI_YM1_","").replace(".csv","")
-        if target_date.startswith("2025-04"): days_done += 1; continue
         fpath = os.path.join(_DATA_ROOT, fname)
         try:
             df = pd.read_csv(fpath, index_col=0, parse_dates=True)
