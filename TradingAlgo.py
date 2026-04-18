@@ -49,6 +49,8 @@ class AlgoConfig:
     wm_min_touches: int = 4           # minimum bars touching a level to form a cluster
     wm_min_span: float = 15.0         # minimum minutes the touches must span
     wm_lookback: int = 30             # bars to look back for clusters
+    partial_tp_pts: float = 50.0       # take profit on half position at this many pts (0 = disabled)
+    num_contracts: int = 2             # total contracts per trade
 
 
 class Ray:

@@ -92,10 +92,11 @@ def _find_wm_clusters(values, times, tolerance=12.0, min_touches=4, min_span=15.
     return clusters
 
 
-def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
-    """Slice, apply post-hoc 10-min reversal filter + spike profit take + water mark shield.
+def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True, partial_tp_pts=0):
+    """Slice, apply post-hoc 10-min reversal filter + spike profit take + water mark shield + partial TP.
     Spike rule: if unrealized profit >= 100 pts within 5 bars of entry, exit at that bar's close.
     Shield rule: suppress reversal if water mark cluster within 12 pts supports current position.
+    Partial TP: take profit on 1 of 2 contracts at partial_tp_pts (0=disabled, returns pts; >0 returns dollars).
     """
     _SPIKE_PTS = 100
     _SPIKE_BARS = 5
@@ -123,7 +124,7 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
 
     if not filtered: return None
 
-    # Bar-by-bar replay with spike profit take + water mark shield
+    # Bar-by-bar replay with spike profit take + water mark shield + partial TP
     closes = sliced["Close"].values.astype(float)
     highs = sliced["High"].values.astype(float)
     lows = sliced["Low"].values.astype(float)
@@ -131,8 +132,16 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
     sig_idx = 0
     tpls = []
     pos, ep, entry_bar = "flat", None, 0
+    partial_taken = False  # has 1st contract been closed at partial_tp_pts?
 
     for i in range(len(sliced)):
+        # Check partial take-profit
+        if partial_tp_pts > 0 and pos != "flat" and ep is not None and not partial_taken:
+            unrealized = (closes[i] - ep) if pos == "long" else (ep - closes[i])
+            if unrealized >= partial_tp_pts:
+                tpls.append(unrealized)  # 1 contract worth of pts
+                partial_taken = True
+
         # Check if this bar has a filtered signal
         if sig_idx < len(filtered) and times[i] == filtered[sig_idx][0]:
             ts, sig, price = filtered[sig_idx]; sig_idx += 1
@@ -151,10 +160,21 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
                             shielded = True; break
 
             if not shielded:
-                if pos == "long" and sig == "SELL": tpls.append(price - ep)
-                elif pos == "short" and sig == "BUY": tpls.append(ep - price)
+                if pos == "long" and sig == "SELL":
+                    pl = price - ep
+                    if partial_tp_pts > 0:
+                        tpls.append(pl)  # remaining 1 contract
+                    else:
+                        tpls.append(pl)  # all contracts (pts)
+                elif pos == "short" and sig == "BUY":
+                    pl = ep - price
+                    if partial_tp_pts > 0:
+                        tpls.append(pl)
+                    else:
+                        tpls.append(pl)
                 if sig == "BUY": pos, ep, entry_bar = "long", price, i
                 else: pos, ep, entry_bar = "short", price, i
+                partial_taken = False
             continue
 
         # Check spike exit: unrealized >= 100 pts within 5 bars of entry
@@ -163,13 +183,18 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True):
             if bars_held <= _SPIKE_BARS:
                 move = (closes[i] - ep) if pos == "long" else (ep - closes[i])
                 if move >= _SPIKE_PTS:
-                    tpls.append(move)
+                    if partial_tp_pts > 0:
+                        tpls.append(move)  # remaining contract(s)
+                    else:
+                        tpls.append(move)
                     pos, ep, entry_bar = "flat", None, 0
+                    partial_taken = False
 
     # Close any open position at slice end
     if pos != "flat" and ep is not None:
         last_close = closes[-1]
-        tpls.append((last_close - ep) if pos == "long" else (ep - last_close))
+        pl = (last_close - ep) if pos == "long" else (ep - last_close)
+        tpls.append(pl)
 
     return tpls if tpls else None
 
@@ -210,7 +235,7 @@ def run_backtest(max_days=0):
                 day_algo = run_trading_algo_fast(day_data, target_date, "09:30", "17:00", config=config)
                 for et in DAY_END_TIMES:
                     end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _filter_and_calc_pl(day_algo, day_start, end_ts)
+                    tpls = _filter_and_calc_pl(day_algo, day_start, end_ts, partial_tp_pts=50)
                     if tpls:
                         day_pl = sum(tpls)
                         totals[et]["trades"] += len(tpls)
@@ -251,16 +276,17 @@ def run_backtest(max_days=0):
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
     print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars) + wm shield 12pts\n")
 
-    print("=== DAY SESSION (9:30 start, fresh each day) ===")
+    print("=== DAY SESSION (9:30 start, 2c partial TP @50pts) ===")
     print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
     print("-" * 80)
     for et in DAY_END_TIMES:
         t = totals[et]
         tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
-        usd = t["pl"]*_CONTRACTS*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
+        # With partial TP, each tpl entry is 1 contract's pts, so multiply by $5 only
+        usd = t["pl"]*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
         print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
 
-    print(f"\n=== OVERNIGHT SESSION (18:00 start, fresh each night) ===")
+    print(f"\n=== OVERNIGHT SESSION (18:00 start, 2c no partial TP) ===")
     print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
     print("-" * 80)
     for et in NIGHT_END_TIMES:
