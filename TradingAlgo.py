@@ -49,8 +49,9 @@ class AlgoConfig:
     wm_min_touches: int = 4           # minimum bars touching a level to form a cluster
     wm_min_span: float = 15.0         # minimum minutes the touches must span
     wm_lookback: int = 30             # bars to look back for clusters
-    partial_tp_pts: float = 50.0       # take profit on half position at this many pts (0 = disabled)
-    num_contracts: int = 2             # total contracts per trade
+    partial_tp_pts: float = 50.0       # sell half the position at this many pts profit (0 = disabled)
+    num_contracts: int = 2             # total contracts per trade (always splits 50/50 for partial TP)
+    line_tolerance: float = 500.0       # pts tolerance for connect-the-highs purple/blue line (higher = more aggressive)
 
 
 class Ray:
@@ -102,6 +103,7 @@ class RayManager:
         self.purple_ray: Optional[Ray] = None
         self.blue_ray: Optional[Ray] = None
         self.dark_purple_ray: Optional[Ray] = None
+        self.dark_blue_ray: Optional[Ray] = None   # continuously-updating blue trendline
         self.magenta_ray: Optional[Ray] = None   # local swing high ray
         self.lime_ray: Optional[Ray] = None      # local swing low ray
         self.purple_intersections = 0
@@ -115,6 +117,14 @@ class RayManager:
         self.lime_anchor_price: Optional[float] = None
         self._magenta_slope_frozen: bool = False
         self._lime_slope_frozen: bool = False
+        self._purple_slope_frozen: bool = False
+        self._blue_slope_frozen: bool = False
+        self._purple_last_touch_time = None
+        self._purple_last_touch_price = None
+        self._purple_bars_since_touch = 0
+        self._blue_last_touch_time = None
+        self._blue_last_touch_price = None
+        self._blue_bars_since_touch = 0
 
     def initialize_rays(self, current_data: pd.DataFrame, x_per_unit: float, y_per_unit: float) -> None:
         """Initialize all rays from current data (first bar)."""
@@ -180,7 +190,7 @@ class RayManager:
                 yellow_slope = self.yellow_ray.calculate_slope(x_per_unit, y_per_unit)
         self.yellow_ray.adjusted_slope = yellow_slope
 
-        # Purple/blue trendlines using TrendLineAutomation
+        # Purple/blue trendlines — simple "connect the highs/lows" approach
         if len(current_data) >= 2:
             max_high = float(current_data["High"].max())
             last_max_time = current_data[current_data["High"] == max_high].index[-1]
@@ -201,56 +211,173 @@ class RayManager:
                 self.blue_anchor_time = last_min_time
                 self.blue_anchor_price = min_low
 
-            window_data_purple = current_data.loc[self.purple_anchor_time :]
-            window_data_blue = current_data.loc[self.blue_anchor_time :]
-            if len(window_data_purple) < 2 or len(window_data_blue) < 2:
-                return
-
+            # --- PURPLE: session high → latest lower high ---
             if self.purple_ray is None:
-                self.purple_ray = Ray(-45.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray (-45)")
+                self.purple_ray = Ray(-45.0, float(self.purple_anchor_price), self.purple_anchor_time, "darkviolet", "Max Ray")
             self.purple_ray.start_price = float(self.purple_anchor_price)
             self.purple_ray.start_time = self.purple_anchor_time
 
+            # Find the latest bar (after anchor) whose high touches or exceeds the current line
+            # This becomes the second point of the trendline
+            p_anchor_num = mdates.date2num(self.purple_anchor_time)
+            p_anchor_price = float(self.purple_anchor_price)
+            latest_time = current_data.index[-1]
+
+            # Scan bars after anchor for the latest high that would define the slope
+            best_touch_idx = None
+            best_touch_time = None
+            best_touch_high = None
+            for j in range(len(current_data)):
+                bar_time = current_data.index[j]
+                if bar_time <= self.purple_anchor_time:
+                    continue
+                bar_high = float(current_data["High"].iloc[j])
+                bar_time_num = mdates.date2num(bar_time)
+                dt = bar_time_num - p_anchor_num
+                if dt <= 0:
+                    continue
+                # What slope would connect anchor to this bar's high?
+                candidate_slope = (bar_high - p_anchor_price) / dt
+                # This slope must be negative or zero (descending) for a valid resistance line
+                if candidate_slope > 0:
+                    continue
+                # Check: does this slope keep the line above ALL highs between anchor and this bar?
+                valid = True
+                for k in range(len(current_data)):
+                    if current_data.index[k] <= self.purple_anchor_time:
+                        continue
+                    if current_data.index[k] > bar_time:
+                        break
+                    k_time_num = mdates.date2num(current_data.index[k])
+                    line_at_k = p_anchor_price + candidate_slope * (k_time_num - p_anchor_num)
+                    if float(current_data["High"].iloc[k]) > line_at_k + 1:  # 1pt tolerance
+                        valid = False
+                        break
+                if valid:
+                    best_touch_idx = j
+                    best_touch_time = bar_time
+                    best_touch_high = bar_high
+
+            if best_touch_time is not None:
+                dt = mdates.date2num(best_touch_time) - p_anchor_num
+                if dt > 0:
+                    slope = (best_touch_high - p_anchor_price) / dt
+                    self.purple_ray.adjusted_slope = slope
+            else:
+                # No valid second point yet — use a gentle default slope
+                if self.purple_ray.adjusted_slope is None:
+                    self.purple_ray.adjusted_slope = -0.001
+
+            # --- Track touch for dark purple ---
+            _GAP_BARS = 5
+            if self.purple_ray.adjusted_slope is not None:
+                purple_at_latest = self.purple_ray.get_price_at_time(latest_time, self.purple_ray.adjusted_slope)
+                latest_high = float(current_data["High"].iloc[-1])
+                if latest_high >= purple_at_latest - 5:
+                    self._purple_last_touch_time = latest_time
+                    self._purple_last_touch_price = latest_high
+                    self._purple_value_at_last_touch = latest_high
+                    self._purple_bars_since_touch = 0
+                    # Reset dark purple but create it immediately at the touch point
+                    self.dark_purple_ray = Ray(-45.0, latest_high, latest_time, "indigo", "Dark purple")
+                    self.dark_purple_ray.adjusted_slope = self.purple_ray.adjusted_slope
+                else:
+                    self._purple_bars_since_touch = getattr(self, '_purple_bars_since_touch', 0) + 1
+
+                # After gap, update dark purple slope to tighten toward bars
+                if self._purple_bars_since_touch >= _GAP_BARS and self._purple_last_touch_time is not None and self.dark_purple_ray is not None:
+                    dp_anchor_price = self.dark_purple_ray.start_price
+                    dp_anchor_time = self.dark_purple_ray.start_time
+                    recent_high = max(float(current_data["High"].iloc[k])
+                                      for k in range(max(0, len(current_data) - 5), len(current_data)))
+                    gap = purple_at_latest - recent_high
+                    bars_past_gap = self._purple_bars_since_touch - _GAP_BARS
+                    tighten_ratio = min(0.9, 0.5 + bars_past_gap * 0.015)
+                    dp_at_latest = purple_at_latest - gap * tighten_ratio
+                    dt = mdates.date2num(latest_time) - mdates.date2num(dp_anchor_time)
+                    if dt > 0:
+                        dp_slope = (dp_at_latest - dp_anchor_price) / dt
+                        self.dark_purple_ray.adjusted_slope = dp_slope
+
+            # --- BLUE: session low → latest higher low ---
             if self.blue_ray is None:
-                self.blue_ray = Ray(45.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray (+45)")
+                self.blue_ray = Ray(45.0, float(self.blue_anchor_price), self.blue_anchor_time, "blue", "Min Ray")
             self.blue_ray.start_price = float(self.blue_anchor_price)
             self.blue_ray.start_time = self.blue_anchor_time
 
-            support_coefs, _ = fit_trendlines_high_low(
-                window_data_blue["High"].to_numpy(),
-                window_data_blue["Low"].to_numpy(),
-                window_data_blue["Close"].to_numpy(),
-            )
-            _, resist_coefs = fit_trendlines_high_low(
-                window_data_purple["High"].to_numpy(),
-                window_data_purple["Low"].to_numpy(),
-                window_data_purple["Close"].to_numpy(),
-            )
+            b_anchor_num = mdates.date2num(self.blue_anchor_time)
+            b_anchor_price = float(self.blue_anchor_price)
 
-            support_slope_idx, support_intercept = support_coefs
-            resist_slope_idx, resist_intercept = resist_coefs
+            best_touch_idx_b = None
+            best_touch_time_b = None
+            best_touch_low_b = None
+            for j in range(len(current_data)):
+                bar_time = current_data.index[j]
+                if bar_time <= self.blue_anchor_time:
+                    continue
+                bar_low = float(current_data["Low"].iloc[j])
+                bar_time_num = mdates.date2num(bar_time)
+                dt = bar_time_num - b_anchor_num
+                if dt <= 0:
+                    continue
+                candidate_slope = (bar_low - b_anchor_price) / dt
+                if candidate_slope < 0:
+                    continue
+                valid = True
+                for k in range(len(current_data)):
+                    if current_data.index[k] <= self.blue_anchor_time:
+                        continue
+                    if current_data.index[k] > bar_time:
+                        break
+                    k_time_num = mdates.date2num(current_data.index[k])
+                    line_at_k = b_anchor_price + candidate_slope * (k_time_num - b_anchor_num)
+                    if float(current_data["Low"].iloc[k]) < line_at_k - 1:
+                        valid = False
+                        break
+                if valid:
+                    best_touch_idx_b = j
+                    best_touch_time_b = bar_time
+                    best_touch_low_b = bar_low
 
-            time_step_days_blue = mdates.date2num(window_data_blue.index[1]) - mdates.date2num(window_data_blue.index[0])
-            time_step_days_purple = mdates.date2num(window_data_purple.index[1]) - mdates.date2num(window_data_purple.index[0])
-            if time_step_days_blue == 0:
-                time_step_days_blue = 1.0
-            if time_step_days_purple == 0:
-                time_step_days_purple = 1.0
+            if best_touch_time_b is not None:
+                dt = mdates.date2num(best_touch_time_b) - b_anchor_num
+                if dt > 0:
+                    slope = (best_touch_low_b - b_anchor_price) / dt
+                    self.blue_ray.adjusted_slope = slope
+            else:
+                if self.blue_ray.adjusted_slope is None:
+                    self.blue_ray.adjusted_slope = 0.001
 
-            support_slope_time = support_slope_idx / time_step_days_blue
-            resist_slope_time = resist_slope_idx / time_step_days_purple
+            # --- Track touch for dark blue ---
+            if self.blue_ray.adjusted_slope is not None:
+                blue_at_latest = self.blue_ray.get_price_at_time(latest_time, self.blue_ray.adjusted_slope)
+                latest_low = float(current_data["Low"].iloc[-1])
+                if latest_low <= blue_at_latest + 5:
+                    self._blue_last_touch_time = latest_time
+                    self._blue_last_touch_price = latest_low
+                    self._blue_value_at_last_touch = latest_low  # use the LOW, not the line value
+                    self._blue_bars_since_touch = 0
+                    self.dark_blue_ray = None
+                else:
+                    self._blue_bars_since_touch = getattr(self, '_blue_bars_since_touch', 0) + 1
 
-            if self.purple_ray is None:
-                self.purple_ray = Ray(-45.0, float(resist_intercept), window_data_purple.index[0], "darkviolet", "Max Ray (-45)")
-            self.purple_ray.start_price = float(resist_intercept)
-            self.purple_ray.start_time = window_data_purple.index[0]
-            self.purple_ray.adjusted_slope = float(resist_slope_time)
-
-            if self.blue_ray is None:
-                self.blue_ray = Ray(45.0, float(support_intercept), window_data_blue.index[0], "blue", "Min Ray (+45)")
-            self.blue_ray.start_price = float(support_intercept)
-            self.blue_ray.start_time = window_data_blue.index[0]
-            self.blue_ray.adjusted_slope = float(support_slope_time)
+                if self._blue_bars_since_touch >= _GAP_BARS and self._blue_last_touch_time is not None:
+                    db_anchor_time = self._blue_last_touch_time
+                    db_anchor_price = getattr(self, '_blue_value_at_last_touch', float(self._blue_last_touch_price))
+                    recent_low = min(float(current_data["Low"].iloc[k])
+                                     for k in range(max(0, len(current_data) - 5), len(current_data)))
+                    gap = recent_low - blue_at_latest
+                    bars_past_gap = self._blue_bars_since_touch - _GAP_BARS
+                    tighten_ratio = min(0.9, 0.5 + bars_past_gap * 0.015)
+                    db_at_latest = blue_at_latest + gap * tighten_ratio
+                    dt = mdates.date2num(latest_time) - mdates.date2num(db_anchor_time)
+                    if dt > 0:
+                        db_slope = (db_at_latest - db_anchor_price) / dt
+                        if self.dark_blue_ray is None:
+                            self.dark_blue_ray = Ray(45.0, db_anchor_price, db_anchor_time, "deepskyblue", "Dark blue")
+                        self.dark_blue_ray.start_price = db_anchor_price
+                        self.dark_blue_ray.start_time = db_anchor_time
+                        self.dark_blue_ray.adjusted_slope = db_slope
 
         # --- Magenta ray: local swing high (50+ pt above neighbours) ---
         # --- Lime ray:    local swing low  (50+ pt below neighbours)  ---
@@ -583,6 +710,8 @@ def run_trading_algo(
 
     magenta_prices = []
     lime_prices = []
+    dark_purple_prices = []
+    dark_blue_prices = []
 
     orange_angles = []
     yellow_angles = []
@@ -995,6 +1124,17 @@ def run_trading_algo(
         else:
             lime_prices.append(float("nan"))
 
+        # Dark purple / dark blue: continuously-updating trendlines
+        if rm.dark_purple_ray is not None and rm.dark_purple_ray.adjusted_slope is not None:
+            dark_purple_prices.append(float(rm.dark_purple_ray.get_price_at_time(time, rm.dark_purple_ray.adjusted_slope)))
+        else:
+            dark_purple_prices.append(float("nan"))
+
+        if rm.dark_blue_ray is not None and rm.dark_blue_ray.adjusted_slope is not None:
+            dark_blue_prices.append(float(rm.dark_blue_ray.get_price_at_time(time, rm.dark_blue_ray.adjusted_slope)))
+        else:
+            dark_blue_prices.append(float("nan"))
+
         # Anchor meta so the plotter/debug tools can see exactly where
         # the steep rays are based.
         purple_anchor_price = rm.purple_anchor_price if rm.purple_anchor_price is not None else rm.purple_ray.start_price
@@ -1043,6 +1183,8 @@ def run_trading_algo(
     result["blue_ray"]   = blue_prices
     result["magenta_ray"] = magenta_prices
     result["lime_ray"]    = lime_prices
+    result["dark_purple_ray"] = dark_purple_prices
+    result["dark_blue_ray"]   = dark_blue_prices
 
     result["orange_slope"] = orange_slopes
     result["yellow_slope"] = yellow_slopes

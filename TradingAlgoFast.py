@@ -171,15 +171,12 @@ def run_trading_algo_fast(
             y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]
         yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
 
-    # Purple/blue rays — Numba-compiled trendline fitting
+    # Purple/blue rays — connect-the-highs/lows approach (optimized, no regression)
     purple_vals = np.full(n, highs_arr[0])
     blue_vals   = np.full(n, lows_arr[0])
     p_anchor_p = highs_arr[0]; p_anchor_idx = 0
     b_anchor_p = lows_arr[0];  b_anchor_idx = 0
 
-    # Store ray metadata for each bar (for signal check timing)
-    # purple_vals[i] = value AFTER update_all_rays at bar i
-    # Signal check at bar i+1 uses purple_vals[i] projected to bar i
     purple_start_prices = np.full(n, highs_arr[0])
     purple_start_times  = np.full(n, times_num[0])
     purple_slopes       = np.zeros(n)
@@ -187,59 +184,117 @@ def run_trading_algo_fast(
     blue_start_times    = np.full(n, times_num[0])
     blue_slopes         = np.zeros(n)
 
+    # Dark purple/blue trailing safety line state
+    _GAP_BARS = 5
+    dp_anchor_idx = -1; dp_anchor_price = 0.0; dp_slope = 0.0
+    dp_bars_since_touch = 0
+    dark_purple_vals = np.full(n, np.nan)
+    db_anchor_idx = -1; db_anchor_price = 0.0; db_slope = 0.0
+    db_bars_since_touch = 0
+    dark_blue_vals = np.full(n, np.nan)
+
+    # Track current best second point for purple/blue (O(1) per bar using running constraint)
+    # For each bar k, the slope from anchor to k must be >= (high_k - anchor_p) / dt_k - tol/dt_k
+    # We track the running maximum constraint slope
+    _PTOL = getattr(cfg, 'line_tolerance', 1.0)  # pts tolerance for connect-the-highs
+    p_best_j = -1; p_best_slope = -0.001; p_min_slope_constraint = float('-inf')
+    b_best_j = -1; b_best_slope = 0.001;  b_max_slope_constraint = float('inf')
+
     for i in range(n):
-        # Update anchors incrementally — only on strictly new high/low (matches original)
+        # Update session high/low anchors
         if highs_arr[i] > p_anchor_p:
             p_anchor_p = highs_arr[i]; p_anchor_idx = i
-
+            p_best_j = -1; p_best_slope = -0.001; p_min_slope_constraint = float('-inf')
         if lows_arr[i] < b_anchor_p:
             b_anchor_p = lows_arr[i]; b_anchor_idx = i
+            b_best_j = -1; b_best_slope = 0.001; b_max_slope_constraint = float('inf')
 
-        # Purple and blue windows — if EITHER is too small, skip BOTH (matches original)
-        pw_start = p_anchor_idx
-        bw_start = b_anchor_idx
-        pw_len = i + 1 - pw_start
-        bw_len = i + 1 - bw_start
+        # --- PURPLE: O(1) incremental constraint tracking ---
+        if i > p_anchor_idx:
+            dt_i = times_num[i] - times_num[p_anchor_idx]
+            if dt_i > 0:
+                # Update running constraint: slope must be >= (high_i - anchor - tol) / dt_i
+                required = (highs_arr[i] - p_anchor_p - _PTOL) / dt_i
+                if required > p_min_slope_constraint:
+                    p_min_slope_constraint = required
+                # Candidate slope to bar i
+                cand_slope = (highs_arr[i] - p_anchor_p) / dt_i
+                # Valid if cand_slope <= 0 AND satisfies all prior constraints
+                if cand_slope <= 0 and cand_slope >= p_min_slope_constraint:
+                    p_best_j = i; p_best_slope = cand_slope
 
-        if pw_len >= 2 and bw_len >= 2:
-            # Purple trendline
-            pw_h = highs_arr[pw_start:i+1]
-            pw_l = lows_arr[pw_start:i+1]
-            pw_c = closes_arr[pw_start:i+1]
-            s_slope_nb, s_int_nb, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            r_slope_idx = r_slope_nb; r_intercept = r_int_nb
-            time_step = times_num[pw_start+1] - times_num[pw_start]
-            if time_step == 0: time_step = 1.0
-            r_slope_time = r_slope_idx / time_step
-            purple_start_prices[i] = r_intercept
-            purple_start_times[i]  = times_num[pw_start]
-            purple_slopes[i]       = r_slope_time
-            purple_vals[i] = r_intercept + r_slope_time * (times_num[i] - times_num[pw_start])
-
-            # Blue trendline
-            bw_h = highs_arr[bw_start:i+1]
-            bw_l = lows_arr[bw_start:i+1]
-            bw_c = closes_arr[bw_start:i+1]
-            s_slope_nb2, s_int_nb2, r_slope_nb2, r_int_nb2 = _fit_trendlines_nb(bw_h, bw_l, bw_c)
-            s_slope_idx = s_slope_nb2; s_intercept = s_int_nb2
-            time_step = times_num[bw_start+1] - times_num[bw_start]
-            if time_step == 0: time_step = 1.0
-            s_slope_time = s_slope_idx / time_step
-            blue_start_prices[i] = s_intercept
-            blue_start_times[i]  = times_num[bw_start]
-            blue_slopes[i]       = s_slope_time
-            blue_vals[i] = s_intercept + s_slope_time * (times_num[i] - times_num[bw_start])
+        if p_best_j >= 0:
+            p_slope = p_best_slope
         else:
-            # Either window too small — keep previous slope, project to current time
-            if i > 0:
-                purple_slopes[i] = purple_slopes[i-1]
-                purple_start_prices[i] = purple_start_prices[i-1]
-                purple_start_times[i]  = purple_start_times[i-1]
-                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - purple_start_times[i-1])
-                blue_slopes[i] = blue_slopes[i-1]
-                blue_start_prices[i] = blue_start_prices[i-1]
-                blue_start_times[i]  = blue_start_times[i-1]
-                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - blue_start_times[i-1])
+            p_slope = purple_slopes[i-1] if i > 0 else -0.001
+
+        purple_slopes[i] = p_slope
+        purple_start_prices[i] = p_anchor_p
+        purple_start_times[i] = times_num[p_anchor_idx]
+        purple_vals[i] = p_anchor_p + p_slope * (times_num[i] - times_num[p_anchor_idx])
+
+        # --- BLUE: O(1) incremental constraint tracking ---
+        if i > b_anchor_idx:
+            dt_i = times_num[i] - times_num[b_anchor_idx]
+            if dt_i > 0:
+                required = (lows_arr[i] - b_anchor_p + _PTOL) / dt_i
+                if required < b_max_slope_constraint:
+                    b_max_slope_constraint = required
+                cand_slope = (lows_arr[i] - b_anchor_p) / dt_i
+                if cand_slope >= 0 and cand_slope <= b_max_slope_constraint:
+                    b_best_j = i; b_best_slope = cand_slope
+
+        if b_best_j >= 0:
+            b_slope = b_best_slope
+        else:
+            b_slope = blue_slopes[i-1] if i > 0 else 0.001
+
+        blue_slopes[i] = b_slope
+        blue_start_prices[i] = b_anchor_p
+        blue_start_times[i] = times_num[b_anchor_idx]
+        blue_vals[i] = b_anchor_p + b_slope * (times_num[i] - times_num[b_anchor_idx])
+
+        # --- Dark purple trailing safety line ---
+        if highs_arr[i] >= purple_vals[i] - 5:
+            dp_bars_since_touch = 0
+            dp_anchor_idx = i
+            dp_anchor_price = highs_arr[i]
+            dp_slope = p_slope
+        else:
+            dp_bars_since_touch += 1
+
+        if dp_anchor_idx >= 0:
+            if dp_bars_since_touch >= _GAP_BARS:
+                recent_high = max(highs_arr[max(0, i-4):i+1])
+                gap = purple_vals[i] - recent_high
+                bars_past = dp_bars_since_touch - _GAP_BARS
+                tighten = min(0.9, 0.5 + bars_past * 0.015)
+                dp_target = purple_vals[i] - gap * tighten
+                dt_dp = times_num[i] - times_num[dp_anchor_idx]
+                if dt_dp > 0:
+                    dp_slope = (dp_target - dp_anchor_price) / dt_dp
+            dark_purple_vals[i] = dp_anchor_price + dp_slope * (times_num[i] - times_num[dp_anchor_idx])
+
+        # --- Dark blue trailing safety line ---
+        if lows_arr[i] <= blue_vals[i] + 5:
+            db_bars_since_touch = 0
+            db_anchor_idx = i
+            db_anchor_price = lows_arr[i]
+            db_slope = b_slope
+        else:
+            db_bars_since_touch += 1
+
+        if db_anchor_idx >= 0:
+            if db_bars_since_touch >= _GAP_BARS:
+                recent_low = min(lows_arr[max(0, i-4):i+1])
+                gap = recent_low - blue_vals[i]
+                bars_past = db_bars_since_touch - _GAP_BARS
+                tighten = min(0.9, 0.5 + bars_past * 0.015)
+                db_target = blue_vals[i] + gap * tighten
+                dt_db = times_num[i] - times_num[db_anchor_idx]
+                if dt_db > 0:
+                    db_slope = (db_target - db_anchor_price) / dt_db
+            dark_blue_vals[i] = db_anchor_price + db_slope * (times_num[i] - times_num[db_anchor_idx])
 
     # --- Magenta/lime swing ray computation ---
     SWING_THRESHOLD = 50.0
@@ -335,7 +390,7 @@ def run_trading_algo_fast(
         is_last_bar = (i == n - 1)
 
         # --- Trailing stop v3 ---
-        if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5:
+        if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5 and cfg.max_loss_per_trade != 999:
             if temp_position == "long":
                 unrealized_profit = current_close - temp_entry_price
             else:

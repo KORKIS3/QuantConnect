@@ -153,13 +153,14 @@ class ChartPlotter:
         self.lines["ray_yellow"],      = self.ax.plot([], [], color="gold",       linewidth=2, label="Yellow ray",  alpha=0.9)
         self.lines["ray_purple"],      = self.ax.plot([], [], color="darkviolet", linewidth=2, label="Purple ray",  alpha=0.9)
         self.lines["ray_blue"],        = self.ax.plot([], [], color="blue",       linewidth=2, label="Blue ray",    alpha=0.9)
-        self.lines["ray_dark_purple"], = self.ax.plot([], [], color="indigo",     linewidth=2, label="Dark purple", alpha=0.9)
+        self.lines["ray_dark_purple"], = self.ax.plot([], [], color="indigo",     linewidth=1.5, label="Dark purple", alpha=0.7, linestyle="--")
+        self.lines["ray_dark_blue"],   = self.ax.plot([], [], color="deepskyblue", linewidth=1.5, label="Dark blue",   alpha=0.7, linestyle="--")
         self.lines["ray_magenta"],     = self.ax.plot([], [], color="magenta",    linewidth=1.5, label="Swing High", alpha=0.85, linestyle="--")
         self.lines["ray_lime"],        = self.ax.plot([], [], color="limegreen",  linewidth=1.5, label="Swing Low",  alpha=0.85, linestyle="--")
 
         self.ax.set_ylabel("Price", fontsize=12)
         self.ax.set_xlabel("Time (ET)", fontsize=12)
-        self.ax.legend(loc="upper left", fontsize=9, framealpha=0.7)
+        # self.ax.legend(loc="upper left", fontsize=9, framealpha=0.7)  # hidden for now
         self.ax.grid(True, alpha=0.25, linestyle="--")
         self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=_EST))
         plt.setp(self.ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
@@ -270,7 +271,29 @@ class ChartPlotter:
             current_time, float(row["blue_ray"]), float(row["blue_angle"]),
             "blue", "blue", 28)
 
-        self.lines["ray_dark_purple"].set_data([], [])
+        # Dark purple: continuously-updating trendline (dashed)
+        if "dark_purple_ray" in current_data.columns:
+            valid = current_data["dark_purple_ray"].dropna()
+            if not valid.empty and not pd.isna(row.get("dark_purple_ray")):
+                self.lines["ray_dark_purple"].set_data(
+                    [valid.index[0], current_time],
+                    [float(valid.iloc[0]), float(row["dark_purple_ray"])])
+            else:
+                self.lines["ray_dark_purple"].set_data([], [])
+        else:
+            self.lines["ray_dark_purple"].set_data([], [])
+
+        # Dark blue: continuously-updating trendline (dashed)
+        if "dark_blue_ray" in current_data.columns:
+            valid = current_data["dark_blue_ray"].dropna()
+            if not valid.empty and not pd.isna(row.get("dark_blue_ray")):
+                self.lines["ray_dark_blue"].set_data(
+                    [valid.index[0], current_time],
+                    [float(valid.iloc[0]), float(row["dark_blue_ray"])])
+            else:
+                self.lines["ray_dark_blue"].set_data([], [])
+        else:
+            self.lines["ray_dark_blue"].set_data([], [])
 
         # Magenta swing high ray.
         if "magenta_ray" in current_data.columns:
