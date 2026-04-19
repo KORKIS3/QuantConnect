@@ -599,15 +599,18 @@ def run_trading_algo_fast(
     result["blue_anchor_price"]   = b_anchor_p
     result["blue_anchor_time"]    = times_idx[b_anchor_idx]
 
-    # Ray start data
-    result["orange_ray_start_price"] = orange_vals  # simplified
+    # Ray start data — use actual anchor times/prices
+    # Build per-bar anchor time arrays
+    p_anchor_times_arr = [times_idx[p_anchor_idx]] * n
+    b_anchor_times_arr = [times_idx[b_anchor_idx]] * n
+    result["orange_ray_start_price"] = orange_vals  # orange anchor moves, use current value
     result["orange_ray_start_time"]  = times_idx[0]
     result["yellow_ray_start_price"] = yellow_vals
     result["yellow_ray_start_time"]  = times_idx[0]
     result["purple_ray_start_price"] = purple_start_prices
-    result["purple_ray_start_time"]  = [times_idx[0]] * n  # simplified
+    result["purple_ray_start_time"]  = p_anchor_times_arr
     result["blue_ray_start_price"]   = blue_start_prices
-    result["blue_ray_start_time"]    = [times_idx[0]] * n
+    result["blue_ray_start_time"]    = b_anchor_times_arr
 
     result["orange_angle"] = _display_angle_from_slope(orange_slope_val, x_per_unit, y_per_unit)
     result["yellow_angle"] = _display_angle_from_slope(yellow_slope_val, x_per_unit, y_per_unit)
@@ -619,6 +622,12 @@ def run_trading_algo_fast(
     result["yellow_ray_end_price"] = yellow_vals[-1]
     result["purple_ray_end_price"] = purple_vals[-1]
     result["blue_ray_end_price"]   = blue_vals[-1]
+
+    # Dark purple/blue and magenta/lime — needed by plotter
+    result["dark_purple_ray"] = dark_purple_vals
+    result["dark_blue_ray"]   = dark_blue_vals
+    result["magenta_ray"] = np.nan
+    result["lime_ray"]    = np.nan
 
     # Display layer pre-computations
     result["y_min"] = lows_arr.min() - 20.0

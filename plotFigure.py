@@ -169,7 +169,10 @@ class ChartPlotter:
             y_min = float(self.data["y_min"].iloc[0])
             y_max = float(self.data["y_max"].iloc[0])
             self.ax.set_ylim(y_min, y_max)
-            self.ax.set_xlim(self.data.index[0], self.data.index[-1])
+            # Start with first 90 minutes visible; window updates as you step through
+            start_time = self.data.index[0]
+            end_time = start_time + pd.Timedelta(minutes=90)
+            self.ax.set_xlim(start_time, end_time)
 
         # Stats box — right side, includes P/L
         self.stats_box = self.ax.text(
@@ -202,6 +205,24 @@ class ChartPlotter:
         self.update_signal_markers(current_data)
         self.update_stats(current_data)
         self.save_snapshot(current_data)
+
+        # Rolling 90-minute window: keep current bar in the right 2/3 of view
+        current_time = self.data.index[frame]
+        window = pd.Timedelta(minutes=90)
+        x_start = current_time - pd.Timedelta(minutes=60)
+        x_end = current_time + pd.Timedelta(minutes=30)
+        # Don't go before session start
+        session_start = self.data.index[0]
+        if x_start < session_start:
+            x_start = session_start
+            x_end = session_start + window
+        self.ax.set_xlim(x_start, x_end)
+        # Auto-scale y to visible bars
+        visible = current_data[(current_data.index >= x_start) & (current_data.index <= x_end)]
+        if not visible.empty:
+            y_lo = float(visible["Low"].min()) - 20
+            y_hi = float(visible["High"].max()) + 20
+            self.ax.set_ylim(y_lo, y_hi)
 
     # ------------------------------------------------------------------
     # Render helpers
@@ -411,6 +432,50 @@ class ChartPlotter:
                               edgecolor="darkred", linewidth=1.5),
                     arrowprops=dict(arrowstyle="->", color="red", lw=1.5))
                 self.signal_annotations["sell"].append(ann)
+
+        # Dark purple cross markers: close crosses above dark purple → same style as BUY
+        if "dark_purple_ray" in current_data.columns:
+            closes = current_data["Close"].values
+            dp_vals = current_data["dark_purple_ray"].values
+            for j in range(1, len(current_data)):
+                if pd.isna(dp_vals[j-1]) or pd.isna(dp_vals[j]): continue
+                if closes[j-1] <= dp_vals[j-1] and closes[j] > dp_vals[j]:
+                    ts_j = current_data.index[j]
+                    price = float(closes[j])
+                    label = "BUY\n" + str(int(price))
+                    m, = self.ax.plot(ts_j, price, marker="^", markersize=12,
+                                      color="indigo", markeredgecolor="indigo",
+                                      markeredgewidth=1.5, zorder=10)
+                    self.signal_markers["buy"].append(m)
+                    ann = self.ax.annotate(
+                        label, xy=(ts_j, price), xytext=(0, 22), textcoords="offset points",
+                        ha="center", va="bottom", fontsize=8, color="white", fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.4", facecolor="indigo", alpha=0.9,
+                                  edgecolor="indigo", linewidth=1.5),
+                        arrowprops=dict(arrowstyle="->", color="indigo", lw=1.5))
+                    self.signal_annotations["buy"].append(ann)
+
+        # Dark blue cross markers: close crosses below dark blue → same style as SELL
+        if "dark_blue_ray" in current_data.columns:
+            closes = current_data["Close"].values
+            db_vals = current_data["dark_blue_ray"].values
+            for j in range(1, len(current_data)):
+                if pd.isna(db_vals[j-1]) or pd.isna(db_vals[j]): continue
+                if closes[j-1] >= db_vals[j-1] and closes[j] < db_vals[j]:
+                    ts_j = current_data.index[j]
+                    price = float(closes[j])
+                    label = "SELL\n" + str(int(price))
+                    m, = self.ax.plot(ts_j, price, marker="v", markersize=12,
+                                      color="deepskyblue", markeredgecolor="deepskyblue",
+                                      markeredgewidth=1.5, zorder=10)
+                    self.signal_markers["sell"].append(m)
+                    ann = self.ax.annotate(
+                        label, xy=(ts_j, price), xytext=(0, -22), textcoords="offset points",
+                        ha="center", va="top", fontsize=8, color="white", fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.4", facecolor="deepskyblue", alpha=0.9,
+                                  edgecolor="deepskyblue", linewidth=1.5),
+                        arrowprops=dict(arrowstyle="->", color="deepskyblue", lw=1.5))
+                    self.signal_annotations["sell"].append(ann)
 
     def update_stats(self, current_data):
         row   = current_data.iloc[-1]
