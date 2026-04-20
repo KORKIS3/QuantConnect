@@ -13,14 +13,31 @@ AlgoConfig(
 )
 ```
 
-## Backtest Results (505 trading days excl April 2025, 9:30-10:30 ET, 2 contracts)
+## Backtest Results (664 trading days, full day 9:30-17:00, 2 contracts, partial TP @50pts)
+Run: 2026-04-20. Data: `~/Desktop/2YearsData/full_day/` (Jul 2023 – Apr 2026)
+
+### Day Session (9:30 start)
+| End Time | Trades | Win% | Total Pts | P/L USD | Avg/Day |
+|---|---|---|---|---|---|
+| 10:00 | 964 | 62.3% | 19,933 | $99,665 | +34.5 |
+| 10:30 | 1,646 | 69.9% | 52,257 | $261,285 | +87.8 |
+| 11:00 | 2,244 | 70.0% | 70,229 | $351,145 | +116.3 |
+| 11:30 | 2,804 | 71.0% | 91,987 | $459,935 | +151.0 |
+| 12:00 | 3,311 | 71.5% | 110,181 | $550,905 | +180.3 |
+| 13:00 | 4,262 | 70.8% | 138,079 | $690,395 | +224.5 |
+| 14:00 | 5,126 | 71.1% | 169,830 | $849,150 | +273.5 |
+| 15:00 | 5,919 | 70.1% | 192,363 | $961,815 | +309.3 |
+| 16:00 | 6,723 | 69.8% | 214,030 | $1,070,150 | +344.1 |
+| 17:00 | 7,079 | 69.2% | 221,554 | $1,107,770 | +356.2 |
+
+### Overnight Session (18:00 start) — weaker edge, ~42-47% win rate
+- Best end time: 09:00 → +$235,680 (+38.5 pts/day avg)
+
+### Previous results (505 days, 9:30-10:30 only)
 - Baseline (no filters): -$495,500
 - 10-min reversal filter: +$115,960
-- With trailing stop v3: **+$116,490** ← current best
-  - Worst day: -208 (vs -438 without trailing stop)
-  - Avg losing day: -50 pts (vs -70 without)
+- With trailing stop v3: **+$116,490** ← was current best
 - Angle threshold sweep: 70° is optimal
-- Loss protection overrides (50/65/80 pts): all worse than plain 10-min hold
 
 ## Line/Ray Mapping (User's System → Algo)
 | User's Chart | Algo Ray | Behavior |
@@ -58,31 +75,35 @@ AlgoConfig(
 
 ## Pending Tests / Work Items
 
-### Currently running:
-- Warmup sweep: 8, 10, 12, 15 minutes — does longer warmup reduce wrong-direction first entries?
-
 ### To implement / test next:
 1. **Trailing stop line (v4)** — current v3 activates at 75pts, needs tuning. Key insight from 02/23: the trailing line should adjust angle when wicks push it but only exit on a CLOSE above/below. Avoid unnecessary reversals on strong trend days.
 2. **Spike profit take** — if a single bar moves 200+ points in your favor, exit at the close of that bar. Captures "gift" moves like 02/20 spike. Rare but hugely profitable.
 3. **Low/high water marks** — horizontal lines at price cluster levels where multiple bar lows or highs have congregated (Mike Aston's concept).
-4. **Hourly session optimization** — test which hours of the day are most profitable. Full day data downloaded.
-5. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering.
+4. **Confirmation bar** — require 2 consecutive closes beyond a ray before triggering.
 
 ### Sim screenshots analyzed:
 All February 2026 days complete. User to capture more examples.
 
-## Architecture
-- `InteractiveBrokers.py` — live IB bridge, real-time bars via reqRealTimeBars
-- `TradingAlgo.py` — core signal engine (AlgoConfig, RayManager, run_trading_algo)
+## Architecture (as of 2026-04-20 rework)
+- `TradingAlgoFast.py` — **single engine** (AlgoConfig, all ray computation, signal detection, all Numba-compiled). TradingAlgo.py deleted.
+- `InteractiveBrokers.py` — live IB bridge, real-time bars via reqRealTimeBars. Uses `run_trading_algo_fast`. Has `enable_chart=True/False` toggle.
 - `plotFigure.py` — chart rendering (pure visualization, no calculations)
 - `ReOrgMain.py` — orchestration for live and historical sessions
-- `RunHistoricalData.py` — pull IB historical data + run algo + interactive chart
-- `Backtest2Year.py` — 2-year backtest with variant comparison
-- `AnalyseTrades.py` — crossback theory tester
+- `RunHistoricalData.py` — pull IB historical data + run algo + interactive chart (requires IB connection)
+- `Backtest2Year.py` — full day backtest. Run with `--skip-download --quick` for fast 9:30-10:30 mode (35s), or `--skip-download` for full day+overnight (~4.5 min)
 - `compare_day.py` — single-day sim vs algo comparison
+- `verify_algo_match.py` — runs all 3 engines on every day, writes results to `verify_algo_match_results.csv`
+- `_check_chart.py`, `_run_fast_test.py` — quick test/debug scripts
+
+### Deleted in rework:
+- `TradingAlgo.py` — replaced by TradingAlgoFast.py
+- `RunAllDays.py`, `RunFullDataSet.py` — replaced by Backtest2Year.py
+- All `debug_*.py` files
 
 ## Data
-- Historical CSVs: `~/Desktop/2YearsData/930_1000/CBOT_MINI_YM1_YYYY-MM-DD.csv`
+- Full day CSVs: `~/Desktop/2YearsData/full_day/CBOT_MINI_YM1_YYYY-MM-DD.csv` (664 days, Jul 2023–Apr 2026)
+- 9:30-10:30 CSVs: `~/Desktop/2YearsData/930_1000/`
+- 9:30-11:30 CSVs: `~/Desktop/2YearsData/930_1130/`
 - Live session data: `~/Desktop/IB_Live/tracking/` and `~/Desktop/IB_Live/charts/`
 - Sim screenshots: `SIM/` folder in workspace
 
@@ -90,3 +111,21 @@ All February 2026 days complete. User to capture more examples.
 - Paper: port 4002
 - Live: port 4001 (needed for historical data beyond a few days)
 - Contract: YMH6 (March 2026), rolls to YMM6 (June 2026) around March 2026
+
+## Performance Notes
+- `run_trading_algo_fast` on a full day (1380 bars): ~225ms after JIT warmup
+- Backtest full day 664 days: ~4.5 minutes
+- Backtest quick mode (9:30-10:30): ~35 seconds
+- Bottleneck is O(n²) trendline fitting — refits from scratch every bar. Cannot be easily cached without changing signal accuracy.
+- Numba JIT compiles: `_fit_trendlines_nb`, `_compute_rays_nb`, `_run_signals_nb`
+
+## Session Log
+### 2026-04-20
+- Consolidated codebase: TradingAlgoFast.py is now the single engine
+- Deleted TradingAlgo.py, RunAllDays.py, RunFullDataSet.py, all debug scripts
+- Added `enable_chart` toggle to IBDataBridge
+- Added `--quick` flag to Backtest2Year.py
+- Compiled ray computation and signal detection into Numba JIT functions
+- Fixed ray start price bug in plotFigure rendering
+- Full day backtest run: 664 days, +87.8 pts/day at 10:30, 69.9% win rate
+- Git branch: connect-the-highs
