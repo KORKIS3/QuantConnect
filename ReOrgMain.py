@@ -16,7 +16,7 @@ from typing import Optional
 import pandas as pd
 
 from RunFullDataSet import _load_csv_as_df
-from TradingAlgo import run_trading_algo
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo
 from Plotter import plot_results
 from plotFigure import ChartPlotter
 

@@ -21,9 +21,151 @@ except ImportError:
         if len(args) == 1 and callable(args[0]): return args[0]
         return decorator
 
-from TradingAlgo import AlgoConfig, _display_angle_from_slope, _build_signals_frame
-
 _EST = pytz.timezone("US/Eastern")
+
+
+# ---------------------------------------------------------------------------
+# AlgoConfig — single source of truth (moved here from TradingAlgo.py)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+
+@dataclass
+class AlgoConfig:
+    """Parameters that define a trading algorithm scenario."""
+    orange_angle: float = 2.5
+    yellow_angle: float = 2.5
+    purple_angle: float = 45.0
+    blue_angle: float = 45.0
+    steep_angle_threshold: float = 45.0
+    proximity_points: float = 50.0
+    warmup_minutes: Optional[int] = None
+    min_reversal_minutes: int = 10
+    max_loss_per_trade: float = 0.0
+    confirmation_bars: int = 0
+    spike_profit_pts: float = 100.0
+    spike_profit_bars: int = 5
+    wm_shield_distance: float = 12.0
+    wm_tolerance: float = 12.0
+    wm_min_touches: int = 4
+    wm_min_span: float = 15.0
+    wm_lookback: int = 30
+    partial_tp_pts: float = 50.0
+    num_contracts: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _display_angle_from_slope(slope: float, x_per_unit: float = 1.0, y_per_unit: float = 1.0) -> float:
+    """Return the visual angle in degrees of a ray given its slope."""
+    return float(abs(np.rad2deg(np.arctan(abs(slope) * x_per_unit / y_per_unit))))
+
+
+def _build_signals_frame(
+    data: pd.DataFrame,
+    buy_signals: Dict,
+    sell_signals: Dict,
+    trading_halted: bool,
+    halt_time,
+    liquidation_timestamps: Optional[set] = None,
+) -> pd.DataFrame:
+    """Construct a per-minute DataFrame with signals and cumulative P/L."""
+    df = data.copy()
+    liq_ts = liquidation_timestamps or set()
+
+    df["signal"] = ""
+    df["buy_price"] = pd.NA
+    df["sell_price"] = pd.NA
+    df["is_liquidation"] = False
+
+    for ts, price in buy_signals.items():
+        if ts in df.index:
+            df.at[ts, "signal"] = "BUY"
+            df.at[ts, "buy_price"] = float(price)
+            if ts in liq_ts:
+                df.at[ts, "is_liquidation"] = True
+
+    for ts, price in sell_signals.items():
+        if ts in df.index:
+            df.at[ts, "signal"] = "SELL"
+            df.at[ts, "sell_price"] = float(price)
+            if ts in liq_ts:
+                df.at[ts, "is_liquidation"] = True
+
+    position = "flat"
+    entry_price: Optional[float] = None
+    cumulative_realized_pl: float = 0.0
+    positions = []
+    pls = []
+
+    for ts in df.index:
+        if trading_halted and halt_time is not None and ts > halt_time:
+            positions.append("flat")
+            pls.append(cumulative_realized_pl)
+            continue
+
+        is_buy  = ts in buy_signals
+        is_sell = ts in sell_signals
+        is_liq  = ts in liq_ts
+
+        if is_buy:
+            buy_price = float(buy_signals[ts])
+            if position == "short" and entry_price is not None:
+                cumulative_realized_pl += entry_price - buy_price
+            position   = "flat" if is_liq else "long"
+            entry_price = None  if is_liq else buy_price
+
+        if is_sell:
+            sell_price = float(sell_signals[ts])
+            if position == "long" and entry_price is not None:
+                cumulative_realized_pl += sell_price - entry_price
+            position   = "flat"  if is_liq else "short"
+            entry_price = None   if is_liq else sell_price
+
+        current_close = float(df.loc[ts, "Close"])
+        unrealized = 0.0
+        if position == "long"  and entry_price is not None:
+            unrealized = current_close - entry_price
+        elif position == "short" and entry_price is not None:
+            unrealized = entry_price - current_close
+
+        positions.append(position)
+        pls.append(cumulative_realized_pl + unrealized)
+
+    df["position"] = positions
+    df["pl"] = pls
+    return df
+
+
+def _find_wm_clusters(values, times, tolerance=12.0, min_touches=4, min_span_minutes=15.0):
+    """Find price clusters where multiple bar lows/highs land within tolerance pts."""
+    if len(values) < min_touches:
+        return []
+    indexed = sorted(zip(values, times), key=lambda x: x[0])
+    clusters = []
+    used = set()
+    for i in range(len(indexed)):
+        if i in used:
+            continue
+        base = indexed[i][0]
+        group = [(indexed[i][0], indexed[i][1])]
+        used.add(i)
+        for j in range(i + 1, len(indexed)):
+            if j in used:
+                continue
+            if abs(indexed[j][0] - base) <= tolerance:
+                group.append((indexed[j][0], indexed[j][1]))
+                used.add(j)
+            elif indexed[j][0] - base > tolerance:
+                break
+        if len(group) >= min_touches:
+            touch_times = sorted([g[1] for g in group])
+            span = (touch_times[-1] - touch_times[0]).total_seconds() / 60
+            if span >= min_span_minutes:
+                clusters.append((float(np.mean([g[0] for g in group])), len(group)))
+    return clusters
 
 
 # --- Numba-compiled trendline fitting (exact port of TrendLineAutomation.py) ---
@@ -97,8 +239,6 @@ def _fit_trendlines_nb(high, low, close):
     s_slope, s_int = _optimize_slope_nb(True, lower_pivot, slope, low)
     r_slope, r_int = _optimize_slope_nb(False, upper_pivot, slope, high)
     return s_slope, s_int, r_slope, r_int
-
-_EST = pytz.timezone("US/Eastern")
 
 
 def run_trading_algo_fast(

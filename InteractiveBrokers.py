@@ -41,7 +41,7 @@ import pytz
 from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
 from openpyxl import Workbook
 
-from TradingAlgo import AlgoConfig, run_trading_algo
+from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
 from Emailer import send_session_summary
@@ -224,6 +224,7 @@ class IBDataBridge:
         start_time: str = "09:30",
         end_time: str = "09:35",
         show_plot: bool = True,
+        enable_chart: bool = True,
         tracking_root: Optional[str] = None,
         image_root: Optional[str] = None,
         session_duration_minutes: int = 105,
@@ -241,6 +242,7 @@ class IBDataBridge:
         self.start_time = start_time
         self.end_time = end_time
         self.show_plot = show_plot
+        self.enable_chart = enable_chart  # set False to run headless (no matplotlib window)
         self._session_duration_minutes = session_duration_minutes
         self.tracking_root = tracking_root or os.path.join(_IB_LIVE_ROOT, "tracking")
         self.image_root    = image_root    or os.path.join(_IB_LIVE_ROOT, "charts")
@@ -446,8 +448,9 @@ class IBDataBridge:
 
     def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> None:
         """Resample bars to 1-min, run the algo, and refresh the live chart window."""
-        if not self.show_plot or not self._session_bars:
-            log.info("[LiveChart] skipped — show_plot=%s  bars=%d", self.show_plot, len(self._session_bars))
+        if not self.enable_chart or not self.show_plot or not self._session_bars:
+            log.info("[LiveChart] skipped — enable_chart=%s  show_plot=%s  bars=%d",
+                     self.enable_chart, self.show_plot, len(self._session_bars))
             return
 
         minute_df = self._resample_to_minutes(filter_to_session=filter_to_session, lookback_minutes=lookback_minutes)

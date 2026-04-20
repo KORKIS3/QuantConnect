@@ -1,6 +1,6 @@
 import pandas as pd, pytz
 from ib_insync import IB, Future
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 
 est = pytz.timezone("US/Eastern")
 TARGET = "2026-02-23"
