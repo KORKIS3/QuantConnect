@@ -199,80 +199,94 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True, partial_t
     return tpls if tpls else None
 
 
-def run_backtest(max_days=0):
-    csv_files = sorted([f for f in os.listdir(_DATA_ROOT)
-                        if f.startswith("CBOT_MINI_YM1_") and f.endswith(".csv")])
-    if max_days > 0: csv_files = csv_files[-max_days:]
-    print(f"\nRunning backtest on {len(csv_files)} days ...\n")
-
-    # PROVEN: min_reversal=0, post-hoc 10-min filter
+def _process_day(fname, quick=False):
+    """Process a single day — runs in a worker process."""
+    target_date = fname.replace("CBOT_MINI_YM1_", "").replace(".csv", "")
+    fpath = os.path.join(_DATA_ROOT, fname)
     config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0,
                         proximity_points=15.0, min_reversal_minutes=0, max_loss_per_trade=0)
+    all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
+    result = {et: None for et in all_end_times}
+    try:
+        df = pd.read_csv(fpath, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        if len(df) < 10:
+            return target_date, result
 
-    all_end_times = DAY_END_TIMES + NIGHT_END_TIMES
-    totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[],"session":""}
-              for et in all_end_times}
-    for et in DAY_END_TIMES: totals[et]["session"] = "DAY"
-    for et in NIGHT_END_TIMES: totals[et]["session"] = "NIGHT"
-    days_done = 0
-
-    for fname in csv_files:
-        target_date = fname.replace("CBOT_MINI_YM1_","").replace(".csv","")
-        fpath = os.path.join(_DATA_ROOT, fname)
-        try:
-            df = pd.read_csv(fpath, index_col=0, parse_dates=True)
-            df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
-            if len(df) < 10: days_done += 1; continue
-        except: days_done += 1; continue
-
-        # === DAY SESSION: 9:30-17:00 (fresh start) ===
+        # Day session — quick mode only runs to 10:30
         day_start = pd.Timestamp(f"{target_date} 09:30", tz=_EST)
-        day_end   = pd.Timestamp(f"{target_date} 16:59", tz=_EST)
+        day_end   = pd.Timestamp(f"{target_date} 10:30", tz=_EST) if quick else pd.Timestamp(f"{target_date} 16:59", tz=_EST)
         day_data  = df[(df.index >= day_start) & (df.index <= day_end)]
-
+        end_str   = "10:30" if quick else "17:00"
+        end_times = ["10:30"] if quick else DAY_END_TIMES
         if len(day_data) >= 15:
             try:
-                day_algo = run_trading_algo_fast(day_data, target_date, "09:30", "17:00", config=config)
-                for et in DAY_END_TIMES:
+                day_algo = run_trading_algo_fast(day_data, target_date, "09:30", end_str, config=config)
+                for et in end_times:
                     end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
                     tpls = _filter_and_calc_pl(day_algo, day_start, end_ts, partial_tp_pts=50)
                     if tpls:
-                        day_pl = sum(tpls)
-                        totals[et]["trades"] += len(tpls)
-                        totals[et]["pl"] += day_pl
-                        totals[et]["winners"] += sum(1 for p in tpls if p > 0)
-                        totals[et]["losers"] += sum(1 for p in tpls if p <= 0)
-                        totals[et]["daily_pls"].append(day_pl)
-            except: pass
+                        result[et] = tpls
+            except Exception:
+                pass
 
-        # === OVERNIGHT SESSION: 18:00 prev day - 09:00 this day (fresh start) ===
-        night_start = pd.Timestamp(f"{target_date} 18:00", tz=_EST) - pd.Timedelta(days=1)
-        night_end   = pd.Timestamp(f"{target_date} 09:00", tz=_EST)
-        night_data  = df[(df.index >= night_start) & (df.index <= night_end)]
+        if not quick:
+            # Overnight session
+            night_start = pd.Timestamp(f"{target_date} 18:00", tz=_EST) - pd.Timedelta(days=1)
+            night_end   = pd.Timestamp(f"{target_date} 09:00", tz=_EST)
+            night_data  = df[(df.index >= night_start) & (df.index <= night_end)]
+            if len(night_data) >= 15:
+                try:
+                    night_algo = run_trading_algo_fast(night_data, target_date, "18:00", "09:00", config=config)
+                    for et in NIGHT_END_TIMES:
+                        h = int(et.split(":")[0])
+                        end_ts = (pd.Timestamp(f"{target_date} {et}", tz=_EST) - pd.Timedelta(days=1)
+                                  if h >= 18 else pd.Timestamp(f"{target_date} {et}", tz=_EST))
+                        tpls = _filter_and_calc_pl(night_algo, night_start, end_ts, use_wm_shield=False)
+                        if tpls:
+                            result[et] = tpls
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return target_date, result
 
-        if len(night_data) >= 15:
-            try:
-                night_algo = run_trading_algo_fast(night_data, target_date, "18:00", "09:00", config=config)
-                for et in NIGHT_END_TIMES:
-                    h = int(et.split(":")[0])
-                    if h >= 18:
-                        end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST) - pd.Timedelta(days=1)
-                    else:
-                        end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _filter_and_calc_pl(night_algo, night_start, end_ts, use_wm_shield=False)
-                    if tpls:
-                        day_pl = sum(tpls)
-                        totals[et]["trades"] += len(tpls)
-                        totals[et]["pl"] += day_pl
-                        totals[et]["winners"] += sum(1 for p in tpls if p > 0)
-                        totals[et]["losers"] += sum(1 for p in tpls if p <= 0)
-                        totals[et]["daily_pls"].append(day_pl)
-            except: pass
 
-        days_done += 1
-        print(f"  [{days_done}/{len(csv_files)}] {int(days_done/len(csv_files)*100)}%", end="\r")
+def run_backtest(max_days=0, quick=False):
+    csv_files = sorted([f for f in os.listdir(_DATA_ROOT)
+                        if f.startswith("CBOT_MINI_YM1_") and f.endswith(".csv")])
+    if max_days > 0: csv_files = csv_files[-max_days:]
+    total = len(csv_files)
+    t_start = time.time()
+    mode = "quick 9:30-10:30 only" if quick else "full day + overnight"
+    print(f"\nRunning backtest on {total} days ({mode}) ...\n")
 
-    print(f"\nDays processed: {days_done}")
+    all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
+    totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[],"session":""}
+              for et in all_end_times}
+    for et in DAY_END_TIMES:
+        if et in totals: totals[et]["session"] = "DAY"
+    for et in NIGHT_END_TIMES:
+        if et in totals: totals[et]["session"] = "NIGHT"
+
+    done = 0
+    for fname in csv_files:
+        done += 1
+        print(f"  [{done}/{total}] {int(done/total*100)}%", end="\r")
+        try:
+            _, result = _process_day(fname, quick)
+        except Exception:
+            continue
+        for et, tpls in result.items():
+            if tpls:
+                day_pl = sum(tpls)
+                totals[et]["trades"]    += len(tpls)
+                totals[et]["pl"]        += day_pl
+                totals[et]["winners"]   += sum(1 for p in tpls if p > 0)
+                totals[et]["losers"]    += sum(1 for p in tpls if p <= 0)
+                totals[et]["daily_pls"].append(day_pl)
+
+    print(f"\nDays processed: {done}  ({time.time()-t_start:.1f}s)")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
     print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars) + wm shield 12pts\n")
 
@@ -286,14 +300,15 @@ def run_backtest(max_days=0):
         usd = t["pl"]*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
         print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
 
-    print(f"\n=== OVERNIGHT SESSION (18:00 start, 2c no partial TP) ===")
-    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
-    print("-" * 80)
-    for et in NIGHT_END_TIMES:
-        t = totals[et]
-        tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
-        usd = t["pl"]*_CONTRACTS*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
-        print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
+    if NIGHT_END_TIMES[0] in totals:
+        print(f"\n=== OVERNIGHT SESSION (18:00 start, 2c no partial TP) ===")
+        print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
+        print("-" * 80)
+        for et in NIGHT_END_TIMES:
+            t = totals[et]
+            tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
+            usd = t["pl"]*_CONTRACTS*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
+            print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
     print()
 
 
@@ -302,6 +317,7 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=4001)
     p.add_argument("--skip-download", action="store_true", dest="skip_download")
     p.add_argument("--max-days", type=int, default=0, dest="max_days")
+    p.add_argument("--quick", action="store_true", help="Only run 9:30-10:30 day session (fast mode)")
     args = p.parse_args()
     if not args.skip_download: download_all(args.port)
-    run_backtest(max_days=args.max_days)
+    run_backtest(max_days=args.max_days, quick=args.quick)

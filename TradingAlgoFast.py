@@ -241,6 +241,204 @@ def _fit_trendlines_nb(high, low, close):
     return s_slope, s_int, r_slope, r_int
 
 
+# ---------------------------------------------------------------------------
+# Numba-compiled signal detection loop
+# ---------------------------------------------------------------------------
+# Position encoding: 0=flat, 1=long, 2=short
+
+@jit(nopython=True, cache=True)
+def _run_signals_nb(
+    n, cutoff_idx,
+    closes_arr, highs_arr, lows_arr, times_num,
+    orange_vals, yellow_vals, purple_vals, blue_vals,
+    orange_slope_val, yellow_slope_val,
+    purple_slopes, blue_slopes,
+    magenta_vals, magenta_slopes,
+    lime_vals, lime_slopes_arr,
+    x_per_unit, y_per_unit,
+    steep_angle_threshold, proximity_points,
+    min_reversal_minutes, confirmation_bars,
+):
+    """Pure numpy signal detection — returns parallel arrays of signals."""
+    sig_type  = np.zeros(n, dtype=np.int8)
+    sig_price = np.zeros(n, dtype=np.float64)
+    sig_liq   = np.zeros(n, dtype=np.bool_)
+
+    pos = 0  # 0=flat, 1=long, 2=short
+    entry_price = 0.0
+    entry_time_num = 0.0
+    session_pl = 0.0
+    pending_buy  = False
+    pending_sell = False
+    pending_ray_val = 0.0
+    min_per_unit = 1.0 / (24.0 * 60.0)
+
+    for i in range(max(cutoff_idx, 3), n):
+        close      = closes_arr[i]
+        prev_close = closes_arr[i - 1]
+        prev_orange = orange_vals[i - 1]
+        prev_yellow = yellow_vals[i - 1]
+        prev_purple = purple_vals[i - 1]
+        prev_blue   = blue_vals[i - 1]
+        _dt = times_num[i] - times_num[i - 1]
+        curr_orange = prev_orange + orange_slope_val * _dt
+        curr_yellow = prev_yellow + yellow_slope_val * _dt
+        prev_purple_slope = purple_slopes[i - 1]
+        prev_blue_slope   = blue_slopes[i - 1]
+        liquidated = False
+        is_last = (i == n - 1)
+
+        # --- Trailing stop v3 ---
+        if pos != 0 and i >= 5:
+            unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
+            if unrealized >= 75.0:
+                has_hh = False; conf_price = 0.0; conf_time = 0.0
+                start_j = max(0, i - 10)
+                if pos == 1 and i >= 4:
+                    for k in range(i, start_j, -1):
+                        if k >= 2 and highs_arr[k] > highs_arr[k - 2]:
+                            mid_low = lows_arr[k - 1]
+                            if highs_arr[k] - mid_low >= 30.0:
+                                has_hh = True; conf_price = mid_low; conf_time = times_num[k - 1]; break
+                elif pos == 2 and i >= 4:
+                    for k in range(i, start_j, -1):
+                        if k >= 2 and lows_arr[k] < lows_arr[k - 2]:
+                            mid_high = highs_arr[k - 1]
+                            if mid_high - lows_arr[k] >= 30.0:
+                                has_hh = True; conf_price = mid_high; conf_time = times_num[k - 1]; break
+
+                trail_angle = 60.0 if (has_hh and unrealized >= 150.0) else (50.0 if has_hh else 40.0)
+                trailing_slope = np.tan(np.deg2rad(trail_angle)) * (y_per_unit / x_per_unit)
+
+                anchor_p = conf_price; anchor_t = conf_time
+                if not has_hh:
+                    anchor_p = -1e30 if pos == 1 else 1e30; anchor_t = 0.0; found = False
+                    for j in range(max(1, i - 15), i):
+                        if j >= n - 1: continue
+                        if pos == 1:
+                            lo = lows_arr[j]
+                            if lows_arr[j-1] - lo >= 15.0 and lows_arr[j+1] - lo >= 15.0:
+                                if lo > anchor_p: anchor_p = lo; anchor_t = times_num[j]; found = True
+                        else:
+                            hi = highs_arr[j]
+                            if hi - highs_arr[j-1] >= 15.0 and hi - highs_arr[j+1] >= 15.0:
+                                if hi < anchor_p: anchor_p = hi; anchor_t = times_num[j]; found = True
+                    if not found: anchor_p = -1e30
+
+                if anchor_p > -1e29 and anchor_t > 0.0:
+                    t_diff = times_num[i] - anchor_t
+                    if t_diff > 0.0:
+                        if pos == 1:
+                            if close < anchor_p + trailing_slope * t_diff:
+                                session_pl += close - entry_price
+                                sig_type[i] = 2; sig_price[i] = close; sig_liq[i] = True
+                                pos = 0; entry_price = 0.0; entry_time_num = 0.0; liquidated = True
+                        else:
+                            if close > anchor_p - trailing_slope * t_diff:
+                                session_pl += entry_price - close
+                                sig_type[i] = 1; sig_price[i] = close; sig_liq[i] = True
+                                pos = 0; entry_price = 0.0; entry_time_num = 0.0; liquidated = True
+
+        # Reversal guard
+        mins_since = (times_num[i] - entry_time_num) / min_per_unit if entry_time_num > 0.0 else 9999.0
+        orange_cross_buy  = prev_close <= prev_orange and close > prev_orange
+        yellow_cross_sell = prev_close >= prev_yellow and close < prev_yellow
+        safety_override   = (pos == 2 and orange_cross_buy) or (pos == 1 and yellow_cross_sell)
+        reversal_blocked  = min_reversal_minutes > 0 and mins_since < min_reversal_minutes and not safety_override
+
+        # --- BUY signals ---
+        if pos != 1 and sig_type[i] == 0 and not liquidated:
+            if pos == 2 and reversal_blocked:
+                pending_buy = False
+            else:
+                buy_triggered = False
+                if confirmation_bars >= 1 and pending_buy:
+                    buy_triggered = close > pending_ray_val
+                    pending_buy = False
+                elif confirmation_bars >= 1:
+                    new_cross = False
+                    if prev_close <= prev_orange and close > prev_orange:
+                        new_cross = True; pending_ray_val = prev_orange
+                    if not new_cross:
+                        pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                        if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
+                            if abs(close - curr_orange) > proximity_points:
+                                new_cross = True; pending_ray_val = prev_purple
+                    if not new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
+                        pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
+                        ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                        if ma < steep_angle_threshold and prev_close <= pm and close > pm:
+                            if abs(close - curr_orange) > proximity_points:
+                                new_cross = True; pending_ray_val = pm
+                    if new_cross: pending_buy = True; pending_sell = False
+                else:
+                    if prev_close <= prev_orange and close > prev_orange:
+                        buy_triggered = True
+                    if not buy_triggered:
+                        pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                        if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
+                            if abs(close - curr_orange) > proximity_points:
+                                buy_triggered = True
+                    if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
+                        pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
+                        ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                        if ma < steep_angle_threshold and prev_close <= pm and close > pm:
+                            if abs(close - curr_orange) > proximity_points:
+                                buy_triggered = True
+                if buy_triggered:
+                    if pos == 2: session_pl += entry_price - close
+                    sig_type[i] = 1; sig_price[i] = close
+                    if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]
+
+        # --- SELL signals ---
+        if pos != 2 and sig_type[i] == 0 and not liquidated:
+            if pos == 1 and reversal_blocked:
+                pending_sell = False
+            else:
+                sell_triggered = False
+                if confirmation_bars >= 1 and pending_sell:
+                    sell_triggered = close < pending_ray_val
+                    pending_sell = False
+                elif confirmation_bars >= 1:
+                    new_cross = False
+                    if prev_close >= prev_yellow and close < prev_yellow:
+                        new_cross = True; pending_ray_val = prev_yellow
+                    if not new_cross:
+                        ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                        if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
+                            if abs(close - curr_yellow) > proximity_points:
+                                new_cross = True; pending_ray_val = prev_blue
+                    if not new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
+                        pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
+                        la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                        if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
+                            if abs(close - curr_yellow) > proximity_points:
+                                new_cross = True; pending_ray_val = pl2
+                    if new_cross: pending_sell = True; pending_buy = False
+                else:
+                    if prev_close >= prev_yellow and close < prev_yellow:
+                        sell_triggered = True
+                    if not sell_triggered:
+                        ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                        if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
+                            if abs(close - curr_yellow) > proximity_points:
+                                sell_triggered = True
+                    if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
+                        pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
+                        la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                        if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
+                            if abs(close - curr_yellow) > proximity_points:
+                                sell_triggered = True
+                if sell_triggered:
+                    if pos == 1: session_pl += close - entry_price
+                    sig_type[i] = 2; sig_price[i] = close
+                    if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]
+
+    return sig_type, sig_price, sig_liq
+
+
 def run_trading_algo_fast(
     data: pd.DataFrame,
     target_date: str,
@@ -438,233 +636,36 @@ def run_trading_algo_fast(
             lime_vals[i] = lime_anchor_price + lime_slope * (times_num[i] - times_num[lime_anchor_idx])
             lime_slopes_arr[i] = lime_slope
 
-    # --- Signal detection using pre-computed arrays ---
+    # --- Signal detection — Numba compiled ---
+    sig_type, sig_price, sig_liq = _run_signals_nb(
+        n, cutoff_idx,
+        closes_arr, highs_arr, lows_arr, times_num,
+        orange_vals, yellow_vals, purple_vals, blue_vals,
+        orange_slope_val, yellow_slope_val,
+        purple_slopes, blue_slopes,
+        magenta_vals, magenta_slopes,
+        lime_vals, lime_slopes_arr,
+        x_per_unit, y_per_unit,
+        cfg.steep_angle_threshold, cfg.proximity_points,
+        cfg.min_reversal_minutes, cfg.confirmation_bars,
+    )
+
+    # Convert numpy signal arrays back to dicts for _build_signals_frame
     buy_signals: Dict = {}
     sell_signals: Dict = {}
     liquidation_timestamps: set = set()
-    session_realized_pl = 0.0
-    temp_position = "flat"
-    temp_entry_price = None
-    temp_entry_time = None
-    # Confirmation bar state: pending signal waits for next bar confirmation
-    _pending_buy = False   # True if a BUY cross happened on the previous bar
-    _pending_sell = False  # True if a SELL cross happened on the previous bar
-    _pending_ray_val = 0.0 # The ray value the close must stay beyond
-
-    for i in range(max(cutoff_idx, 3), n):
-        time = times_idx[i]
-        current_close = closes_arr[i]
-        prev_close    = closes_arr[i-1]
-
-        # Ray values: signal check uses values from bar i-1's update
-        prev_orange = orange_vals[i-1]
-        prev_yellow = yellow_vals[i-1]
-        prev_purple = purple_vals[i-1]
-        prev_blue   = blue_vals[i-1]
-        # curr_orange/curr_yellow: project from bar i-1's state to bar i's time
-        # (matches original which computes these BEFORE update_all_rays at bar i)
-        _dt = times_num[i] - times_num[i-1]
-        curr_orange = orange_vals[i-1] + orange_slope_val * _dt
-        curr_yellow = yellow_vals[i-1] + yellow_slope_val * _dt
-
-        # Previous slopes for angle calculation
-        prev_purple_slope = purple_slopes[i-1] if i > 0 else 0.0
-        prev_blue_slope   = blue_slopes[i-1] if i > 0 else 0.0
-
-        liquidated_this_bar = False
-        is_last_bar = (i == n - 1)
-
-        # --- Trailing stop v3 ---
-        if not liquidated_this_bar and temp_position != "flat" and temp_entry_price is not None and i >= 5:
-            if temp_position == "long":
-                unrealized_profit = current_close - temp_entry_price
-            else:
-                unrealized_profit = temp_entry_price - current_close
-
-            if unrealized_profit >= 75:
-                has_hh = False; conf_price = None; conf_time = None
-                start_j = max(0, i - 10)
-                if temp_position == "long" and i >= 4:
-                    for k in range(i, start_j + 1, -1):
-                        if k >= 2 and highs_arr[k] > highs_arr[k-2]:
-                            mid_low = lows_arr[k-1]
-                            if highs_arr[k] - mid_low >= 30:
-                                has_hh = True; conf_price = mid_low; conf_time = times_num[k-1]; break
-                elif temp_position == "short" and i >= 4:
-                    for k in range(i, start_j + 1, -1):
-                        if k >= 2 and lows_arr[k] < lows_arr[k-2]:
-                            mid_high = highs_arr[k-1]
-                            if mid_high - lows_arr[k] >= 30:
-                                has_hh = True; conf_price = mid_high; conf_time = times_num[k-1]; break
-
-                if has_hh and unrealized_profit >= 150: trail_angle = 60.0
-                elif has_hh: trail_angle = 50.0
-                else: trail_angle = 40.0
-                trailing_slope = np.tan(np.deg2rad(trail_angle)) * (y_per_unit / x_per_unit)
-
-                anchor_p = conf_price; anchor_t = conf_time
-                if anchor_p is None:
-                    SWING_MIN = 50.0
-                    for j in range(max(1, i-15), i):
-                        if j >= n - 1: continue
-                        if temp_position == "long":
-                            lo = lows_arr[j]
-                            if lows_arr[j-1] - lo >= SWING_MIN * 0.3 and lows_arr[j+1] - lo >= SWING_MIN * 0.3:
-                                if anchor_p is None or lo > anchor_p:
-                                    anchor_p = lo; anchor_t = times_num[j]
-                        else:
-                            hi = highs_arr[j]
-                            if hi - highs_arr[j-1] >= SWING_MIN * 0.3 and hi - highs_arr[j+1] >= SWING_MIN * 0.3:
-                                if anchor_p is None or hi < anchor_p:
-                                    anchor_p = hi; anchor_t = times_num[j]
-
-                if anchor_p is not None and anchor_t is not None:
-                    t_diff = times_num[i] - anchor_t
-                    if t_diff > 0:
-                        if temp_position == "long":
-                            stop_level = anchor_p + trailing_slope * t_diff
-                            if current_close < stop_level:
-                                session_realized_pl += current_close - temp_entry_price
-                                sell_signals[time] = current_close
-                                liquidation_timestamps.add(time)
-                                temp_position = "flat"; temp_entry_price = None; temp_entry_time = None
-                                liquidated_this_bar = True
-                        else:
-                            stop_level = anchor_p - trailing_slope * t_diff
-                            if current_close > stop_level:
-                                session_realized_pl += temp_entry_price - current_close
-                                buy_signals[time] = current_close
-                                liquidation_timestamps.add(time)
-                                temp_position = "flat"; temp_entry_price = None; temp_entry_time = None
-                                liquidated_this_bar = True
-
-        # Reversal guard
-        mins_since_entry = (time - temp_entry_time).total_seconds() / 60 if temp_entry_time else 999
-        orange_cross_buy  = prev_close <= prev_orange and current_close > prev_orange
-        yellow_cross_sell = prev_close >= prev_yellow and current_close < prev_yellow
-        safety_override = ((temp_position == "short" and orange_cross_buy) or
-                           (temp_position == "long" and yellow_cross_sell))
-        reversal_blocked = (cfg.min_reversal_minutes > 0 and
-                            mins_since_entry < cfg.min_reversal_minutes and
-                            not safety_override)
-
-        # BUY signals
-        if temp_position != "long" and time not in buy_signals and not liquidated_this_bar:
-            if temp_position == "short" and reversal_blocked:
-                _pending_buy = False
-            else:
-                buy_triggered = False
-
-                # Check confirmation bar: if pending from last bar, confirm now
-                if cfg.confirmation_bars >= 1 and _pending_buy:
-                    if current_close > _pending_ray_val:
-                        buy_triggered = True
-                    _pending_buy = False
-                elif cfg.confirmation_bars >= 1:
-                    # Check for new cross — set pending instead of triggering
-                    _new_cross = False
-                    if prev_close <= prev_orange and current_close > prev_orange:
-                        _new_cross = True; _pending_ray_val = prev_orange
-                    if not _new_cross:
-                        purple_angle = _display_angle_from_slope(prev_purple_slope, x_per_unit, y_per_unit)
-                        if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
-                            if abs(current_close - curr_orange) > cfg.proximity_points:
-                                _new_cross = True; _pending_ray_val = prev_purple
-                    if not _new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
-                        prev_mag = magenta_vals[i-1]
-                        _mag_slope = magenta_slopes[i-1]
-                        mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
-                        if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
-                            if abs(current_close - curr_orange) > cfg.proximity_points:
-                                _new_cross = True; _pending_ray_val = prev_mag
-                    if _new_cross:
-                        _pending_buy = True; _pending_sell = False
-                else:
-                    # No confirmation — original behavior
-                    if prev_close <= prev_orange and current_close > prev_orange:
-                        buy_triggered = True
-                    if not buy_triggered:
-                        purple_angle = _display_angle_from_slope(prev_purple_slope, x_per_unit, y_per_unit)
-                        if purple_angle < cfg.steep_angle_threshold and prev_close <= prev_purple and current_close > prev_purple:
-                            if abs(current_close - curr_orange) > cfg.proximity_points:
-                                buy_triggered = True
-                    if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
-                        prev_mag = magenta_vals[i-1]
-                        _mag_slope = magenta_slopes[i-1]
-                        mag_angle = _display_angle_from_slope(_mag_slope, x_per_unit, y_per_unit) if not np.isnan(_mag_slope) else 999.0
-                        if mag_angle < cfg.steep_angle_threshold and prev_close <= prev_mag and current_close > prev_mag:
-                            if abs(current_close - curr_orange) > cfg.proximity_points:
-                                buy_triggered = True
-
-                if buy_triggered:
-                    if temp_position == "short" and temp_entry_price is not None:
-                        session_realized_pl += temp_entry_price - current_close
-                    buy_signals[time] = current_close
-                    if is_last_bar:
-                        temp_position = "flat"; temp_entry_price = None; temp_entry_time = None
-                    else:
-                        temp_position = "long"; temp_entry_price = current_close; temp_entry_time = time
-
-        # SELL signals
-        if temp_position != "short" and time not in sell_signals and not liquidated_this_bar:
-            if temp_position == "long" and reversal_blocked:
-                _pending_sell = False
-            else:
-                sell_triggered = False
-
-                # Check confirmation bar: if pending from last bar, confirm now
-                if cfg.confirmation_bars >= 1 and _pending_sell:
-                    if current_close < _pending_ray_val:
-                        sell_triggered = True
-                    _pending_sell = False
-                elif cfg.confirmation_bars >= 1:
-                    # Check for new cross — set pending instead of triggering
-                    _new_cross = False
-                    if prev_close >= prev_yellow and current_close < prev_yellow:
-                        _new_cross = True; _pending_ray_val = prev_yellow
-                    if not _new_cross:
-                        blue_angle = _display_angle_from_slope(prev_blue_slope, x_per_unit, y_per_unit)
-                        if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
-                            if abs(current_close - curr_yellow) > cfg.proximity_points:
-                                _new_cross = True; _pending_ray_val = prev_blue
-                    if not _new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
-                        prev_lime = lime_vals[i-1]
-                        _lime_slope = lime_slopes_arr[i-1]
-                        lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
-                        if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
-                            if abs(current_close - curr_yellow) > cfg.proximity_points:
-                                _new_cross = True; _pending_ray_val = prev_lime
-                    if _new_cross:
-                        _pending_sell = True; _pending_buy = False
-                else:
-                    # No confirmation — original behavior
-                    if prev_close >= prev_yellow and current_close < prev_yellow:
-                        sell_triggered = True
-                    if not sell_triggered:
-                        blue_angle = _display_angle_from_slope(prev_blue_slope, x_per_unit, y_per_unit)
-                        if blue_angle < cfg.steep_angle_threshold and prev_close >= prev_blue and current_close < prev_blue:
-                            if abs(current_close - curr_yellow) > cfg.proximity_points:
-                                sell_triggered = True
-                    if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
-                        prev_lime = lime_vals[i-1]
-                        _lime_slope = lime_slopes_arr[i-1]
-                        lime_angle = _display_angle_from_slope(_lime_slope, x_per_unit, y_per_unit) if not np.isnan(_lime_slope) else 999.0
-                        if lime_angle < cfg.steep_angle_threshold and prev_close >= prev_lime and current_close < prev_lime:
-                            if abs(current_close - curr_yellow) > cfg.proximity_points:
-                                sell_triggered = True
-
-                if sell_triggered:
-                    if temp_position == "long" and temp_entry_price is not None:
-                        session_realized_pl += current_close - temp_entry_price
-                    sell_signals[time] = current_close
-                    if is_last_bar:
-                        temp_position = "flat"; temp_entry_price = None; temp_entry_time = None
-                    else:
-                        temp_position = "short"; temp_entry_price = current_close; temp_entry_time = time
+    for i in range(n):
+        if sig_type[i] == 1:
+            buy_signals[times_idx[i]] = sig_price[i]
+            if sig_liq[i]: liquidation_timestamps.add(times_idx[i])
+        elif sig_type[i] == 2:
+            sell_signals[times_idx[i]] = sig_price[i]
+            if sig_liq[i]: liquidation_timestamps.add(times_idx[i])
 
     # Build result DataFrame (same format as original)
     trading_halted = False; halt_time = None
     result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
+
 
     result["orange_ray"] = orange_vals
     result["yellow_ray"] = yellow_vals
