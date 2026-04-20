@@ -52,6 +52,8 @@ class AlgoConfig:
     wm_lookback: int = 30
     partial_tp_pts: float = 50.0
     num_contracts: int = 2
+    first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
+    min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +435,8 @@ def _run_signals_nb(
     x_per_unit, y_per_unit,
     steep_angle_threshold, proximity_points,
     min_reversal_minutes, confirmation_bars,
+    first_entry_steep_only,
+    min_entry_angle,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -447,6 +451,7 @@ def _run_signals_nb(
     pending_sell = False
     pending_ray_val = 0.0
     min_per_unit = 1.0 / (24.0 * 60.0)
+    first_trade_done = False  # tracks if first trade of session has fired
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -521,8 +526,16 @@ def _run_signals_nb(
         safety_override   = (pos == 2 and orange_cross_buy) or (pos == 1 and yellow_cross_sell)
         reversal_blocked  = min_reversal_minutes > 0 and mins_since < min_reversal_minutes and not safety_override
 
+        # Angle readiness — for first entry, require purple or blue to be steep enough
+        if min_entry_angle > 0.0 and not first_trade_done:
+            _pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+            _ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope)   * x_per_unit / y_per_unit)))
+            angle_ready = max(_pa, _ba) >= min_entry_angle
+        else:
+            angle_ready = True
+
         # --- BUY signals ---
-        if pos != 1 and sig_type[i] == 0 and not liquidated:
+        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready:
             if pos == 2 and reversal_blocked:
                 pending_buy = False
             else:
@@ -548,7 +561,11 @@ def _run_signals_nb(
                     if new_cross: pending_buy = True; pending_sell = False
                 else:
                     if prev_close <= prev_orange and close > prev_orange:
-                        buy_triggered = True
+                        purple_ang = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                        strong_downtrend = (first_entry_steep_only and not first_trade_done and
+                                            prev_purple_slope < 0.0 and purple_ang >= steep_angle_threshold * 0.5)
+                        if not strong_downtrend:
+                            buy_triggered = True
                     if not buy_triggered:
                         pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
                         if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
@@ -564,10 +581,10 @@ def _run_signals_nb(
                     if pos == 2: session_pl += entry_price - close
                     sig_type[i] = 1; sig_price[i] = close
                     if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]
+                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True
 
         # --- SELL signals ---
-        if pos != 2 and sig_type[i] == 0 and not liquidated:
+        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
             else:
@@ -593,7 +610,11 @@ def _run_signals_nb(
                     if new_cross: pending_sell = True; pending_buy = False
                 else:
                     if prev_close >= prev_yellow and close < prev_yellow:
-                        sell_triggered = True
+                        blue_ang = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                        strong_uptrend = (first_entry_steep_only and not first_trade_done and
+                                          prev_blue_slope > 0.0 and blue_ang >= steep_angle_threshold * 0.5)
+                        if not strong_uptrend:
+                            sell_triggered = True
                     if not sell_triggered:
                         ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
                         if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
@@ -609,7 +630,7 @@ def _run_signals_nb(
                     if pos == 1: session_pl += close - entry_price
                     sig_type[i] = 2; sig_price[i] = close
                     if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]
+                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True
 
     return sig_type, sig_price, sig_liq
 
@@ -689,6 +710,8 @@ def run_trading_algo_fast(
         x_per_unit, y_per_unit,
         cfg.steep_angle_threshold, cfg.proximity_points,
         cfg.min_reversal_minutes, cfg.confirmation_bars,
+        1 if cfg.first_entry_steep_only else 0,
+        cfg.min_entry_angle,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
