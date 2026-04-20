@@ -5,7 +5,7 @@ import sys, os
 import pandas as pd, pytz
 import matplotlib
 matplotlib.use("TkAgg")
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 from Plotter import plot_results
 
 _EST = pytz.timezone("US/Eastern")

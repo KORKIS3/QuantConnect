@@ -2,7 +2,7 @@
 Compare vs baseline (both contracts held to system exit)."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST = pytz.timezone("US/Eastern")

@@ -8,7 +8,7 @@ import os
 import pandas as pd
 import pytz
 import numpy as np
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 from Backtest2Year import run_variant, calc_pl
 
 _EST        = pytz.timezone("US/Eastern")

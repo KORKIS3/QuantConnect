@@ -1,7 +1,7 @@
 """Reproduce proven results: min_reversal=0 in algo, 10-min post-hoc filter in backtest."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST = pytz.timezone("US/Eastern")

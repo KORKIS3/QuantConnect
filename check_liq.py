@@ -1,5 +1,5 @@
 import pandas as pd, pytz, os
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 est = pytz.timezone("US/Eastern")
 data_root = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "930_1130")
 files = sorted([f for f in os.listdir(data_root) if f.endswith(".csv")])

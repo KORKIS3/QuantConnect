@@ -20,7 +20,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 
 from ib_insync import IB, Future
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 from Plotter import plot_results
 
 _EST = pytz.timezone("US/Eastern")

@@ -9,7 +9,7 @@ import pandas as pd, pytz
 import matplotlib
 matplotlib.use("Agg")  # headless for saving image
 import matplotlib.pyplot as plt
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 from plotFigure import ChartPlotter
 
 _EST = pytz.timezone("US/Eastern")

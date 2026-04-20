@@ -1,7 +1,7 @@
 """Profile the original algo to find the bottleneck."""
 import cProfile, pstats, os
 import pandas as pd, pytz
-from TradingAlgo import run_trading_algo, AlgoConfig
+from TradingAlgoFast import run_trading_algo_fast as run_trading_algo, AlgoConfig
 
 est = pytz.timezone("US/Eastern")
 data_root = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")

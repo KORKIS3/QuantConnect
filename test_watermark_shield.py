@@ -4,7 +4,7 @@ Short + BUY signal → hold if high cluster within X pts above price (resistance
 Exit only when price closes through the water mark too."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST = pytz.timezone("US/Eastern")

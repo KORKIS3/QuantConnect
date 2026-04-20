@@ -6,7 +6,7 @@ B) "unrealized" — unrealized profit from entry reaches X+ pts within N bars of
 """
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST = pytz.timezone("US/Eastern")

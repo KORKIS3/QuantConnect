@@ -3,7 +3,7 @@ Baseline uses Backtest2Year._filter_and_calc_pl directly (proven correct).
 Pyramid variants add contracts on same-dir signals, close all on reversal/spike/EOD."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 import Backtest2Year as bt
 

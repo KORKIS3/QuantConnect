@@ -96,7 +96,7 @@ class ChartPlotter:
     def __init__(self, data, target_date, start_time, end_time, output_dir, batch_mode=False):
         missing = [c for c in _REQUIRED_COLS if c not in data.columns]
         if missing:
-            from TradingAlgo import run_trading_algo
+            from TradingAlgoFast import run_trading_algo_fast as run_trading_algo
             data = run_trading_algo(data, target_date, start_time, end_time)
 
         self.data = data

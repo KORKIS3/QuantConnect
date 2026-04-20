@@ -3,7 +3,7 @@ Find price clusters where 3+ bar lows or highs land within ±10 pts.
 Show where breaks of these levels would have triggered vs what the algo did."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST = pytz.timezone("US/Eastern")

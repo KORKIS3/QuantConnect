@@ -36,7 +36,7 @@ import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from TradingAlgo import AlgoConfig, run_trading_algo
+from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
 
 # ---------------------------------------------------------------------------
 # Constants shared across all tests

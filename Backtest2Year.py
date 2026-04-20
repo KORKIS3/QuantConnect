@@ -8,7 +8,7 @@ Overnight session: 18:00-09:00 (fresh start each night)
 import argparse, os, time
 import pandas as pd, pytz, numpy as np
 from datetime import date, timedelta
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 
 _EST        = pytz.timezone("US/Eastern")

@@ -3,7 +3,7 @@ Uses Backtest2Year._filter_and_calc_pl as the reference (reset entry = $1.38M).
 Then implements a clean 'hold' version that ignores same-dir signals."""
 import os
 import pandas as pd, pytz, numpy as np
-from TradingAlgo import AlgoConfig
+from TradingAlgoFast import AlgoConfig
 from TradingAlgoFast import run_trading_algo_fast
 import Backtest2Year as bt
 
