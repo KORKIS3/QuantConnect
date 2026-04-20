@@ -71,9 +71,12 @@ CFG_FAST = AlgoConfigFast(
 # ---------------------------------------------------------------------------
 
 def _load_csv(path: str, date_str: str) -> pd.DataFrame:
-    df = pd.read_csv(path, parse_dates=["Datetime"])
-    df = df.rename(columns={"Datetime": "Datetime"})
-    df = df.set_index("Datetime")
+    df = pd.read_csv(path)
+    # Support both 'time' and 'Datetime' column names
+    time_col = "time" if "time" in df.columns else "Datetime"
+    df[time_col] = pd.to_datetime(df[time_col], utc=False)
+    df = df.set_index(time_col)
+    df.index.name = "Datetime"
     if df.index.tz is None:
         df.index = df.index.tz_localize(_EST)
     else:
