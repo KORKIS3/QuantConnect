@@ -1,24 +1,64 @@
 """ReOrgMain
 
 Per-day orchestration for the YM trading workflow.
-
-This module can:
-- Load a single day's intraday CSV from the desktop folder.
-- Run the headless trading algorithm (`TradingAlgo.run_trading_algo`).
-- Optionally render and show the interactive chart via `Plotter`.
-- Optionally save a final chart image and a per-minute tracking CSV
-  without opening any interactive windows (for batch runs).
 """
 
 import os
 from typing import Optional
 
 import pandas as pd
+import pytz
 
-from RunFullDataSet import _load_csv_as_df
 from TradingAlgoFast import run_trading_algo_fast as run_trading_algo
 from Plotter import plot_results
 from plotFigure import ChartPlotter
+
+_EST = pytz.timezone("US/Eastern")
+
+
+def _load_csv_as_df(fp: str) -> pd.DataFrame:
+    """Load a YM intraday CSV and return a timezone-aware DataFrame."""
+    df = pd.read_csv(fp, index_col=0, parse_dates=True)
+    df.index = pd.to_datetime(df.index, utc=False)
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(_EST)
+    else:
+        df.index = df.index.tz_convert(_EST)
+    return df
+
+
+def _filter_window(data: pd.DataFrame, target_date: str, start_time: str, end_time: str) -> pd.DataFrame:
+    try:
+        t_start = pd.Timestamp(f"{target_date} {start_time}:00", tz=_EST)
+        t_end   = pd.Timestamp(f"{target_date} {end_time}:00", tz=_EST)
+        if data.index.tz is None:
+            data.index = data.index.tz_localize(_EST)
+        else:
+            data.index = data.index.tz_convert(_EST)
+        return data[(data.index >= t_start) & (data.index <= t_end)]
+    except Exception as e:
+        print(f"Warning: could not filter data by time window: {e}")
+        return data
+
+
+def _save_image(algo_df, target_date, start_time, end_time, image_root):
+    import matplotlib.pyplot as _plt
+    os.makedirs(image_root, exist_ok=True)
+    plotter = ChartPlotter(algo_df, target_date, start_time, end_time, image_root, batch_mode=True)
+    try:
+        plotter.create_figure()
+        plotter.update_plot(len(algo_df) - 1)
+        base = target_date or "chart"
+        img_path = os.path.join(image_root, f"{base}.jpg")
+        plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+        print(f"Saved plot image: {img_path}")
+    except Exception as exc:
+        print(f"Failed to save plot image for {target_date}: {exc}")
+    finally:
+        try:
+            _plt.close(plotter.fig)
+        except Exception:
+            pass
 
 
 def run_single_day(
@@ -30,113 +70,26 @@ def run_single_day(
     image_root: Optional[str] = None,
     tracking_root: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Run the full workflow for a single date.
-
-    Always runs the trading algorithm to produce an enriched per-minute
-    DataFrame. Optionally:
-    - `show_plot`: display the interactive chart (for manual runs).
-    - `image_root`: save a final chart image under this root directory
-      (used by RunAllDays for headless batch images).
-    - `tracking_root`: save the enriched DataFrame as a CSV in this
-      directory (per-day tracking sheet).
-    """
-
     if csv_root is None:
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        csv_root = os.path.join(desktop, "2YearsData", "930_1000")
+        csv_root = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "930_1000")
 
     csv_path = os.path.join(csv_root, f"CBOT_MINI_YM1_{target_date}.csv")
-
     print(f"Loading: {csv_path}")
     data = _load_csv_as_df(csv_path)
 
     if data is None or data.empty:
         raise ValueError(f"No intraday data found for {target_date} at {csv_path}")
 
-    # Filter data to the requested time window so that charts and the
-    # algorithm only see rows within [start_time, end_time].
-    try:
-        import pytz
-        est = pytz.timezone("US/Eastern")
-        if data.index.tz is None:
-            data.index = pd.to_datetime(data.index, errors="coerce").tz_localize(est)
-        else:
-            data.index = pd.to_datetime(data.index, errors="coerce").tz_convert(est)
-        t_start = pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
-        t_end   = pd.Timestamp(f"{target_date} {end_time}:00", tz=est)
-        data = data[(data.index >= t_start) & (data.index <= t_end)]
-    except Exception as e:
-        print(f"Warning: could not filter data by time window: {e}")
-
-    # Run trading algorithm to compute signals / P&L per minute.
+    data = _filter_window(data, target_date, start_time, end_time)
     algo_df = run_trading_algo(data, target_date, start_time, end_time)
 
-    # Optionally persist the tracking DataFrame as a CSV.
     if tracking_root is not None:
         os.makedirs(tracking_root, exist_ok=True)
-        tracking_path = os.path.join(tracking_root, f"YM_tracking_{target_date}.csv")
-        algo_df.to_csv(tracking_path)
-        print(f"Saved tracking CSV: {tracking_path}")
+        algo_df.to_csv(os.path.join(tracking_root, f"YM_tracking_{target_date}.csv"))
 
-    # Optionally save a final chart image without showing a window.
     if image_root is not None:
-        os.makedirs(image_root, exist_ok=True)
+        _save_image(algo_df, target_date, start_time, end_time, image_root)
 
-        # Use the same batch-style pattern as RunFullDataSet: create a
-        # ChartPlotter in batch_mode, step through frames, and save the
-        # final rendered figure.
-        #
-        # IMPORTANT: use the enriched algo_df (which contains the
-        # precomputed `signal`/`buy_price`/`sell_price` columns from
-        # TradingAlgo) so the batch charts exactly match the headless
-        # backtest results.
-        output_dir = image_root  # re-use as the plotter's output_dir
-        plotter = ChartPlotter(algo_df, target_date, start_time, end_time, output_dir, batch_mode=True)
-
-        try:
-            plotter.create_figure()
-            plotter.fig.canvas.draw()
-        except Exception:
-            pass
-
-        try:
-            for frame in range(len(algo_df)):
-                plotter.update_plot(frame)
-        except Exception:
-            pass
-
-        # Build a unique image path per date.
-        base_name = target_date or "chart"
-        img_name = f"{base_name}.jpg"
-        img_path = os.path.join(image_root, img_name)
-        suffix = 1
-        while os.path.exists(img_path):
-            img_name = f"{base_name}_{suffix}.jpg"
-            img_path = os.path.join(image_root, img_name)
-            suffix += 1
-
-        try:
-            final_frame = max(0, len(getattr(plotter, "data", [])) - 1)
-            plotter.current_frame = final_frame
-            plotter.update_plot(final_frame)
-            try:
-                plotter.fig.canvas.draw()
-                plotter.fig.canvas.flush_events()
-            except Exception:
-                pass
-
-            plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
-            print(f"Saved plot image: {img_path}")
-        except Exception as exc:
-            print(f"Failed to save plot image for {target_date}: {exc}")
-        finally:
-            try:
-                import matplotlib.pyplot as _plt
-                _plt.close(plotter.fig)
-            except Exception:
-                pass
-
-    # Optionally show the interactive chart (manual workflows).
     if show_plot:
         plot_results(algo_df, target_date, start_time, end_time)
 
@@ -152,115 +105,23 @@ def run_live_session(
     image_root: Optional[str] = None,
     tracking_root: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Run the full workflow on a live-streamed DataFrame.
-
-    Identical to ``run_single_day()`` but accepts a pre-built DataFrame
-    instead of loading from a CSV file.  Called by the IB live data bridge
-    (``InteractiveBrokers.IBDataBridge``) at end-of-session to render the
-    interactive chart, save a tracking CSV, and optionally save a chart image
-    -- exactly the same outputs produced by the historical back-test workflow.
-
-    Parameters
-    ----------
-    data:
-        Per-bar OHLCV DataFrame with a timezone-aware DatetimeIndex
-        (US/Eastern).  Typically the full set of bars accumulated by
-        ``IBDataBridge`` during the trading session.
-    target_date:
-        ``'YYYY-MM-DD'`` string matching the session date.
-    start_time, end_time:
-        Time-window strings used for filtering, algorithm warm-up, and
-        chart axis bounds (e.g. ``'09:30'``, ``'10:00'``).
-    show_plot:
-        Display the interactive matplotlib chart (set ``False`` for headless
-        / server runs).
-    image_root:
-        If provided, save a final chart image as a JPEG under this directory.
-    tracking_root:
-        If provided, save the enriched per-minute DataFrame as a CSV under
-        this directory.
-    """
     if data is None or data.empty:
         raise ValueError(f"No live data available for {target_date}")
 
-    # Apply the same time-window filter used by run_single_day so that only
-    # bars within [start_time, end_time] reach the algorithm.
-    try:
-        import pytz
-        est = pytz.timezone("US/Eastern")
-        if data.index.tz is None:
-            data.index = pd.to_datetime(data.index, errors="coerce").tz_localize(est)
-        else:
-            data.index = pd.to_datetime(data.index, errors="coerce").tz_convert(est)
-        t_start = pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
-        t_end   = pd.Timestamp(f"{target_date} {end_time}:00", tz=est)
-        data = data[(data.index >= t_start) & (data.index <= t_end)]
-    except Exception as e:
-        print(f"Warning: could not filter live data by time window: {e}")
+    data = _filter_window(data, target_date, start_time, end_time)
 
     if data.empty:
-        raise ValueError(
-            f"No live data in window {start_time}-{end_time} for {target_date}"
-        )
+        raise ValueError(f"No live data in window {start_time}-{end_time} for {target_date}")
 
-    # Run trading algorithm to compute signals / P&L per minute.
     algo_df = run_trading_algo(data, target_date, start_time, end_time)
 
-    # Optionally persist the tracking DataFrame as a CSV.
     if tracking_root is not None:
         os.makedirs(tracking_root, exist_ok=True)
-        tracking_path = os.path.join(tracking_root, f"YM_tracking_{target_date}.csv")
-        algo_df.to_csv(tracking_path)
-        print(f"Saved tracking CSV: {tracking_path}")
+        algo_df.to_csv(os.path.join(tracking_root, f"YM_tracking_{target_date}.csv"))
 
-    # Optionally save a final chart image without showing a window.
     if image_root is not None:
-        os.makedirs(image_root, exist_ok=True)
-        output_dir = image_root
-        plotter = ChartPlotter(
-            algo_df, target_date, start_time, end_time, output_dir, batch_mode=True
-        )
-        try:
-            plotter.create_figure()
-            plotter.fig.canvas.draw()
-        except Exception:
-            pass
-        try:
-            for frame in range(len(algo_df)):
-                plotter.update_plot(frame)
-        except Exception:
-            pass
+        _save_image(algo_df, target_date, start_time, end_time, image_root)
 
-        base_name = target_date or "chart"
-        img_name = f"{base_name}.jpg"
-        img_path = os.path.join(image_root, img_name)
-        suffix = 1
-        while os.path.exists(img_path):
-            img_name = f"{base_name}_{suffix}.jpg"
-            img_path = os.path.join(image_root, img_name)
-            suffix += 1
-
-        try:
-            final_frame = max(0, len(getattr(plotter, "data", [])) - 1)
-            plotter.current_frame = final_frame
-            plotter.update_plot(final_frame)
-            try:
-                plotter.fig.canvas.draw()
-                plotter.fig.canvas.flush_events()
-            except Exception:
-                pass
-            plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
-            print(f"Saved plot image: {img_path}")
-        except Exception as exc:
-            print(f"Failed to save plot image for {target_date}: {exc}")
-        finally:
-            try:
-                import matplotlib.pyplot as _plt
-                _plt.close(plotter.fig)
-            except Exception:
-                pass
-
-    # Optionally show the interactive chart.
     if show_plot:
         plot_results(algo_df, target_date, start_time, end_time)
 
@@ -269,15 +130,12 @@ def run_live_session(
 
 if __name__ == "__main__":
     import sys
-
     if len(sys.argv) > 1:
         arg = sys.argv[1]
-        # Support short M-D or MM-DD notation (e.g. "2-4" → "2026-02-04").
         parts = arg.split("-")
         if len(parts) == 2:
-            default_year = int(os.environ.get("TARGET_YEAR", "2026"))
-            month, day = int(parts[0]), int(parts[1])
-            target_date = f"{default_year}-{month:02d}-{day:02d}"
+            year = int(os.environ.get("TARGET_YEAR", "2026"))
+            target_date = f"{year}-{int(parts[0]):02d}-{int(parts[1]):02d}"
         else:
             target_date = arg
     else:

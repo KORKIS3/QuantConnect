@@ -684,13 +684,13 @@ def run_trading_algo_fast(
     result["blue_anchor_price"]   = b_anchor_p
     result["blue_anchor_time"]    = times_idx[b_anchor_idx]
 
-    # Ray start data
-    result["orange_ray_start_price"] = orange_vals  # simplified
+    # Ray start data — anchor price is where the ray originates, end price is where it is at session end
+    result["orange_ray_start_price"] = orange_vals[0]   # ray starts at first bar's anchor
     result["orange_ray_start_time"]  = times_idx[0]
-    result["yellow_ray_start_price"] = yellow_vals
+    result["yellow_ray_start_price"] = yellow_vals[0]
     result["yellow_ray_start_time"]  = times_idx[0]
     result["purple_ray_start_price"] = purple_start_prices
-    result["purple_ray_start_time"]  = [times_idx[0]] * n  # simplified
+    result["purple_ray_start_time"]  = [times_idx[0]] * n
     result["blue_ray_start_price"]   = blue_start_prices
     result["blue_ray_start_time"]    = [times_idx[0]] * n
 
