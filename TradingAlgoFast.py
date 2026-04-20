@@ -273,18 +273,53 @@ def _compute_rays_nb(
         yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
 
     # --- Purple/blue rays ---
+    # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
+    # Blue anchors at session low, then re-anchors at each subsequent HIGHER swing low.
+    # This keeps lines steep by shortening the window as the session progresses.
+    SWING_ANCHOR_THRESHOLD = 30.0  # min pts to qualify as a swing high/low
     purple_vals         = np.full(n, highs_arr[0])
     blue_vals           = np.full(n, lows_arr[0])
     purple_slopes       = np.zeros(n)
     blue_slopes         = np.zeros(n)
     purple_start_prices = np.full(n, highs_arr[0])
     blue_start_prices   = np.full(n, lows_arr[0])
-    p_anchor_p = highs_arr[0]; p_anchor_idx = 0
-    b_anchor_p = lows_arr[0];  b_anchor_idx = 0
+
+    # Purple: start at session high, move forward to each lower swing high
+    p_session_high = highs_arr[0]; p_session_high_idx = 0
+    p_anchor_idx = 0
+    # Blue: start at session low, move forward to each higher swing low
+    b_session_low = lows_arr[0]; b_session_low_idx = 0
+    b_anchor_idx = 0
 
     for i in range(n):
-        if highs_arr[i] > p_anchor_p: p_anchor_p = highs_arr[i]; p_anchor_idx = i
-        if lows_arr[i]  < b_anchor_p: b_anchor_p = lows_arr[i];  b_anchor_idx = i
+        # Track absolute session high/low
+        if highs_arr[i] > p_session_high:
+            p_session_high = highs_arr[i]; p_session_high_idx = i
+            p_anchor_idx = i  # new session high becomes new anchor
+        if lows_arr[i] < b_session_low:
+            b_session_low = lows_arr[i]; b_session_low_idx = i
+            b_anchor_idx = i  # new session low becomes new anchor
+
+        # Re-anchor purple at most recent swing high that is LOWER than current anchor
+        # (confirmed 1 bar later — bar j is a swing high if higher than both neighbours)
+        if i >= 2:
+            j = i - 1
+            h_j = highs_arr[j]
+            if (h_j - highs_arr[j-1] >= SWING_ANCHOR_THRESHOLD and
+                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD and
+                j > p_anchor_idx and
+                h_j < highs_arr[p_anchor_idx]):
+                # Lower swing high — move anchor forward
+                p_anchor_idx = j
+
+            # Re-anchor blue at most recent swing low that is HIGHER than current anchor
+            l_j = lows_arr[j]
+            if (lows_arr[j-1] - l_j >= SWING_ANCHOR_THRESHOLD and
+                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD and
+                j > b_anchor_idx and
+                l_j > lows_arr[b_anchor_idx]):
+                # Higher swing low — move anchor forward
+                b_anchor_idx = j
 
         pw_start = p_anchor_idx; bw_start = b_anchor_idx
         pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
@@ -315,6 +350,10 @@ def _compute_rays_nb(
                 blue_slopes[i]       = blue_slopes[i-1]
                 blue_start_prices[i] = blue_start_prices[i-1]
                 blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
+
+        # Keep p_anchor_p/b_anchor_p in sync for compatibility
+        p_anchor_p = highs_arr[p_anchor_idx]
+        b_anchor_p = lows_arr[b_anchor_idx]
 
     # --- Magenta/lime swing rays ---
     SWING_THRESHOLD = 50.0
