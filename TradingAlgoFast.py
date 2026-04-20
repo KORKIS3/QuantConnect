@@ -242,6 +242,142 @@ def _fit_trendlines_nb(high, low, close):
 
 
 # ---------------------------------------------------------------------------
+# Numba-compiled ray computation — all 6 rays in one pass
+# ---------------------------------------------------------------------------
+
+@jit(nopython=True, cache=True)
+def _compute_rays_nb(
+    n, highs_arr, lows_arr, closes_arr, times_num,
+    orange_slope_val, yellow_slope_val,
+):
+    """Compute all ray values in a single Numba-compiled pass.
+    Returns: orange_vals, yellow_vals, purple_vals, blue_vals,
+             purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
+             magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
+             p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx
+    """
+    # --- Orange ray ---
+    orange_vals = np.zeros(n)
+    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]
+    for i in range(n):
+        if highs_arr[i] > o_anchor_p:
+            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]
+        orange_vals[i] = o_anchor_p + orange_slope_val * (times_num[i] - o_anchor_t)
+
+    # --- Yellow ray ---
+    yellow_vals = np.zeros(n)
+    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]
+    for i in range(n):
+        if lows_arr[i] < y_anchor_p:
+            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]
+        yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
+
+    # --- Purple/blue rays ---
+    purple_vals         = np.full(n, highs_arr[0])
+    blue_vals           = np.full(n, lows_arr[0])
+    purple_slopes       = np.zeros(n)
+    blue_slopes         = np.zeros(n)
+    purple_start_prices = np.full(n, highs_arr[0])
+    blue_start_prices   = np.full(n, lows_arr[0])
+    p_anchor_p = highs_arr[0]; p_anchor_idx = 0
+    b_anchor_p = lows_arr[0];  b_anchor_idx = 0
+
+    for i in range(n):
+        if highs_arr[i] > p_anchor_p: p_anchor_p = highs_arr[i]; p_anchor_idx = i
+        if lows_arr[i]  < b_anchor_p: b_anchor_p = lows_arr[i];  b_anchor_idx = i
+
+        pw_start = p_anchor_idx; bw_start = b_anchor_idx
+        pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
+
+        if pw_len >= 2 and bw_len >= 2:
+            pw_h = highs_arr[pw_start:i+1]; pw_l = lows_arr[pw_start:i+1]; pw_c = closes_arr[pw_start:i+1]
+            _, _, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
+            time_step = times_num[pw_start+1] - times_num[pw_start]
+            if time_step == 0.0: time_step = 1.0
+            r_slope_time = r_slope_nb / time_step
+            purple_start_prices[i] = r_int_nb
+            purple_slopes[i]       = r_slope_time
+            purple_vals[i] = r_int_nb + r_slope_time * (times_num[i] - times_num[pw_start])
+
+            bw_h = highs_arr[bw_start:i+1]; bw_l = lows_arr[bw_start:i+1]; bw_c = closes_arr[bw_start:i+1]
+            s_slope_nb2, s_int_nb2, _, _ = _fit_trendlines_nb(bw_h, bw_l, bw_c)
+            time_step = times_num[bw_start+1] - times_num[bw_start]
+            if time_step == 0.0: time_step = 1.0
+            s_slope_time = s_slope_nb2 / time_step
+            blue_start_prices[i] = s_int_nb2
+            blue_slopes[i]       = s_slope_time
+            blue_vals[i] = s_int_nb2 + s_slope_time * (times_num[i] - times_num[bw_start])
+        else:
+            if i > 0:
+                purple_slopes[i]       = purple_slopes[i-1]
+                purple_start_prices[i] = purple_start_prices[i-1]
+                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - times_num[pw_start])
+                blue_slopes[i]       = blue_slopes[i-1]
+                blue_start_prices[i] = blue_start_prices[i-1]
+                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
+
+    # --- Magenta/lime swing rays ---
+    SWING_THRESHOLD = 50.0
+    magenta_vals    = np.full(n, np.nan)
+    lime_vals       = np.full(n, np.nan)
+    magenta_slopes  = np.full(n, np.nan)
+    lime_slopes_arr = np.full(n, np.nan)
+
+    mag_anchor_price = -1e30; mag_anchor_idx = -1; mag_slope_frozen = False; mag_slope = 0.0
+    lime_anchor_price = 1e30; lime_anchor_idx = -1; lime_slope_frozen = False; lime_slope = 0.0
+    _mag_best_h = -1e30; _mag_best_idx = -1
+    _lime_best_l = 1e30; _lime_best_idx = -1
+    mag_has_anchor = False; lime_has_anchor = False
+
+    for i in range(n):
+        if i >= 2:
+            j = i - 1
+            if j < n - 1:
+                h = highs_arr[j]; h_prev = highs_arr[j-1]; h_next = highs_arr[j+1]
+                if h - h_prev >= SWING_THRESHOLD and h - h_next >= SWING_THRESHOLD:
+                    if not mag_has_anchor or h > mag_anchor_price:
+                        mag_anchor_price = h; mag_anchor_idx = j; mag_slope_frozen = False
+                        _mag_best_h = -1e30; _mag_best_idx = -1; mag_has_anchor = True
+
+                lo = lows_arr[j]; lo_prev = lows_arr[j-1]; lo_next = lows_arr[j+1]
+                if lo_prev - lo >= SWING_THRESHOLD and lo_next - lo >= SWING_THRESHOLD:
+                    if not lime_has_anchor or lo < lime_anchor_price:
+                        lime_anchor_price = lo; lime_anchor_idx = j; lime_slope_frozen = False
+                        _lime_best_l = 1e30; _lime_best_idx = -1; lime_has_anchor = True
+
+        if mag_has_anchor and mag_anchor_idx >= 0 and not mag_slope_frozen:
+            if i > mag_anchor_idx and highs_arr[i] < mag_anchor_price and highs_arr[i] > _mag_best_h:
+                _mag_best_h = highs_arr[i]; _mag_best_idx = i
+            if _mag_best_idx >= 0:
+                dt = times_num[_mag_best_idx] - times_num[mag_anchor_idx]
+                if dt != 0.0:
+                    mag_slope = (_mag_best_h - mag_anchor_price) / dt
+                    mag_slope_frozen = True
+
+        if mag_slope_frozen and mag_anchor_idx >= 0:
+            magenta_vals[i]   = mag_anchor_price + mag_slope * (times_num[i] - times_num[mag_anchor_idx])
+            magenta_slopes[i] = mag_slope
+
+        if lime_has_anchor and lime_anchor_idx >= 0 and not lime_slope_frozen:
+            if i > lime_anchor_idx and lows_arr[i] > lime_anchor_price and lows_arr[i] < _lime_best_l:
+                _lime_best_l = lows_arr[i]; _lime_best_idx = i
+            if _lime_best_idx >= 0:
+                dt = times_num[_lime_best_idx] - times_num[lime_anchor_idx]
+                if dt != 0.0:
+                    lime_slope = (_lime_best_l - lime_anchor_price) / dt
+                    lime_slope_frozen = True
+
+        if lime_slope_frozen and lime_anchor_idx >= 0:
+            lime_vals[i]       = lime_anchor_price + lime_slope * (times_num[i] - times_num[lime_anchor_idx])
+            lime_slopes_arr[i] = lime_slope
+
+    return (orange_vals, yellow_vals, purple_vals, blue_vals,
+            purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
+            magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
+            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx)
+
+
+# ---------------------------------------------------------------------------
 # Numba-compiled signal detection loop
 # ---------------------------------------------------------------------------
 # Position encoding: 0=flat, 1=long, 2=short
@@ -490,151 +626,17 @@ def run_trading_algo_fast(
         if times_idx[i] >= cutoff_time:
             cutoff_idx = i; break
 
-    # --- Pre-compute ALL ray values using numpy ---
-    # Orange ray
+    # --- Compute ALL rays via Numba ---
     orange_slope_val = -np.tan(np.deg2rad(cfg.orange_angle)) * (y_per_unit / x_per_unit)
-    orange_vals = np.zeros(n)
-    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]
-    for i in range(n):
-        if highs_arr[i] > o_anchor_p:
-            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]
-        orange_vals[i] = o_anchor_p + orange_slope_val * (times_num[i] - o_anchor_t)
+    yellow_slope_val =  np.tan(np.deg2rad(cfg.yellow_angle)) * (y_per_unit / x_per_unit)
 
-    # Yellow ray
-    yellow_slope_val = np.tan(np.deg2rad(cfg.yellow_angle)) * (y_per_unit / x_per_unit)
-    yellow_vals = np.zeros(n)
-    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]
-    for i in range(n):
-        if lows_arr[i] < y_anchor_p:
-            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]
-        yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
-
-    # Purple/blue rays — Numba-compiled trendline fitting
-    purple_vals = np.full(n, highs_arr[0])
-    blue_vals   = np.full(n, lows_arr[0])
-    p_anchor_p = highs_arr[0]; p_anchor_idx = 0
-    b_anchor_p = lows_arr[0];  b_anchor_idx = 0
-
-    # Store ray metadata for each bar (for signal check timing)
-    # purple_vals[i] = value AFTER update_all_rays at bar i
-    # Signal check at bar i+1 uses purple_vals[i] projected to bar i
-    purple_start_prices = np.full(n, highs_arr[0])
-    purple_start_times  = np.full(n, times_num[0])
-    purple_slopes       = np.zeros(n)
-    blue_start_prices   = np.full(n, lows_arr[0])
-    blue_start_times    = np.full(n, times_num[0])
-    blue_slopes         = np.zeros(n)
-
-    for i in range(n):
-        # Update anchors incrementally — only on strictly new high/low (matches original)
-        if highs_arr[i] > p_anchor_p:
-            p_anchor_p = highs_arr[i]; p_anchor_idx = i
-
-        if lows_arr[i] < b_anchor_p:
-            b_anchor_p = lows_arr[i]; b_anchor_idx = i
-
-        # Purple and blue windows — if EITHER is too small, skip BOTH (matches original)
-        pw_start = p_anchor_idx
-        bw_start = b_anchor_idx
-        pw_len = i + 1 - pw_start
-        bw_len = i + 1 - bw_start
-
-        if pw_len >= 2 and bw_len >= 2:
-            # Purple trendline
-            pw_h = highs_arr[pw_start:i+1]
-            pw_l = lows_arr[pw_start:i+1]
-            pw_c = closes_arr[pw_start:i+1]
-            s_slope_nb, s_int_nb, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            r_slope_idx = r_slope_nb; r_intercept = r_int_nb
-            time_step = times_num[pw_start+1] - times_num[pw_start]
-            if time_step == 0: time_step = 1.0
-            r_slope_time = r_slope_idx / time_step
-            purple_start_prices[i] = r_intercept
-            purple_start_times[i]  = times_num[pw_start]
-            purple_slopes[i]       = r_slope_time
-            purple_vals[i] = r_intercept + r_slope_time * (times_num[i] - times_num[pw_start])
-
-            # Blue trendline
-            bw_h = highs_arr[bw_start:i+1]
-            bw_l = lows_arr[bw_start:i+1]
-            bw_c = closes_arr[bw_start:i+1]
-            s_slope_nb2, s_int_nb2, r_slope_nb2, r_int_nb2 = _fit_trendlines_nb(bw_h, bw_l, bw_c)
-            s_slope_idx = s_slope_nb2; s_intercept = s_int_nb2
-            time_step = times_num[bw_start+1] - times_num[bw_start]
-            if time_step == 0: time_step = 1.0
-            s_slope_time = s_slope_idx / time_step
-            blue_start_prices[i] = s_intercept
-            blue_start_times[i]  = times_num[bw_start]
-            blue_slopes[i]       = s_slope_time
-            blue_vals[i] = s_intercept + s_slope_time * (times_num[i] - times_num[bw_start])
-        else:
-            # Either window too small — keep previous slope, project to current time
-            if i > 0:
-                purple_slopes[i] = purple_slopes[i-1]
-                purple_start_prices[i] = purple_start_prices[i-1]
-                purple_start_times[i]  = purple_start_times[i-1]
-                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - purple_start_times[i-1])
-                blue_slopes[i] = blue_slopes[i-1]
-                blue_start_prices[i] = blue_start_prices[i-1]
-                blue_start_times[i]  = blue_start_times[i-1]
-                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - blue_start_times[i-1])
-
-    # --- Magenta/lime swing ray computation ---
-    SWING_THRESHOLD = 50.0
-    mag_anchor_price = None; mag_anchor_idx = -1; mag_slope_frozen = False; mag_slope = 0.0
-    lime_anchor_price = None; lime_anchor_idx = -1; lime_slope_frozen = False; lime_slope = 0.0
-    magenta_vals = np.full(n, np.nan)
-    lime_vals    = np.full(n, np.nan)
-    magenta_slopes = np.full(n, np.nan)
-    lime_slopes_arr = np.full(n, np.nan)
-    # Track best candidate for slope (highest high below anchor / lowest low above anchor)
-    _mag_best_h = -1e9; _mag_best_idx = -1
-    _lime_best_l = 1e9; _lime_best_idx = -1
-
-    for i in range(n):
-        # Only check bar i-1 as a new swing (it just got confirmed by bar i)
-        if i >= 2:
-            j = i - 1
-            if j < n - 1:
-                h = highs_arr[j]; h_prev = highs_arr[j-1]; h_next = highs_arr[j+1]
-                if h - h_prev >= SWING_THRESHOLD and h - h_next >= SWING_THRESHOLD:
-                    if mag_anchor_price is None or h > mag_anchor_price:
-                        mag_anchor_price = h; mag_anchor_idx = j; mag_slope_frozen = False
-                        _mag_best_h = -1e9; _mag_best_idx = -1  # reset candidate search
-
-                lo = lows_arr[j]; lo_prev = lows_arr[j-1]; lo_next = lows_arr[j+1]
-                if lo_prev - lo >= SWING_THRESHOLD and lo_next - lo >= SWING_THRESHOLD:
-                    if lime_anchor_price is None or lo < lime_anchor_price:
-                        lime_anchor_price = lo; lime_anchor_idx = j; lime_slope_frozen = False
-                        _lime_best_l = 1e9; _lime_best_idx = -1
-
-        # Build magenta ray — only check new bar i as candidate
-        if mag_anchor_idx >= 0 and not mag_slope_frozen:
-            if i > mag_anchor_idx and highs_arr[i] < mag_anchor_price and highs_arr[i] > _mag_best_h:
-                _mag_best_h = highs_arr[i]; _mag_best_idx = i
-            if _mag_best_idx >= 0:
-                dt = times_num[_mag_best_idx] - times_num[mag_anchor_idx]
-                if dt != 0:
-                    mag_slope = (_mag_best_h - mag_anchor_price) / dt
-                    mag_slope_frozen = True
-
-        if mag_slope_frozen and mag_anchor_idx >= 0:
-            magenta_vals[i] = mag_anchor_price + mag_slope * (times_num[i] - times_num[mag_anchor_idx])
-            magenta_slopes[i] = mag_slope
-
-        # Build lime ray — only check new bar i as candidate
-        if lime_anchor_idx >= 0 and not lime_slope_frozen:
-            if i > lime_anchor_idx and lows_arr[i] > lime_anchor_price and lows_arr[i] < _lime_best_l:
-                _lime_best_l = lows_arr[i]; _lime_best_idx = i
-            if _lime_best_idx >= 0:
-                dt = times_num[_lime_best_idx] - times_num[lime_anchor_idx]
-                if dt != 0:
-                    lime_slope = (_lime_best_l - lime_anchor_price) / dt
-                    lime_slope_frozen = True
-
-        if lime_slope_frozen and lime_anchor_idx >= 0:
-            lime_vals[i] = lime_anchor_price + lime_slope * (times_num[i] - times_num[lime_anchor_idx])
-            lime_slopes_arr[i] = lime_slope
+    (orange_vals, yellow_vals, purple_vals, blue_vals,
+     purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
+     magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
+     p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx) = _compute_rays_nb(
+        n, highs_arr, lows_arr, closes_arr, times_num,
+        orange_slope_val, yellow_slope_val,
+    )
 
     # --- Signal detection — Numba compiled ---
     sig_type, sig_price, sig_liq = _run_signals_nb(
