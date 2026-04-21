@@ -406,6 +406,20 @@ class IBDataBridge:
 
         log.info("[Session] %s ended — saving data and chart.", self._current_date)
 
+        # Flatten any open position at session end
+        try:
+            final_position = "flat"
+            if self._last_result is not None and not self._last_result.empty:
+                final_position = str(self._last_result["position"].iloc[-1])
+            if final_position == "long":
+                log.info("[Session] flattening LONG position at session end")
+                self._place_order("SELL", liquidate=True)
+            elif final_position == "short":
+                log.info("[Session] flattening SHORT position at session end")
+                self._place_order("BUY", liquidate=True)
+        except Exception as exc:
+            log.error("[Session] flatten error: %s", exc)
+
         # Save the chart image directly from the live figure before closing it.
         saved_image_path = None
         if self._live_chart is not None and self._live_chart._plotter is not None:
