@@ -261,6 +261,7 @@ class IBDataBridge:
         self._session_ended: bool = False
         self._window_set: bool = False
         self._session_start_dt = None
+        self._last_hourly_save: Optional[int] = None  # tracks last hour we saved a snapshot
 
     # -- connection -----------------------------------------------------------
 
@@ -396,6 +397,7 @@ class IBDataBridge:
         self._session_ended = False
         self._window_set = False
         self._session_start_dt = None
+        self._last_hourly_save = None
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample accumulated 5-second bars to OHLCV bars.
@@ -487,15 +489,8 @@ class IBDataBridge:
 
         self._current_date = bar_date
 
-        # Determine the correct bar boundary based on time of day.
-        # 1-min bars during 09:30-10:30 ET, 5-min bars outside that window.
-        bar_hhmm = bar_time.hour * 60 + bar_time.minute
-        in_core_window = (9 * 60 + 30) <= bar_hhmm <= (10 * 60 + 30)
-        if in_core_window:
-            bar_boundary = bar_minute
-        else:
-            rounded_min = (bar_time.minute // 5) * 5
-            bar_boundary = bar_time.strftime(f"%Y-%m-%d %H:{rounded_min:02d}")
+        # Always use 1-minute bar boundaries — matches backtest data format
+        bar_boundary = bar_minute
 
         # Fire at the correct boundary (1-min or 5-min depending on time of day).
         if self._last_minute is not None and bar_boundary != self._last_minute:
@@ -516,8 +511,25 @@ class IBDataBridge:
 
         self._last_minute = bar_boundary
 
-        self._session_bars.append({
-            "Open":   bar.open_,
+        # Save hourly chart snapshot (on the hour: 10:00, 11:00, 12:00 ...)
+        current_hour = bar_time.hour
+        if (bar_time.minute == 0 and
+                self._last_hourly_save != current_hour and
+                self._live_chart is not None and
+                self._live_chart._plotter is not None):
+            try:
+                os.makedirs(self.image_root, exist_ok=True)
+                snap_path = os.path.join(
+                    self.image_root,
+                    f"YM_{bar_date}_{current_hour:02d}00_snapshot.jpg"
+                )
+                self._live_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
+                self._last_hourly_save = current_hour
+                log.info("[Snapshot] hourly chart saved: %s", snap_path)
+            except Exception as exc:
+                log.error("[Snapshot] save error: %s", exc)
+
+        self._session_bars.append({            "Open":   bar.open_,
             "High":   bar.high,
             "Low":    bar.low,
             "Close":  bar.close,
