@@ -373,7 +373,10 @@ class IBDataBridge:
             self._ib.run()
         except KeyboardInterrupt:
             log.info("Interrupted.")
+        except Exception as exc:
+            log.error("Unexpected error in event loop: %s", exc)
         finally:
+            log.info("Flattening any open position before exit ...")
             self._on_session_end()
             self.disconnect()
 
