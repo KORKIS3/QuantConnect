@@ -237,6 +237,7 @@ class IBDataBridge:
             steep_angle_threshold=70.0,
             proximity_points=15.0,
             min_reversal_minutes=10,
+            min_entry_angle=30.0,
         )
         self.dry_run = dry_run
         self.start_time = start_time
@@ -426,25 +427,8 @@ class IBDataBridge:
                 Volume=("Volume", "sum"),
             ).dropna(subset=["Open"])
 
-        # Split into core window (1-min) and outside window (5-min).
-        date_str = df.index[0].strftime("%Y-%m-%d")
-        core_start = pd.Timestamp(f"{date_str} 09:30:00", tz=_EST)
-        core_end   = pd.Timestamp(f"{date_str} 10:30:00", tz=_EST)
-
-        df_core    = df[(df.index >= core_start) & (df.index <= core_end)]
-        df_outside = df[(df.index < core_start) | (df.index > core_end)]
-
-        parts = []
-        if not df_outside.empty:
-            parts.append(_agg(df_outside, "5min"))
-        if not df_core.empty:
-            parts.append(_agg(df_core, "1min"))
-
-        if not parts:
-            return pd.DataFrame()
-
-        result = pd.concat(parts).sort_index()
-        return result
+        # Always use 1-minute bars — matches the backtest data format
+        return _agg(df, "1min")
 
     def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> None:
         """Resample bars to 1-min, run the algo, and refresh the live chart window."""
