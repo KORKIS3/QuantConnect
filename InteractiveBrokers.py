@@ -265,6 +265,65 @@ class IBDataBridge:
 
     # -- connection -----------------------------------------------------------
 
+    def _backfill_from_930(self) -> None:
+        """Fetch 1-min bars from 9:30 ET today up to now and seed _session_bars."""
+        now = datetime.now(_EST)
+        today = now.strftime("%Y-%m-%d")
+        session_start = _EST.localize(datetime.strptime(f"{today} 09:30:00", "%Y-%m-%d %H:%M:%S"))
+
+        if now <= session_start:
+            log.info("[Backfill] before 9:30 — no backfill needed")
+            return
+
+        elapsed_secs = int((now - session_start).total_seconds()) + 60
+        end_utc = now.astimezone(pytz.utc).strftime("%Y%m%d-%H:%M:%S")
+
+        log.info("[Backfill] fetching %d seconds of 1-min bars from 9:30 ...", elapsed_secs)
+        try:
+            hist_bars = self._ib.reqHistoricalData(
+                self._contract,
+                endDateTime=end_utc,
+                durationStr=f"{elapsed_secs} S",
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=False,
+                formatDate=1,
+            )
+        except Exception as exc:
+            log.error("[Backfill] reqHistoricalData error: %s", exc)
+            return
+
+        if not hist_bars:
+            log.warning("[Backfill] no historical bars returned")
+            return
+
+        count = 0
+        for bar in hist_bars:
+            bar_time = pd.Timestamp(bar.date).tz_localize("UTC").tz_convert(_EST) if pd.Timestamp(bar.date).tzinfo is None else pd.Timestamp(bar.date).tz_convert(_EST)
+            if bar_time < session_start:
+                continue
+            # Expand each 1-min bar into twelve 5-second entries so it integrates
+            # cleanly with the 5-second real-time bar accumulator
+            for _ in range(12):
+                self._session_bars.append({
+                    "Open":   bar.open,
+                    "High":   bar.high,
+                    "Low":    bar.low,
+                    "Close":  bar.close,
+                    "Volume": bar.volume / 12,
+                    "time":   bar_time,
+                })
+            count += 1
+
+        if count:
+            self._current_date = today
+            self._session_start_dt = session_start
+            self._window_set = True
+            self.start_time = "09:30"
+            end_dt = session_start + pd.Timedelta(minutes=self._session_duration_minutes)
+            self.end_time = end_dt.strftime("%H:%M")
+            log.info("[Backfill] loaded %d bars (9:30 → %s)", count, now.strftime("%H:%M"))
+
     def connect(self) -> None:
         """Connect to TWS / IB Gateway and qualify the YM contract."""
         self._ib.connect(self.host, self.port, clientId=self.client_id)
@@ -288,6 +347,11 @@ class IBDataBridge:
         # Always set the dynamic window from wall-clock now.
         if not self._window_set:
             self._apply_dynamic_window(None)
+
+        # Backfill historical bars from 9:30 if we're starting mid-session
+        now = datetime.now(_EST)
+        if now.hour >= 9 and now.minute >= 30:
+            self._backfill_from_930()
 
         # reqRealTimeBars works on both live and paper accounts.
         # It delivers a new 5-second bar every 5 seconds.
