@@ -6,10 +6,13 @@ Build a bot ("Fred") that trades YM E-mini Dow Jones futures exactly the way the
 ## Current Proven Settings (AlgoConfig)
 ```python
 AlgoConfig(
-    warmup_minutes=12,          # first signal fires on 9:42 close (proven optimal over 535 days)
+    warmup_minutes=12,          # first signal fires on 9:42 close
     steep_angle_threshold=70.0, # proven optimal over 535 days
     proximity_points=15.0,      # suppress steep ray cross if within 15pts of shallow ray
-    min_reversal_minutes=10,    # proven optimal over 535 days (+$123,810 on 2 contracts)
+    min_reversal_minutes=10,    # proven optimal
+    min_entry_angle=30.0,       # wait for purple or blue to reach 30° before first entry
+    partial_tp_pts=50.0,        # close 1 of 2 contracts at 50pts profit
+    wm_shield_distance=12.0,    # suppress reversal if water mark cluster within 12pts
 )
 ```
 
@@ -120,6 +123,21 @@ All February 2026 days complete. User to capture more examples.
 - Numba JIT compiles: `_fit_trendlines_nb`, `_compute_rays_nb`, `_run_signals_nb`
 
 ## Session Log
+
+### 2026-04-22
+- Live paper session ran 9:30-17:00 on IB (port 4002). Result: +144 pts / $1,440
+- Peak was +586 pts at 13:19 — afternoon gave back to +144
+- Root cause: 13:13 short only reached +53pts max profit before 194pt bounce. Trailing stop (75pt threshold) never activated. Partial TP fired at 13:19 locking 1 contract.
+- Backtested 8 profit protection rules on 667 days — baseline (no protection, run to 17:00) still best at +226 pts/day avg
+- Trailing stop threshold sweep: 75pts confirmed optimal. Lowering to 50pts only helps 8/289 trades while hurting 10 others.
+- Implemented: partial TP (50pts, 1 contract), water mark shield (12pts), min_entry_angle (30°)
+- Added: TradeStation.py bridge, run_fred.py unified launcher (--broker ib|ts)
+- Added: download_yesterday.py + Windows scheduled task (runs 8am daily)
+- Added: hourly chart snapshots during live session
+- Added: flatten open position at session end + crash safety catch
+- Added: backfill historical bars from 9:30 on mid-session start
+- Always 1-min bars in live session (was 5-min outside 9:30-10:30)
+
 ### 2026-04-20
 - Consolidated codebase: TradingAlgoFast.py is now the single engine
 - Deleted TradingAlgo.py, RunAllDays.py, RunFullDataSet.py, all debug scripts
