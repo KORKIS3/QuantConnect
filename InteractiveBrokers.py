@@ -743,8 +743,18 @@ class IBDataBridge:
         last = result.iloc[-1]
         signal = str(last.get("signal", ""))
         is_liq = bool(last.get("is_liquidation", False))
-        pl = float(last.get("pl", 0.0))
-        price = float(minute_df["Close"].iloc[-1])
+        pl     = float(last.get("pl", 0.0))
+        price  = float(minute_df["Close"].iloc[-1])
+        pos    = str(last.get("position", "flat"))
+
+        # Partial take-profit: close 1 contract when partial_tp fires
+        partial_tp = bool(last.get("partial_tp", False))
+        if partial_tp:
+            log.info("[TradingAlgo] PARTIAL TP   price=%.2f  pl=%.1f  (1 contract)", price, pl)
+            if pos == "long":
+                self._place_order("SELL")   # close 1 of 2 contracts
+            elif pos == "short":
+                self._place_order("BUY")    # close 1 of 2 contracts
 
         if signal == "BUY":
             if is_liq:
@@ -753,7 +763,6 @@ class IBDataBridge:
             else:
                 log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
                 self._place_order("BUY")
-                # send_signal_alert("BUY", price, target_date, minute_df.index[-1])
         elif signal == "SELL":
             if is_liq:
                 log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
@@ -761,7 +770,6 @@ class IBDataBridge:
             else:
                 log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
                 self._place_order("SELL")
-                # send_signal_alert("SELL", price, target_date, minute_df.index[-1])
 
     # -- order execution ------------------------------------------------------
 

@@ -437,11 +437,13 @@ def _run_signals_nb(
     min_reversal_minutes, confirmation_bars,
     first_entry_steep_only,
     min_entry_angle,
+    partial_tp_pts,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
     sig_price = np.zeros(n, dtype=np.float64)
     sig_liq   = np.zeros(n, dtype=np.bool_)
+    partial_tp_arr = np.zeros(n, dtype=np.bool_)  # True on bar where partial TP fires
 
     pos = 0  # 0=flat, 1=long, 2=short
     entry_price = 0.0
@@ -452,6 +454,7 @@ def _run_signals_nb(
     pending_ray_val = 0.0
     min_per_unit = 1.0 / (24.0 * 60.0)
     first_trade_done = False  # tracks if first trade of session has fired
+    partial_taken = False     # has partial TP been taken on current trade?
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -467,6 +470,15 @@ def _run_signals_nb(
         prev_blue_slope   = blue_slopes[i - 1]
         liquidated = False
         is_last = (i == n - 1)
+
+        # --- Partial take-profit (1 of 2 contracts at partial_tp_pts) ---
+        if (partial_tp_pts > 0.0 and pos != 0 and not partial_taken
+                and entry_price != 0.0):
+            unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
+            if unrealized >= partial_tp_pts:
+                session_pl += unrealized  # book 1 contract
+                partial_taken = True
+                partial_tp_arr[i] = True  # flag this bar for order placement
 
         # --- Trailing stop v3 ---
         if pos != 0 and i >= 5:
@@ -581,7 +593,7 @@ def _run_signals_nb(
                     if pos == 2: session_pl += entry_price - close
                     sig_type[i] = 1; sig_price[i] = close
                     if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True
+                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
 
         # --- SELL signals ---
         if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
@@ -630,9 +642,9 @@ def _run_signals_nb(
                     if pos == 1: session_pl += close - entry_price
                     sig_type[i] = 2; sig_price[i] = close
                     if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True
+                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
 
-    return sig_type, sig_price, sig_liq
+    return sig_type, sig_price, sig_liq, partial_tp_arr
 
 
 def run_trading_algo_fast(
@@ -699,7 +711,7 @@ def run_trading_algo_fast(
     )
 
     # --- Signal detection — Numba compiled ---
-    sig_type, sig_price, sig_liq = _run_signals_nb(
+    sig_type, sig_price, sig_liq, partial_tp_arr = _run_signals_nb(
         n, cutoff_idx,
         closes_arr, highs_arr, lows_arr, times_num,
         orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -712,6 +724,7 @@ def run_trading_algo_fast(
         cfg.min_reversal_minutes, cfg.confirmation_bars,
         1 if cfg.first_entry_steep_only else 0,
         cfg.min_entry_angle,
+        cfg.partial_tp_pts,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
@@ -732,6 +745,7 @@ def run_trading_algo_fast(
 
 
     result["orange_ray"] = orange_vals
+    result["partial_tp"] = partial_tp_arr  # True on bars where partial TP fired
     result["yellow_ray"] = yellow_vals
     result["purple_ray"] = purple_vals
     result["blue_ray"]   = blue_vals
