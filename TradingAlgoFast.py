@@ -418,6 +418,27 @@ def _compute_rays_nb(
             p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx)
 
 
+@jit(nopython=True, cache=True)
+def _has_wm_shield_nb(values, shield_dist, min_touches=4):
+    """Check if any price cluster within shield_dist of values[-1] exists.
+    Simplified version for use inside Numba — no time span check."""
+    n = len(values)
+    if n < min_touches:
+        return False
+    ref = values[-1]
+    for i in range(n):
+        base = values[i]
+        if abs(base - ref) > shield_dist:
+            continue
+        count = 0
+        for j in range(n):
+            if abs(values[j] - base) <= shield_dist:
+                count += 1
+        if count >= min_touches:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Numba-compiled signal detection loop
 # ---------------------------------------------------------------------------
@@ -438,6 +459,8 @@ def _run_signals_nb(
     first_entry_steep_only,
     min_entry_angle,
     partial_tp_pts,
+    wm_shield_distance,
+    wm_lookback,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -551,98 +574,116 @@ def _run_signals_nb(
             if pos == 2 and reversal_blocked:
                 pending_buy = False
             else:
-                buy_triggered = False
-                if confirmation_bars >= 1 and pending_buy:
-                    buy_triggered = close > pending_ray_val
-                    pending_buy = False
-                elif confirmation_bars >= 1:
-                    new_cross = False
-                    if prev_close <= prev_orange and close > prev_orange:
-                        new_cross = True; pending_ray_val = prev_orange
-                    if not new_cross:
-                        pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
-                        if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
-                            if abs(close - curr_orange) > proximity_points:
-                                new_cross = True; pending_ray_val = prev_purple
-                    if not new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
-                        pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
-                        ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
-                        if ma < steep_angle_threshold and prev_close <= pm and close > pm:
-                            if abs(close - curr_orange) > proximity_points:
-                                new_cross = True; pending_ray_val = pm
-                    if new_cross: pending_buy = True; pending_sell = False
+                # Water mark shield: suppress reversal if cluster supports short position
+                wm_shielded = False
+                if wm_shield_distance > 0.0 and pos == 2 and i >= wm_lookback:
+                    ws = max(0, i - wm_lookback)
+                    wm_shielded = _has_wm_shield_nb(highs_arr[ws:i], wm_shield_distance)
+
+                if wm_shielded:
+                    pass  # hold short — cluster is shielding
                 else:
-                    if prev_close <= prev_orange and close > prev_orange:
-                        purple_ang = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
-                        strong_downtrend = (first_entry_steep_only and not first_trade_done and
-                                            prev_purple_slope < 0.0 and purple_ang >= steep_angle_threshold * 0.5)
-                        if not strong_downtrend:
-                            buy_triggered = True
-                    if not buy_triggered:
-                        pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
-                        if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
-                            if abs(close - curr_orange) > proximity_points:
+                    buy_triggered = False
+                    if confirmation_bars >= 1 and pending_buy:
+                        buy_triggered = close > pending_ray_val
+                        pending_buy = False
+                    elif confirmation_bars >= 1:
+                        new_cross = False
+                        if prev_close <= prev_orange and close > prev_orange:
+                            new_cross = True; pending_ray_val = prev_orange
+                        if not new_cross:
+                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
+                                if abs(close - curr_orange) > proximity_points:
+                                    new_cross = True; pending_ray_val = prev_purple
+                        if not new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
+                            pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
+                            ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                            if ma < steep_angle_threshold and prev_close <= pm and close > pm:
+                                if abs(close - curr_orange) > proximity_points:
+                                    new_cross = True; pending_ray_val = pm
+                        if new_cross: pending_buy = True; pending_sell = False
+                    else:
+                        if prev_close <= prev_orange and close > prev_orange:
+                            purple_ang = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            strong_downtrend = (first_entry_steep_only and not first_trade_done and
+                                                prev_purple_slope < 0.0 and purple_ang >= steep_angle_threshold * 0.5)
+                            if not strong_downtrend:
                                 buy_triggered = True
-                    if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
-                        pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
-                        ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
-                        if ma < steep_angle_threshold and prev_close <= pm and close > pm:
-                            if abs(close - curr_orange) > proximity_points:
-                                buy_triggered = True
-                if buy_triggered:
-                    if pos == 2: session_pl += entry_price - close
-                    sig_type[i] = 1; sig_price[i] = close
-                    if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
+                        if not buy_triggered:
+                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
+                                if abs(close - curr_orange) > proximity_points:
+                                    buy_triggered = True
+                        if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
+                            pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
+                            ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                            if ma < steep_angle_threshold and prev_close <= pm and close > pm:
+                                if abs(close - curr_orange) > proximity_points:
+                                    buy_triggered = True
+                    if buy_triggered:
+                        if pos == 2: session_pl += entry_price - close
+                        sig_type[i] = 1; sig_price[i] = close
+                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                        else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
 
         # --- SELL signals ---
         if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
             else:
-                sell_triggered = False
-                if confirmation_bars >= 1 and pending_sell:
-                    sell_triggered = close < pending_ray_val
-                    pending_sell = False
-                elif confirmation_bars >= 1:
-                    new_cross = False
-                    if prev_close >= prev_yellow and close < prev_yellow:
-                        new_cross = True; pending_ray_val = prev_yellow
-                    if not new_cross:
-                        ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
-                        if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
-                            if abs(close - curr_yellow) > proximity_points:
-                                new_cross = True; pending_ray_val = prev_blue
-                    if not new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
-                        pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
-                        la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
-                        if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
-                            if abs(close - curr_yellow) > proximity_points:
-                                new_cross = True; pending_ray_val = pl2
-                    if new_cross: pending_sell = True; pending_buy = False
+                # Water mark shield: suppress reversal if cluster supports long position
+                wm_shielded = False
+                if wm_shield_distance > 0.0 and pos == 1 and i >= wm_lookback:
+                    ws = max(0, i - wm_lookback)
+                    wm_shielded = _has_wm_shield_nb(lows_arr[ws:i], wm_shield_distance)
+
+                if wm_shielded:
+                    pass  # hold long — cluster is shielding
                 else:
-                    if prev_close >= prev_yellow and close < prev_yellow:
-                        blue_ang = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
-                        strong_uptrend = (first_entry_steep_only and not first_trade_done and
-                                          prev_blue_slope > 0.0 and blue_ang >= steep_angle_threshold * 0.5)
-                        if not strong_uptrend:
-                            sell_triggered = True
-                    if not sell_triggered:
-                        ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
-                        if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
-                            if abs(close - curr_yellow) > proximity_points:
+                    sell_triggered = False
+                    if confirmation_bars >= 1 and pending_sell:
+                        sell_triggered = close < pending_ray_val
+                        pending_sell = False
+                    elif confirmation_bars >= 1:
+                        new_cross = False
+                        if prev_close >= prev_yellow and close < prev_yellow:
+                            new_cross = True; pending_ray_val = prev_yellow
+                        if not new_cross:
+                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
+                                if abs(close - curr_yellow) > proximity_points:
+                                    new_cross = True; pending_ray_val = prev_blue
+                        if not new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
+                            pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
+                            la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                            if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
+                                if abs(close - curr_yellow) > proximity_points:
+                                    new_cross = True; pending_ray_val = pl2
+                        if new_cross: pending_sell = True; pending_buy = False
+                    else:
+                        if prev_close >= prev_yellow and close < prev_yellow:
+                            blue_ang = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            strong_uptrend = (first_entry_steep_only and not first_trade_done and
+                                              prev_blue_slope > 0.0 and blue_ang >= steep_angle_threshold * 0.5)
+                            if not strong_uptrend:
                                 sell_triggered = True
-                    if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
-                        pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
-                        la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
-                        if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
-                            if abs(close - curr_yellow) > proximity_points:
-                                sell_triggered = True
-                if sell_triggered:
-                    if pos == 1: session_pl += close - entry_price
-                    sig_type[i] = 2; sig_price[i] = close
-                    if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                    else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
+                        if not sell_triggered:
+                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
+                                if abs(close - curr_yellow) > proximity_points:
+                                    sell_triggered = True
+                        if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
+                            pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
+                            la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                            if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
+                                if abs(close - curr_yellow) > proximity_points:
+                                    sell_triggered = True
+                    if sell_triggered:
+                        if pos == 1: session_pl += close - entry_price
+                        sig_type[i] = 2; sig_price[i] = close
+                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                        else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
 
     return sig_type, sig_price, sig_liq, partial_tp_arr
 
@@ -725,6 +766,8 @@ def run_trading_algo_fast(
         1 if cfg.first_entry_steep_only else 0,
         cfg.min_entry_angle,
         cfg.partial_tp_pts,
+        cfg.wm_shield_distance,
+        cfg.wm_lookback,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
