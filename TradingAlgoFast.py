@@ -40,7 +40,7 @@ class AlgoConfig:
     steep_angle_threshold: float = 45.0
     proximity_points: float = 50.0
     warmup_minutes: Optional[int] = None
-    min_reversal_minutes: int = 10
+    min_reversal_minutes: int = 0
     max_loss_per_trade: float = 0.0
     confirmation_bars: int = 0
     spike_profit_pts: float = 100.0

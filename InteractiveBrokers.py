@@ -236,7 +236,7 @@ class IBDataBridge:
             warmup_minutes=12,
             steep_angle_threshold=70.0,
             proximity_points=15.0,
-            min_reversal_minutes=10,
+            min_reversal_minutes=0,
             min_entry_angle=30.0,
         )
         self.dry_run = dry_run
@@ -265,20 +265,28 @@ class IBDataBridge:
 
     # -- connection -----------------------------------------------------------
 
-    def _backfill_from_930(self) -> None:
-        """Fetch 1-min bars from 9:30 ET today up to now and seed _session_bars."""
+    def _backfill_from_session_start(self) -> None:
+        """Fetch 1-min bars from session start (e.g. 09:30 or 18:00) up to now.
+
+        Works for both day and overnight sessions — uses self._session_start_dt
+        which is already set by _apply_dynamic_window.
+        """
+        if self._session_start_dt is None:
+            log.warning("[Backfill] session_start_dt not set — skipping")
+            return
+
         now = datetime.now(_EST)
-        today = now.strftime("%Y-%m-%d")
-        session_start = _EST.localize(datetime.strptime(f"{today} 09:30:00", "%Y-%m-%d %H:%M:%S"))
+        session_start = self._session_start_dt
 
         if now <= session_start:
-            log.info("[Backfill] before 9:30 — no backfill needed")
+            log.info("[Backfill] session hasn't started yet — no backfill needed")
             return
 
         elapsed_secs = int((now - session_start).total_seconds()) + 60
         end_utc = now.astimezone(pytz.utc).strftime("%Y%m%d-%H:%M:%S")
 
-        log.info("[Backfill] fetching %d seconds of 1-min bars from 9:30 ...", elapsed_secs)
+        log.info("[Backfill] fetching %d seconds of 1-min bars from %s ...",
+                 elapsed_secs, self.start_time)
         try:
             hist_bars = self._ib.reqHistoricalData(
                 self._contract,
@@ -299,7 +307,9 @@ class IBDataBridge:
 
         count = 0
         for bar in hist_bars:
-            bar_time = pd.Timestamp(bar.date).tz_localize("UTC").tz_convert(_EST) if pd.Timestamp(bar.date).tzinfo is None else pd.Timestamp(bar.date).tz_convert(_EST)
+            bar_time = (pd.Timestamp(bar.date).tz_localize("UTC").tz_convert(_EST)
+                        if pd.Timestamp(bar.date).tzinfo is None
+                        else pd.Timestamp(bar.date).tz_convert(_EST))
             if bar_time < session_start:
                 continue
             # Expand each 1-min bar into twelve 5-second entries so it integrates
@@ -315,14 +325,14 @@ class IBDataBridge:
                 })
             count += 1
 
+        today = now.strftime("%Y-%m-%d")
         if count:
             self._current_date = today
-            self._session_start_dt = session_start
-            self._window_set = True
-            self.start_time = "09:30"
-            end_dt = session_start + pd.Timedelta(minutes=self._session_duration_minutes)
-            self.end_time = end_dt.strftime("%H:%M")
-            log.info("[Backfill] loaded %d bars (9:30 → %s)", count, now.strftime("%H:%M"))
+            log.info("[Backfill] loaded %d bars (%s → %s)",
+                     count, self.start_time, now.strftime("%H:%M"))
+        else:
+            log.warning("[Backfill] 0 bars loaded for window %s → %s",
+                        self.start_time, now.strftime("%H:%M"))
 
     def connect(self) -> None:
         """Connect to TWS / IB Gateway and qualify the YM contract."""
@@ -348,10 +358,17 @@ class IBDataBridge:
         if not self._window_set:
             self._apply_dynamic_window(None)
 
-        # Backfill historical bars from 9:30 if we're starting mid-session
-        now = datetime.now(_EST)
-        if now.hour >= 9 and now.minute >= 30:
-            self._backfill_from_930()
+        # Backfill historical bars from session start (09:30 for day, 18:00 for night).
+        self._backfill_from_session_start()
+
+        # If backfill loaded bars, open the chart immediately so the user can
+        # see history before the first live bar arrives.
+        if self._session_bars:
+            log.info("[Backfill] triggering initial chart from backfilled data ...")
+            try:
+                self._update_live_chart()
+            except Exception as exc:
+                log.error("[Backfill] initial chart error: %s", exc)
 
         # reqRealTimeBars works on both live and paper accounts.
         # It delivers a new 5-second bar every 5 seconds.
@@ -383,15 +400,23 @@ class IBDataBridge:
     # -- dynamic session window -----------------------------------------------
 
     def _apply_dynamic_window(self, first_bar_time) -> None:
-        """Set start_time and end_time based on current wall-clock time."""
+        """Anchor session_start_dt to the fixed start_time (e.g. 18:00 for night, 09:30 for day).
+        No bars before start_time will ever enter the algo or chart.
+        """
         self._window_set = True
         now = datetime.now(_EST)
-        end_dt = now + pd.Timedelta(minutes=self._session_duration_minutes)
-        self.start_time = now.strftime("%H:%M")
-        self.end_time   = end_dt.strftime("%H:%M")
-        self._session_start_dt = now
+        today = now.strftime("%Y-%m-%d")
+        try:
+            session_start = _EST.localize(
+                datetime.strptime(f"{today} {self.start_time}:00", "%Y-%m-%d %H:%M:%S")
+            )
+        except Exception:
+            session_start = now
+        end_dt = session_start + pd.Timedelta(minutes=self._session_duration_minutes)
+        self.end_time = end_dt.strftime("%H:%M")
+        self._session_start_dt = session_start
         log.info(
-            "[Window] session window set: %s – %s (%d min from now)",
+            "[Window] session window: %s – %s (%d min)",
             self.start_time, self.end_time, self._session_duration_minutes,
         )
 
@@ -548,6 +573,10 @@ class IBDataBridge:
 
         try:
             self._live_chart.update(algo_df)
+            # Wire the Refresh Now button to re-run _update_live_chart
+            if (self._live_chart._plotter is not None and
+                    getattr(self._live_chart._plotter, '_refresh_callback', None) is None):
+                self._live_chart._plotter._refresh_callback = self._update_live_chart
             log.info("[LiveChart] chart updated OK  bars=%d", len(algo_df))
         except Exception as exc:
             log.error("[LiveChart] update error: %s", exc)
