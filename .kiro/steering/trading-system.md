@@ -16,6 +16,36 @@ AlgoConfig(
 )
 ```
 
+## How to Run Fred
+```
+# Daily session (auto-starts via scheduled task at 9:28 AM Mon-Fri)
+run_fred_daily.bat
+
+# Manual dry run (no orders)
+python run_fred.py --dry-run --duration 450
+
+# Manual live (real orders)
+python run_fred.py --duration 450
+
+# TradeStation (once credentials set)
+python run_fred.py --broker ts --dry-run --duration 450
+
+# Backtest full day
+python Backtest2Year.py --skip-download
+
+# Backtest quick (9:30-10:30 only, ~35 seconds)
+python Backtest2Year.py --skip-download --quick
+
+# Download yesterday's data
+python download_yesterday.py
+
+# Interactive chart for a specific day
+python _check_chart.py  (edit date inside)
+
+# Analyze today's session
+python _analyze_today.py
+```
+
 ## Backtest Results (664 trading days, full day 9:30-17:00, 2 contracts, partial TP @50pts)
 Run: 2026-04-20. Data: `~/Desktop/2YearsData/full_day/` (Jul 2023 – Apr 2026)
 
