@@ -7,7 +7,9 @@ echo   Session: 9:30 - 17:00 ET
 echo   Mode: PAPER TRADING
 echo ==========================================
 echo.
-C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 450
+set LOGFILE=C:\Users\Administrator\Desktop\IB_Live\logs\fred_day_%date:~-4,4%%date:~-10,2%%date:~-7,2%.log
+C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 450 2>&1 | tee %LOGFILE%
 echo.
-echo Session ended. Press any key to close.
+echo Session ended. Log saved to %LOGFILE%
+echo Press any key to close.
 pause
