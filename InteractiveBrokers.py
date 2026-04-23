@@ -816,14 +816,40 @@ class IBDataBridge:
     # -- order execution ------------------------------------------------------
 
     def _place_order(self, action: str, liquidate: bool = False) -> None:
-        """Submit a market order for 1 YM contract (or log it in dry-run mode)."""
+        """Submit a market order for MYM contracts.
+
+        - Entry (flat → long/short): 2 contracts
+        - Partial TP: 1 contract (close half)
+        - Liquidate (exit only): 2 contracts
+        - Reversal (long → short or short → long): 4 contracts (close 2 + open 2)
+        """
         tag = "LIQUIDATE" if liquidate else action
         if self.dry_run:
             log.info("[ORDER dry_run] %-10s  contract=%s", tag, self._contract.localSymbol)
             return
-        order = MarketOrder(action, totalQuantity=1)
+
+        # Determine current position size
+        current_pos = 0
+        if self._last_result is not None and not self._last_result.empty:
+            pos = str(self._last_result["position"].iloc[-1])
+            if pos == "long":
+                current_pos = 2
+            elif pos == "short":
+                current_pos = -2
+
+        # Calculate quantity needed
+        if liquidate:
+            qty = abs(current_pos) if current_pos != 0 else 2
+        else:
+            if action == "BUY":
+                qty = 2 + max(0, -current_pos)   # cover shorts + go long
+            else:
+                qty = 2 + max(0, current_pos)     # cover longs + go short
+
+        qty = max(1, qty)  # always at least 1
+        order = MarketOrder(action, totalQuantity=qty)
         trade = self._ib.placeOrder(self._contract, order)
-        log.info("[ORDER placed]  %-10s  orderId=%s", tag, trade.order.orderId)
+        log.info("[ORDER placed]  %-10s  qty=%d  orderId=%s", tag, qty, trade.order.orderId)
 
 
 # ---------------------------------------------------------------------------
