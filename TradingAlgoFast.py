@@ -478,6 +478,9 @@ def _run_signals_nb(
     min_per_unit = 1.0 / (24.0 * 60.0)
     first_trade_done = False  # tracks if first trade of session has fired
     partial_taken = False     # has partial TP been taken on current trade?
+    trail_anchor_p = -1e30   # locked trailing stop anchor price (v4)
+    trail_anchor_t = 0.0     # locked trailing stop anchor time (v4)
+    entry_time_idx = 0        # bar index of current entry
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -503,56 +506,69 @@ def _run_signals_nb(
                 partial_taken = True
                 partial_tp_arr[i] = True  # flag this bar for order placement
 
-        # --- Trailing stop v3 ---
+        # --- Trailing stop v4 ---
+        # threshold=50pts, angles=50/60/70, anchor locked once set
         if pos != 0 and i >= 5:
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
-            if unrealized >= 75.0:
-                has_hh = False; conf_price = 0.0; conf_time = 0.0
-                start_j = max(0, i - 10)
-                if pos == 1 and i >= 4:
-                    for k in range(i, start_j, -1):
-                        if k >= 2 and highs_arr[k] > highs_arr[k - 2]:
-                            mid_low = lows_arr[k - 1]
-                            if highs_arr[k] - mid_low >= 30.0:
-                                has_hh = True; conf_price = mid_low; conf_time = times_num[k - 1]; break
-                elif pos == 2 and i >= 4:
-                    for k in range(i, start_j, -1):
-                        if k >= 2 and lows_arr[k] < lows_arr[k - 2]:
-                            mid_high = highs_arr[k - 1]
-                            if mid_high - lows_arr[k] >= 30.0:
-                                has_hh = True; conf_price = mid_high; conf_time = times_num[k - 1]; break
-
-                trail_angle = 60.0 if (has_hh and unrealized >= 150.0) else (50.0 if has_hh else 40.0)
+            if unrealized >= 50.0:
+                # Determine angle based on profit level
+                if unrealized >= 150.0:
+                    trail_angle = 70.0
+                elif unrealized >= 100.0:
+                    trail_angle = 60.0
+                else:
+                    trail_angle = 50.0
                 trailing_slope = np.tan(np.deg2rad(trail_angle)) * (y_per_unit / x_per_unit)
 
-                anchor_p = conf_price; anchor_t = conf_time
-                if not has_hh:
-                    anchor_p = -1e30 if pos == 1 else 1e30; anchor_t = 0.0; found = False
-                    for j in range(max(1, i - 15), i):
-                        if j >= n - 1: continue
-                        if pos == 1:
+                # Use locked anchor if already set, otherwise find and lock it
+                if trail_anchor_p < -1e29:
+                    # Search for swing anchor point
+                    start_j = max(entry_time_idx, i - 15)
+                    if pos == 1:
+                        best_lo = -1e30
+                        for j in range(start_j, i):
+                            if j == 0 or j >= n - 1: continue
                             lo = lows_arr[j]
-                            if lows_arr[j-1] - lo >= 15.0 and lows_arr[j+1] - lo >= 15.0:
-                                if lo > anchor_p: anchor_p = lo; anchor_t = times_num[j]; found = True
-                        else:
+                            if lows_arr[j-1] - lo >= 10.0 and lows_arr[j+1] - lo >= 10.0:
+                                if lo > best_lo:
+                                    best_lo = lo
+                                    trail_anchor_p = lo
+                                    trail_anchor_t = times_num[j]
+                        if trail_anchor_p < -1e29:
+                            trail_anchor_p = lows_arr[entry_time_idx]
+                            trail_anchor_t = times_num[entry_time_idx]
+                    else:
+                        best_hi = 1e30
+                        for j in range(start_j, i):
+                            if j == 0 or j >= n - 1: continue
                             hi = highs_arr[j]
-                            if hi - highs_arr[j-1] >= 15.0 and hi - highs_arr[j+1] >= 15.0:
-                                if hi < anchor_p: anchor_p = hi; anchor_t = times_num[j]; found = True
-                    if not found: anchor_p = -1e30
+                            if hi - highs_arr[j-1] >= 10.0 and hi - highs_arr[j+1] >= 10.0:
+                                if hi < best_hi:
+                                    best_hi = hi
+                                    trail_anchor_p = hi
+                                    trail_anchor_t = times_num[j]
+                        if trail_anchor_p > 1e29:
+                            trail_anchor_p = highs_arr[entry_time_idx]
+                            trail_anchor_t = times_num[entry_time_idx]
 
-                if anchor_p > -1e29 and anchor_t > 0.0:
-                    t_diff = times_num[i] - anchor_t
+                # Check if close crosses trailing line
+                if trail_anchor_t > 0.0:
+                    t_diff = times_num[i] - trail_anchor_t
                     if t_diff > 0.0:
                         if pos == 1:
-                            if close < anchor_p + trailing_slope * t_diff:
+                            if close < trail_anchor_p + trailing_slope * t_diff:
                                 session_pl += close - entry_price
                                 sig_type[i] = 2; sig_price[i] = close; sig_liq[i] = True
-                                pos = 0; entry_price = 0.0; entry_time_num = 0.0; liquidated = True
+                                pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                                trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                entry_time_idx = 0; liquidated = True
                         else:
-                            if close > anchor_p - trailing_slope * t_diff:
+                            if close > trail_anchor_p - trailing_slope * t_diff:
                                 session_pl += entry_price - close
                                 sig_type[i] = 1; sig_price[i] = close; sig_liq[i] = True
-                                pos = 0; entry_price = 0.0; entry_time_num = 0.0; liquidated = True
+                                pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                                trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                entry_time_idx = 0; liquidated = True
 
         # Reversal guard
         mins_since = (times_num[i] - entry_time_num) / min_per_unit if entry_time_num > 0.0 else 9999.0
@@ -625,7 +641,7 @@ def _run_signals_nb(
                         if pos == 2: session_pl += entry_price - close
                         sig_type[i] = 1; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 1; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
+                        else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
 
         # --- SELL signals ---
         if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
@@ -683,7 +699,7 @@ def _run_signals_nb(
                         if pos == 1: session_pl += close - entry_price
                         sig_type[i] = 2; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 2; entry_price = close; entry_time_num = times_num[i]; first_trade_done = True; partial_taken = False
+                        else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
 
     return sig_type, sig_price, sig_liq, partial_tp_arr
 

@@ -3,13 +3,20 @@
 ## Goal
 Build a bot ("Fred") that trades YM E-mini Dow Jones futures exactly the way the user trades in their sim account. The user averages 300+ points/week in their live account and significantly more in sim. The bot should match or exceed sim performance.
 
+## Backtest Standard — ALWAYS USE THIS
+- **All backtests must use ALL available days** (`~/Desktop/2YearsData/full_day/`, currently 667 days)
+- **Full day session only: 9:30 ET start, 17:00 ET end**
+- Never use quick mode (10:30 end) or partial day windows for final results
+- Always report: Total Pts, Avg/Day, Win%, Win Days, Lose Days
+- Always compare against the current baseline (230 pts/day avg as of 2026-04-22)
+
 ## Current Proven Settings (AlgoConfig)
 ```python
 AlgoConfig(
     warmup_minutes=12,          # first signal fires on 9:42 close
     steep_angle_threshold=70.0, # proven optimal over 535 days
     proximity_points=15.0,      # suppress steep ray cross if within 15pts of shallow ray
-    min_reversal_minutes=10,    # proven optimal
+    min_reversal_minutes=0,     # CHANGED 2026-04-22: removing 10-min hold gained +88pts/day (230 vs 142)
     min_entry_angle=30.0,       # wait for purple or blue to reach 30° before first entry
     partial_tp_pts=50.0,        # close 1 of 2 contracts at 50pts profit
     wm_shield_distance=12.0,    # suppress reversal if water mark cluster within 12pts
