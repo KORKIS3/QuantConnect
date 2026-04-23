@@ -8,7 +8,7 @@ Build a bot ("Fred") that trades YM E-mini Dow Jones futures exactly the way the
 - **Full day session only: 9:30 ET start, 17:00 ET end**
 - Never use quick mode (10:30 end) or partial day windows for final results
 - Always report: Total Pts, Avg/Day, Win%, Win Days, Lose Days
-- Always compare against the current baseline (230 pts/day avg as of 2026-04-22)
+- Always compare against the current baseline: **266.2 pts/day, 78.7% win days, 122 losing days (as of 2026-04-22)**
 
 ## Current Proven Settings (AlgoConfig)
 ```python
@@ -162,18 +162,14 @@ All February 2026 days complete. User to capture more examples.
 ## Session Log
 
 ### 2026-04-22
-- Live paper session ran 9:30-17:00 on IB (port 4002). Result: +144 pts / $1,440
-- Peak was +586 pts at 13:19 — afternoon gave back to +144
-- Root cause: 13:13 short only reached +53pts max profit before 194pt bounce. Trailing stop (75pt threshold) never activated. Partial TP fired at 13:19 locking 1 contract.
-- Backtested 8 profit protection rules on 667 days — baseline (no protection, run to 17:00) still best at +226 pts/day avg
-- Trailing stop threshold sweep: 75pts confirmed optimal. Lowering to 50pts only helps 8/289 trades while hurting 10 others.
-- Implemented: partial TP (50pts, 1 contract), water mark shield (12pts), min_entry_angle (30°)
-- Added: TradeStation.py bridge, run_fred.py unified launcher (--broker ib|ts)
-- Added: download_yesterday.py + Windows scheduled task (runs 8am daily)
-- Added: hourly chart snapshots during live session
-- Added: flatten open position at session end + crash safety catch
-- Added: backfill historical bars from 9:30 on mid-session start
-- Always 1-min bars in live session (was 5-min outside 9:30-10:30)
+- Live paper session ran 9:30-17:00 on IB (port 4002). Result: +236 pts / $1,180
+- Removed 10-min reversal hold: +88 pts/day gain (263 vs 142 avg/day baseline, 667 days)
+- Added trailing stop v4: threshold=50pts, angles=50/60/70, locked anchor
+- Combined result: **266.2 pts/day avg, 78.7% win days, 122 losing days** (667 days, 9:30-17:00)
+- Night session added: run_fred_night.bat, scheduled task at 5:58 PM Mon-Fri, clientId=3
+- Live chart monitor added: _live_chart_monitor.py (scroll zoom, refresh button, auto-refresh)
+- Sweep scripts: _sweep_filters.py, _sweep_trailing.py, _sweep_touchpoints.py
+- NOTE: _sweep_filters.py had a bug (defaulted to 10-min hold) — fixed 2026-04-22
 
 ### 2026-04-20
 - Consolidated codebase: TradingAlgoFast.py is now the single engine
