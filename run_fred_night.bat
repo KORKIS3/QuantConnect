@@ -1,13 +1,13 @@
 @echo off
-title Fred - YM Trading Session
+title Fred - YM Night Session
 cd /d C:\Users\Administrator\source\repos\KORKIS3\QuantConnect
 echo ==========================================
 echo   Fred - YM Futures Trading Bot
-echo   Session: 9:30 - 17:00 ET
+echo   Session: 18:00 - 09:00 ET (overnight)
 echo   Mode: PAPER TRADING
 echo ==========================================
 echo.
-C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 450
+C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 900 --client-id 4
 echo.
-echo Session ended. Press any key to close.
+echo Night session ended. Press any key to close.
 pause
