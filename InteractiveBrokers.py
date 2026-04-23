@@ -48,15 +48,28 @@ from Emailer import send_session_summary
 # from Notifier import send_signal_alert
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — console + file
 # ---------------------------------------------------------------------------
+import datetime as _dt
+
+_LOG_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, f"fred_ib_{_dt.date.today().strftime('%Y%m%d')}.log")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),                          # console
+        logging.FileHandler(_LOG_FILE, encoding="utf-8"), # file
+    ]
 )
 log = logging.getLogger(__name__)
+
+# Also capture ib_insync internal logs to the same file
+logging.getLogger("ib_insync").setLevel(logging.DEBUG)
+logging.getLogger("ib_insync.wrapper").setLevel(logging.DEBUG)
 
 _EST = pytz.timezone("US/Eastern")
 _IB_LIVE_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live")
