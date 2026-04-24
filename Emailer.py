@@ -47,8 +47,8 @@ def send_session_summary(
     image_path:   path to the saved chart JPEG (attached if provided and exists)
     position:     final position ('flat', 'long', 'short')
     """
-    sender    = os.environ.get("IB_EMAIL_FROM", "orkiskevin@gmail.com")
-    recipient = os.environ.get("IB_EMAIL_TO",   "orkiskevin@gmail.com")
+    sender    = os.environ.get("IB_EMAIL_FROM", "orkiskevin2@gmail.com")
+    recipient = os.environ.get("IB_EMAIL_TO",   "orkiskevin2@gmail.com,harvell1972@gmail.com")
     password  = os.environ.get("IB_EMAIL_PASS")
     host     = os.environ.get("IB_EMAIL_HOST", "smtp.gmail.com")
     port     = int(os.environ.get("IB_EMAIL_PORT", "587"))
@@ -103,7 +103,9 @@ def send_session_summary(
             server.ehlo()
             server.starttls()
             server.login(sender, password)
-            server.sendmail(sender, recipient, msg.as_string())
+            recipients = [r.strip() for r in recipient.split(",")]
+            msg["To"] = recipient
+            server.sendmail(sender, recipients, msg.as_string())
         log.info("[Email] Session summary sent to %s", recipient)
     except Exception as exc:
         log.error("[Email] Failed to send: %s", exc)
