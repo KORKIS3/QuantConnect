@@ -133,6 +133,11 @@ def run_ib(args) -> None:
                 bridge._window_set = False
             else:
                 print("[Fred] Max retries reached. Giving up.")
+                try:
+                    from Emailer import send_disconnect_alert
+                    send_disconnect_alert(attempt, max_retries, f"Max retries reached. Fred has stopped. Last error: {exc}")
+                except Exception:
+                    pass
 
 
 def run_ts(args) -> None:
