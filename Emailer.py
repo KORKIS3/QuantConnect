@@ -28,6 +28,49 @@ import logging
 log = logging.getLogger(__name__)
 
 
+def send_disconnect_alert(attempt: int, max_retries: int, error: str) -> None:
+    """Send an email alert when Fred loses connection to IB Gateway."""
+    sender    = os.environ.get("IB_EMAIL_FROM", "orkiskevin2@gmail.com")
+    recipient = os.environ.get("IB_EMAIL_TO",   "orkiskevin2@gmail.com,harvell1972@gmail.com")
+    password  = os.environ.get("IB_EMAIL_PASS")
+    host      = os.environ.get("IB_EMAIL_HOST", "smtp.gmail.com")
+    port      = int(os.environ.get("IB_EMAIL_PORT", "587"))
+
+    if not password:
+        return
+
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone("US/Eastern")).strftime("%H:%M:%S")
+
+    subject = f"⚠️ Fred DISCONNECTED — attempt {attempt}/{max_retries} — {now} ET"
+    body = (
+        f"Fred Lost Connection\n"
+        f"{'─' * 35}\n"
+        f"Time:     {now} ET\n"
+        f"Attempt:  {attempt} of {max_retries}\n"
+        f"Error:    {error}\n"
+        f"Action:   Reconnecting in 30 seconds...\n"
+        f"{'─' * 35}\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"]    = sender
+    msg["To"]      = recipient
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo(); server.starttls()
+            server.login(sender, password)
+            recipients = [r.strip() for r in recipient.split(",")]
+            server.sendmail(sender, recipients, msg.as_string())
+        log.info("[Email] Disconnect alert sent")
+    except Exception as exc:
+        log.error("[Email] Disconnect alert failed: %s", exc)
+
+
 def send_trade_alert(
     action: str,
     price: float,

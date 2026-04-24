@@ -118,6 +118,12 @@ def run_ib(args) -> None:
             print(f"[Fred] Connection lost: {exc}")
             if attempt < max_retries:
                 print(f"[Fred] Reconnecting in {retry_delay}s ...")
+                try:
+                    from Emailer import send_disconnect_alert
+                    send_disconnect_alert(attempt, max_retries, str(exc))
+                except Exception:
+                    pass
+                time.sleep(retry_delay)
                 time.sleep(retry_delay)
                 try:
                     bridge._ib.disconnect()
