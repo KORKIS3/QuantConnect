@@ -264,7 +264,8 @@ class IBDataBridge:
         self._ib = IB()
         self._session_bars: list[dict] = []
         self._last_result: Optional[pd.DataFrame] = None
-        self._contract: Optional[Contract] = None
+        self._contract: Optional[Contract] = None        # YM — data feed
+        self._order_contract: Optional[Contract] = None  # MYM — order execution
         self._current_date: Optional[str] = None
         self._last_minute: Optional[str] = None
         self._live_chart: Optional[_LiveChartWindow] = None
@@ -852,8 +853,10 @@ class IBDataBridge:
 
         qty = max(1, qty)  # always at least 1
         order = MarketOrder(action, totalQuantity=qty)
-        trade = self._ib.placeOrder(self._contract, order)
-        log.info("[ORDER placed]  %-10s  qty=%d  orderId=%s", tag, qty, trade.order.orderId)
+        exec_contract = self._order_contract or self._contract
+        trade = self._ib.placeOrder(exec_contract, order)
+        log.info("[ORDER placed]  %-10s  qty=%d  contract=%s  orderId=%s",
+                 tag, qty, exec_contract.localSymbol, trade.order.orderId)
 
         # Send trade alert email
         try:
