@@ -44,7 +44,7 @@ from openpyxl import Workbook
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
-from Emailer import send_session_summary
+from Emailer import send_session_summary, send_trade_alert
 # from Notifier import send_signal_alert
 
 # ---------------------------------------------------------------------------
@@ -850,6 +850,28 @@ class IBDataBridge:
         order = MarketOrder(action, totalQuantity=qty)
         trade = self._ib.placeOrder(self._contract, order)
         log.info("[ORDER placed]  %-10s  qty=%d  orderId=%s", tag, qty, trade.order.orderId)
+
+        # Send trade alert email
+        try:
+            session_pl = 0.0
+            position = "flat"
+            if self._last_result is not None and not self._last_result.empty:
+                session_pl = float(self._last_result["pl"].iloc[-1])
+                position   = str(self._last_result["position"].iloc[-1])
+            fill_price = 0.0
+            if self._session_bars:
+                fill_price = self._session_bars[-1].get("Close", 0.0)
+            send_trade_alert(
+                action=action,
+                price=fill_price,
+                qty=qty,
+                session_pl=session_pl,
+                target_date=self._current_date or "",
+                position=position,
+                order_type="LIQUIDATE" if liquidate else "ENTRY/REVERSAL",
+            )
+        except Exception as exc:
+            log.error("[Email] trade alert error: %s", exc)
 
 
 # ---------------------------------------------------------------------------

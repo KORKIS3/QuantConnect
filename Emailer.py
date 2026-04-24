@@ -28,6 +28,65 @@ import logging
 log = logging.getLogger(__name__)
 
 
+def send_trade_alert(
+    action: str,
+    price: float,
+    qty: int,
+    session_pl: float,
+    target_date: str,
+    position: str,
+    order_type: str = "ENTRY",
+) -> None:
+    """Send an email alert for every BUY/SELL/LIQUIDATE order."""
+    sender    = os.environ.get("IB_EMAIL_FROM", "orkiskevin2@gmail.com")
+    recipient = os.environ.get("IB_EMAIL_TO",   "orkiskevin2@gmail.com,harvell1972@gmail.com")
+    password  = os.environ.get("IB_EMAIL_PASS")
+    host      = os.environ.get("IB_EMAIL_HOST", "smtp.gmail.com")
+    port      = int(os.environ.get("IB_EMAIL_PORT", "587"))
+
+    if not password:
+        return
+
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone("US/Eastern")).strftime("%H:%M:%S")
+
+    pl_sign  = "+" if session_pl >= 0 else ""
+    pl_emoji = "🟢" if session_pl > 0 else ("🔴" if session_pl < 0 else "⚪")
+    act_emoji = "📈" if action == "BUY" else "📉"
+
+    subject = f"Fred {act_emoji} {action} MYM @ {price:.0f}  |  {pl_emoji} P/L: {pl_sign}{session_pl:.0f} pts"
+
+    body = (
+        f"Fred Trade Alert\n"
+        f"{'─' * 35}\n"
+        f"Time:       {now} ET\n"
+        f"Date:       {target_date}\n"
+        f"Action:     {action} ({order_type})\n"
+        f"Price:      {price:.0f}\n"
+        f"Qty:        {qty} contracts\n"
+        f"Position:   {position}\n"
+        f"Session P/L: {pl_sign}{session_pl:.0f} pts  (${session_pl*0.5:.0f})\n"
+        f"{'─' * 35}\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"]    = sender
+    msg["To"]      = recipient
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo(); server.starttls()
+            server.login(sender, password)
+            recipients = [r.strip() for r in recipient.split(",")]
+            server.sendmail(sender, recipients, msg.as_string())
+        log.info("[Email] Trade alert sent: %s @ %s", action, price)
+    except Exception as exc:
+        log.error("[Email] Trade alert failed: %s", exc)
+
+
 def send_session_summary(
     target_date: str,
     start_time: str,
