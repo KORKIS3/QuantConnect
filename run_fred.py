@@ -75,6 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="[ib only] IB Gateway host (default: 127.0.0.1)")
     p.add_argument("--client-id", type=int, default=1, dest="client_id",
                    help="[ib only] IB client ID (default: 1)")
+    p.add_argument("--start-time", default=None, dest="start_time",
+                   help="[ib only] Fixed session start HH:MM ET (e.g. --start-time 18:00 for night session)")
     p.add_argument("--test",     action="store_true",
                    help="[ib only] Connection test only")
     p.set_defaults(show_plot=True)
@@ -83,9 +85,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def run_ib(args) -> None:
     from InteractiveBrokers import IBDataBridge, run_connection_test
+    from ib_insync import IB
+    import time
+
     if args.test:
         run_connection_test(args.host, args.port, args.client_id)
         return
+
     bridge = IBDataBridge(
         host=args.host,
         port=args.port,
@@ -93,9 +99,34 @@ def run_ib(args) -> None:
         dry_run=args.dry_run,
         show_plot=args.show_plot,
         session_duration_minutes=args.duration,
+        start_time=args.start_time or "09:30",
     )
-    bridge.connect()
-    bridge.start()
+
+    max_retries = 20
+    retry_delay = 30
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[Fred] Connecting (attempt {attempt}/{max_retries}) ...")
+            bridge.connect()
+            bridge.start()
+            break  # clean session end
+        except KeyboardInterrupt:
+            print("[Fred] Stopped by user.")
+            break
+        except Exception as exc:
+            print(f"[Fred] Connection lost: {exc}")
+            if attempt < max_retries:
+                print(f"[Fred] Reconnecting in {retry_delay}s ...")
+                time.sleep(retry_delay)
+                try:
+                    bridge._ib.disconnect()
+                except Exception:
+                    pass
+                bridge._ib = IB()
+                bridge._window_set = False
+            else:
+                print("[Fred] Max retries reached. Giving up.")
 
 
 def run_ts(args) -> None:
