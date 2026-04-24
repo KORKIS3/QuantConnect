@@ -94,6 +94,7 @@ def send_session_summary(
     final_pl: float,
     image_path: Optional[str] = None,
     position: str = "flat",
+    csv_path: Optional[str] = None,
 ) -> None:
     """Send a session summary email.
 
@@ -135,6 +136,8 @@ def send_session_summary(
         body += f"Chart attached: {os.path.basename(image_path)}\n"
     else:
         body += "No chart image available.\n"
+    if csv_path and os.path.exists(csv_path):
+        body += f"CSV attached: {os.path.basename(csv_path)}\n"
 
     msg = MIMEMultipart()
     msg["From"]    = sender
@@ -149,13 +152,22 @@ def send_session_summary(
                 part = MIMEBase("application", "octet-stream")
                 part.set_payload(f.read())
             encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename={os.path.basename(image_path)}",
-            )
+            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(image_path)}")
             msg.attach(part)
         except Exception as exc:
             log.warning("[Email] Could not attach image: %s", exc)
+
+    # Attach CSV if available.
+    if csv_path and os.path.exists(csv_path):
+        try:
+            with open(csv_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(csv_path)}")
+            msg.attach(part)
+        except Exception as exc:
+            log.warning("[Email] Could not attach CSV: %s", exc)
 
     try:
         with smtplib.SMTP(host, port) as server:

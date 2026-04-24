@@ -496,6 +496,9 @@ class IBDataBridge:
             if self._last_result is not None and not self._last_result.empty:
                 final_pl = float(self._last_result["pl"].iloc[-1])
                 final_position = str(self._last_result["position"].iloc[-1])
+            csv_path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}_{self.start_time.replace(':','')}.csv")
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}.csv")
             send_session_summary(
                 target_date=self._current_date,
                 start_time=self.start_time,
@@ -503,6 +506,7 @@ class IBDataBridge:
                 final_pl=final_pl,
                 image_path=saved_image_path,
                 position=final_position,
+                csv_path=csv_path if os.path.exists(csv_path) else None,
             )
         except Exception as exc:
             log.error("[Session] email error: %s", exc)
