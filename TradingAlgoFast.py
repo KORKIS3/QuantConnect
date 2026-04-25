@@ -278,7 +278,7 @@ def _compute_rays_nb(
     # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
     # Blue anchors at session low, then re-anchors at each subsequent HIGHER swing low.
     # This keeps lines steep by shortening the window as the session progresses.
-    SWING_ANCHOR_THRESHOLD = 30.0  # min pts to qualify as a swing high/low
+    SWING_ANCHOR_THRESHOLD = 25.0  # min pts to qualify as a swing high/low
     purple_vals         = np.full(n, highs_arr[0])
     blue_vals           = np.full(n, lows_arr[0])
     purple_slopes       = np.zeros(n)
