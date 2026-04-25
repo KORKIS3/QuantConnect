@@ -93,10 +93,11 @@ def _find_wm_clusters(values, times, tolerance=12.0, min_touches=4, min_span=15.
 
 
 def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True, partial_tp_pts=0):
-    """Slice, apply post-hoc 10-min reversal filter + spike profit take + water mark shield + partial TP.
+    """Slice, apply spike profit take + water mark shield + partial TP.
     Spike rule: if unrealized profit >= 100 pts within 5 bars of entry, exit at that bar's close.
     Shield rule: suppress reversal if water mark cluster within 12 pts supports current position.
     Partial TP: take profit on 1 of 2 contracts at partial_tp_pts (0=disabled, returns pts; >0 returns dollars).
+    NOTE: No 10-min reversal hold — min_reversal_minutes=0 is the proven setting.
     """
     _SPIKE_PTS = 100
     _SPIKE_BARS = 5
@@ -108,19 +109,12 @@ def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True, partial_t
     rows = sliced[sliced["signal"].isin(["BUY","SELL"])]
     if rows.empty: return None
 
-    # Post-hoc 10-min reversal filter
+    # No reversal hold — min_reversal_minutes=0 is the proven setting
     filtered = []
     for ts, row in rows.iterrows():
         sig = row["signal"]
         price = float(row["buy_price"] if sig == "BUY" else row["sell_price"])
-        if not filtered:
-            filtered.append((ts, sig, price)); continue
-        last_ts, last_sig, _ = filtered[-1]
-        if last_sig != sig:
-            if (ts - last_ts).total_seconds() / 60 >= 10:
-                filtered.append((ts, sig, price))
-        else:
-            filtered.append((ts, sig, price))
+        filtered.append((ts, sig, price))
 
     if not filtered: return None
 
