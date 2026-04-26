@@ -63,142 +63,32 @@ def download_all(port):
     ib.disconnect(); print("Download complete.")
 
 
-def _find_wm_clusters(values, times, tolerance=12.0, min_touches=4, min_span=15.0):
-    """Find price clusters for water mark shield."""
-    if len(values) < min_touches:
-        return []
-    indexed = sorted(zip(values, times), key=lambda x: x[0])
-    clusters = []
-    used = set()
-    for i in range(len(indexed)):
-        if i in used:
-            continue
-        base = indexed[i][0]
-        group = [(indexed[i][0], indexed[i][1])]
-        used.add(i)
-        for j in range(i + 1, len(indexed)):
-            if j in used:
-                continue
-            if abs(indexed[j][0] - base) <= tolerance:
-                group.append((indexed[j][0], indexed[j][1]))
-                used.add(j)
-            elif indexed[j][0] - base > tolerance:
-                break
-        if len(group) >= min_touches:
-            tt = sorted([g[1] for g in group])
-            span = (tt[-1] - tt[0]).total_seconds() / 60
-            if span >= min_span:
-                clusters.append((float(np.mean([g[0] for g in group])), len(group)))
-    return clusters
-
-
-def _filter_and_calc_pl(algo_df, start_ts, end_ts, use_wm_shield=True, partial_tp_pts=0):
-    """Slice, apply spike profit take + water mark shield + partial TP.
-    Spike rule: if unrealized profit >= 100 pts within 5 bars of entry, exit at that bar's close.
-    Shield rule: suppress reversal if water mark cluster within 12 pts supports current position.
-    Partial TP: take profit on 1 of 2 contracts at partial_tp_pts (0=disabled, returns pts; >0 returns dollars).
-    NOTE: No 10-min reversal hold — min_reversal_minutes=0 is the proven setting.
-    """
-    _SPIKE_PTS = 100
-    _SPIKE_BARS = 5
-    _WM_SHIELD = 12.0 if use_wm_shield else 0.0
-    _WM_LOOKBACK = 30
-
+def _calc_pl_from_engine(algo_df, start_ts, end_ts):
+    """Get day P/L directly from the engine's cumulative pl column."""
     sliced = algo_df[(algo_df.index >= start_ts) & (algo_df.index <= end_ts)]
-    if len(sliced) < 2: return None
-    rows = sliced[sliced["signal"].isin(["BUY","SELL"])]
-    if rows.empty: return None
-
-    # No reversal hold — min_reversal_minutes=0 is the proven setting
-    filtered = []
-    for ts, row in rows.iterrows():
-        sig = row["signal"]
-        price = float(row["buy_price"] if sig == "BUY" else row["sell_price"])
-        filtered.append((ts, sig, price))
-
-    if not filtered: return None
-
-    # Bar-by-bar replay with spike profit take + water mark shield + partial TP
-    closes = sliced["Close"].values.astype(float)
-    highs = sliced["High"].values.astype(float)
-    lows = sliced["Low"].values.astype(float)
-    times = sliced.index
-    sig_idx = 0
-    tpls = []
-    pos, ep, entry_bar = "flat", None, 0
-    partial_taken = False  # has 1st contract been closed at partial_tp_pts?
-
-    for i in range(len(sliced)):
-        # Check partial take-profit
-        if partial_tp_pts > 0 and pos != "flat" and ep is not None and not partial_taken:
-            unrealized = (closes[i] - ep) if pos == "long" else (ep - closes[i])
-            if unrealized >= partial_tp_pts:
-                tpls.append(unrealized)  # 1 contract worth of pts
-                partial_taken = True
-
-        # Check if this bar has a filtered signal
-        if sig_idx < len(filtered) and times[i] == filtered[sig_idx][0]:
-            ts, sig, price = filtered[sig_idx]; sig_idx += 1
-
-            # Water mark shield: suppress reversals if cluster supports current position
-            shielded = False
-            if _WM_SHIELD > 0 and pos != "flat" and i >= _WM_LOOKBACK:
-                ws = max(0, i - _WM_LOOKBACK)
-                if pos == "long" and sig == "SELL":
-                    for lvl, _ in _find_wm_clusters(lows[ws:i], times[ws:i]):
-                        if lvl < closes[i] and (closes[i] - lvl) <= _WM_SHIELD:
-                            shielded = True; break
-                elif pos == "short" and sig == "BUY":
-                    for lvl, _ in _find_wm_clusters(highs[ws:i], times[ws:i]):
-                        if lvl > closes[i] and (lvl - closes[i]) <= _WM_SHIELD:
-                            shielded = True; break
-
-            if not shielded:
-                if pos == "long" and sig == "SELL":
-                    pl = price - ep
-                    if partial_tp_pts > 0:
-                        tpls.append(pl)  # remaining 1 contract
-                    else:
-                        tpls.append(pl)  # all contracts (pts)
-                elif pos == "short" and sig == "BUY":
-                    pl = ep - price
-                    if partial_tp_pts > 0:
-                        tpls.append(pl)
-                    else:
-                        tpls.append(pl)
-                if sig == "BUY": pos, ep, entry_bar = "long", price, i
-                else: pos, ep, entry_bar = "short", price, i
-                partial_taken = False
-            continue
-
-        # Check spike exit: unrealized >= 100 pts within 5 bars of entry
-        if pos != "flat" and ep is not None and i > entry_bar:
-            bars_held = i - entry_bar
-            if bars_held <= _SPIKE_BARS:
-                move = (closes[i] - ep) if pos == "long" else (ep - closes[i])
-                if move >= _SPIKE_PTS:
-                    if partial_tp_pts > 0:
-                        tpls.append(move)  # remaining contract(s)
-                    else:
-                        tpls.append(move)
-                    pos, ep, entry_bar = "flat", None, 0
-                    partial_taken = False
-
-    # Close any open position at slice end
-    if pos != "flat" and ep is not None:
-        last_close = closes[-1]
-        pl = (last_close - ep) if pos == "long" else (ep - last_close)
-        tpls.append(pl)
-
-    return tpls if tpls else None
+    if len(sliced) < 2:
+        return None
+    final_pl = float(sliced["pl"].iloc[-1])
+    # Return as a single-element list so the accumulator works the same way
+    return [final_pl] if final_pl != 0.0 else None
 
 
 def _process_day(fname, quick=False):
     """Process a single day — runs in a worker process."""
     target_date = fname.replace("CBOT_MINI_YM1_", "").replace(".csv", "")
     fpath = os.path.join(_DATA_ROOT, fname)
-    config = AlgoConfig(warmup_minutes=12, steep_angle_threshold=70.0,
-                        proximity_points=15.0, min_reversal_minutes=0, max_loss_per_trade=0)
+    # Identical config to live IBDataBridge — single source of truth
+    config = AlgoConfig(
+        warmup_minutes=12,
+        steep_angle_threshold=70.0,
+        proximity_points=15.0,
+        min_reversal_minutes=0,
+        min_entry_angle=30.0,
+        partial_tp_pts=50.0,
+        spike_profit_pts=100.0,
+        spike_profit_bars=5,
+        wm_shield_distance=12.0,
+    )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}
     try:
@@ -207,7 +97,6 @@ def _process_day(fname, quick=False):
         if len(df) < 10:
             return target_date, result
 
-        # Day session — quick mode only runs to 10:30
         day_start = pd.Timestamp(f"{target_date} 09:30", tz=_EST)
         day_end   = pd.Timestamp(f"{target_date} 10:30", tz=_EST) if quick else pd.Timestamp(f"{target_date} 16:59", tz=_EST)
         day_data  = df[(df.index >= day_start) & (df.index <= day_end)]
@@ -218,29 +107,11 @@ def _process_day(fname, quick=False):
                 day_algo = run_trading_algo_fast(day_data, target_date, "09:30", end_str, config=config)
                 for et in end_times:
                     end_ts = pd.Timestamp(f"{target_date} {et}", tz=_EST)
-                    tpls = _filter_and_calc_pl(day_algo, day_start, end_ts, partial_tp_pts=50)
+                    tpls = _calc_pl_from_engine(day_algo, day_start, end_ts)
                     if tpls:
                         result[et] = tpls
             except Exception:
                 pass
-
-        if not quick:
-            # Overnight session
-            night_start = pd.Timestamp(f"{target_date} 18:00", tz=_EST) - pd.Timedelta(days=1)
-            night_end   = pd.Timestamp(f"{target_date} 09:00", tz=_EST)
-            night_data  = df[(df.index >= night_start) & (df.index <= night_end)]
-            if len(night_data) >= 15:
-                try:
-                    night_algo = run_trading_algo_fast(night_data, target_date, "18:00", "09:00", config=config)
-                    for et in NIGHT_END_TIMES:
-                        h = int(et.split(":")[0])
-                        end_ts = (pd.Timestamp(f"{target_date} {et}", tz=_EST) - pd.Timedelta(days=1)
-                                  if h >= 18 else pd.Timestamp(f"{target_date} {et}", tz=_EST))
-                        tpls = _filter_and_calc_pl(night_algo, night_start, end_ts, use_wm_shield=False)
-                        if tpls:
-                            result[et] = tpls
-                except Exception:
-                    pass
     except Exception:
         pass
     return target_date, result
@@ -252,10 +123,10 @@ def run_backtest(max_days=0, quick=False):
     if max_days > 0: csv_files = csv_files[-max_days:]
     total = len(csv_files)
     t_start = time.time()
-    mode = "quick 9:30-10:30 only" if quick else "full day + overnight"
+    mode = "quick 9:30-10:30 only" if quick else "full day 9:30-17:00"
     print(f"\nRunning backtest on {total} days ({mode}) ...\n")
 
-    all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
+    all_end_times = DAY_END_TIMES
     totals = {et: {"trades":0,"pl":0.0,"winners":0,"losers":0,"daily_pls":[],"session":""}
               for et in all_end_times}
     for et in DAY_END_TIMES:
@@ -274,35 +145,24 @@ def run_backtest(max_days=0, quick=False):
         for et, tpls in result.items():
             if tpls:
                 day_pl = sum(tpls)
-                totals[et]["trades"]    += len(tpls)
+                totals[et]["trades"]    += 1   # 1 day = 1 result
                 totals[et]["pl"]        += day_pl
-                totals[et]["winners"]   += sum(1 for p in tpls if p > 0)
-                totals[et]["losers"]    += sum(1 for p in tpls if p <= 0)
+                totals[et]["winners"]   += 1 if day_pl > 0 else 0
+                totals[et]["losers"]    += 1 if day_pl <= 0 else 0
                 totals[et]["daily_pls"].append(day_pl)
 
     print(f"\nDays processed: {done}  ({time.time()-t_start:.1f}s)")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
-    print(f"Strategy:       min_rev=0 + post-hoc 10-min filter + spike exit (unreal>=100 in 5 bars) + wm shield 12pts\n")
+    print(f"Strategy:       engine handles all logic (spike exit, WM shield, partial TP, trailing stop v4)\n")
 
-    print("=== DAY SESSION (9:30 start, 2c partial TP @50pts) ===")
-    print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
+    print("=== DAY SESSION (9:30-17:00, 2c partial TP @50pts) ===")
+    print(f"{'End Time':<12} {'Days':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
     print("-" * 80)
     for et in DAY_END_TIMES:
         t = totals[et]
         tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
-        # With partial TP, each tpl entry is 1 contract's pts, so multiply by $5 only
         usd = t["pl"]*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
         print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
-
-    if NIGHT_END_TIMES[0] in totals:
-        print(f"\n=== OVERNIGHT SESSION (18:00 start, 2c no partial TP) ===")
-        print(f"{'End Time':<12} {'Trades':>7} {'Win':>8} {'Lose':>7} {'Win%':>6} {'Pts':>10} {'P/L USD':>12} {'Avg/Day':>8}")
-        print("-" * 80)
-        for et in NIGHT_END_TIMES:
-            t = totals[et]
-            tr = t["trades"]; wr = t["winners"]/tr*100 if tr else 0
-            usd = t["pl"]*_CONTRACTS*_MULTIPLIER; avg = np.mean(t["daily_pls"]) if t["daily_pls"] else 0
-            print(f"{et:<12} {tr:>7} {t['winners']:>8} {t['losers']:>7} {wr:>5.1f}% {t['pl']:>10.0f} ${usd:>11,.0f} {avg:>+7.1f}")
     print()
 
 

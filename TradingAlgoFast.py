@@ -461,6 +461,8 @@ def _run_signals_nb(
     partial_tp_pts,
     wm_shield_distance,
     wm_lookback,
+    spike_profit_pts,
+    spike_profit_bars,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -505,6 +507,20 @@ def _run_signals_nb(
                 session_pl += unrealized  # book 1 contract
                 partial_taken = True
                 partial_tp_arr[i] = True  # flag this bar for order placement
+
+        # --- Spike profit exit: if unrealized >= spike_profit_pts within spike_profit_bars ---
+        if (spike_profit_pts > 0.0 and pos != 0 and entry_price != 0.0
+                and not liquidated and (i - entry_time_idx) <= spike_profit_bars
+                and (i - entry_time_idx) > 0):
+            unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
+            if unrealized >= spike_profit_pts:
+                session_pl += unrealized
+                sig_type[i] = 2 if pos == 1 else 1
+                sig_price[i] = close
+                sig_liq[i] = True
+                pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                entry_time_idx = 0; liquidated = True
 
         # --- Trailing stop v4 ---
         # threshold=50pts, angles=50/60/70, anchor locked once set
@@ -716,15 +732,17 @@ def run_trading_algo_fast(
     if data is None or data.empty:
         raise ValueError("run_trading_algo_fast expected non-empty intraday data")
 
-    full_data = data.copy()
+    full_data = data
     est = pytz.timezone("US/Eastern")
     try:
         if full_data.index.tz is None:
+            full_data = data.copy()
             full_data.index = pd.to_datetime(full_data.index, errors="coerce").tz_localize(est)
         else:
+            full_data = data  # already tz-aware, no copy needed
             full_data.index = pd.to_datetime(full_data.index).tz_convert(est)
     except:
-        pass
+        full_data = data.copy()
 
     cfg = config or AlgoConfig()
     n = len(full_data)
@@ -738,8 +756,9 @@ def run_trading_algo_fast(
     highs_arr  = full_data["High"].values.astype(np.float64)
     lows_arr   = full_data["Low"].values.astype(np.float64)
     closes_arr = full_data["Close"].values.astype(np.float64)
-    times_idx  = full_data.index  # keep as DatetimeIndex for mdates
-    times_num  = np.array([mdates.date2num(t) for t in times_idx])
+    times_idx  = full_data.index
+    # Fast vectorized conversion: pandas timestamps → matplotlib date numbers
+    times_num  = full_data.index.asi8 / 8.64e13 + 719163.0  # ns since epoch → matplotlib datenum
 
     # Aspect ratio — match original TradingAlgo.py exactly
     _ax_w_in = 16.0 * (0.85 - 0.125)
@@ -784,6 +803,8 @@ def run_trading_algo_fast(
         cfg.partial_tp_pts,
         cfg.wm_shield_distance,
         cfg.wm_lookback,
+        cfg.spike_profit_pts,
+        cfg.spike_profit_bars,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
