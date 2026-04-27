@@ -64,13 +64,12 @@ def download_all(port):
 
 
 def _calc_pl_from_engine(algo_df, start_ts, end_ts):
-    """Get day P/L directly from the engine's cumulative pl column."""
+    """Read 2-contract P/L directly from the engine's session_pl column — single source of truth."""
     sliced = algo_df[(algo_df.index >= start_ts) & (algo_df.index <= end_ts)]
     if len(sliced) < 2:
         return None
-    final_pl = float(sliced["pl"].iloc[-1])
-    # Return as a single-element list so the accumulator works the same way
-    return [final_pl] if final_pl != 0.0 else None
+    pl = float(sliced["session_pl"].iloc[-1])
+    return [pl] if pl != 0.0 else None
 
 
 def _process_day(fname, quick=False):
@@ -79,15 +78,13 @@ def _process_day(fname, quick=False):
     fpath = os.path.join(_DATA_ROOT, fname)
     # Identical config to live IBDataBridge — single source of truth
     config = AlgoConfig(
-        warmup_minutes=12,
-        steep_angle_threshold=70.0,
-        proximity_points=15.0,
+        warmup_minutes=8,
+        steep_angle_threshold=75.0,
+        proximity_points=8.0,
         min_reversal_minutes=0,
-        min_entry_angle=30.0,
+        min_entry_angle=0.0,
         partial_tp_pts=50.0,
-        spike_profit_pts=100.0,
-        spike_profit_bars=5,
-        wm_shield_distance=12.0,
+        wm_shield_distance=0.0,
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}

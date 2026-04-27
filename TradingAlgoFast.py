@@ -329,29 +329,24 @@ def _compute_rays_nb(
         if pw_len >= 2 and bw_len >= 2:
             pw_h = highs_arr[pw_start:i+1]; pw_l = lows_arr[pw_start:i+1]; pw_c = closes_arr[pw_start:i+1]
             _, _, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            time_step = times_num[pw_start+1] - times_num[pw_start]
-            if time_step == 0.0: time_step = 1.0
-            r_slope_time = r_slope_nb / time_step
+            # slope is price/bar — project using bar offset from window start
             purple_start_prices[i] = r_int_nb
-            purple_slopes[i]       = r_slope_time
-            purple_vals[i] = r_int_nb + r_slope_time * (times_num[i] - times_num[pw_start])
+            purple_slopes[i]       = r_slope_nb  # price/bar
+            purple_vals[i] = r_int_nb + r_slope_nb * (i - pw_start)
 
             bw_h = highs_arr[bw_start:i+1]; bw_l = lows_arr[bw_start:i+1]; bw_c = closes_arr[bw_start:i+1]
             s_slope_nb2, s_int_nb2, _, _ = _fit_trendlines_nb(bw_h, bw_l, bw_c)
-            time_step = times_num[bw_start+1] - times_num[bw_start]
-            if time_step == 0.0: time_step = 1.0
-            s_slope_time = s_slope_nb2 / time_step
             blue_start_prices[i] = s_int_nb2
-            blue_slopes[i]       = s_slope_time
-            blue_vals[i] = s_int_nb2 + s_slope_time * (times_num[i] - times_num[bw_start])
+            blue_slopes[i]       = s_slope_nb2  # price/bar
+            blue_vals[i] = s_int_nb2 + s_slope_nb2 * (i - bw_start)
         else:
             if i > 0:
                 purple_slopes[i]       = purple_slopes[i-1]
                 purple_start_prices[i] = purple_start_prices[i-1]
-                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - times_num[pw_start])
+                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (i - pw_start)
                 blue_slopes[i]       = blue_slopes[i-1]
                 blue_start_prices[i] = blue_start_prices[i-1]
-                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
+                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (i - bw_start)
 
         # Keep p_anchor_p/b_anchor_p in sync for compatibility
         p_anchor_p = highs_arr[p_anchor_idx]
@@ -454,6 +449,7 @@ def _run_signals_nb(
     magenta_vals, magenta_slopes,
     lime_vals, lime_slopes_arr,
     x_per_unit, y_per_unit,
+    pts_per_bar_visual,
     steep_angle_threshold, proximity_points,
     min_reversal_minutes, confirmation_bars,
     first_entry_steep_only,
@@ -468,7 +464,9 @@ def _run_signals_nb(
     sig_type  = np.zeros(n, dtype=np.int8)
     sig_price = np.zeros(n, dtype=np.float64)
     sig_liq   = np.zeros(n, dtype=np.bool_)
-    partial_tp_arr = np.zeros(n, dtype=np.bool_)  # True on bar where partial TP fires
+    sig_spike = np.zeros(n, dtype=np.bool_)   # True = spike exit (reverse), False = trail stop (go flat)
+    partial_tp_arr  = np.zeros(n, dtype=np.bool_)
+    session_pl_arr  = np.zeros(n, dtype=np.float64)  # cumulative 2-contract P/L per bar
 
     pos = 0  # 0=flat, 1=long, 2=short
     entry_price = 0.0
@@ -514,13 +512,16 @@ def _run_signals_nb(
                 and (i - entry_time_idx) > 0):
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
             if unrealized >= spike_profit_pts:
-                session_pl += unrealized
+                session_pl += unrealized  # close current position
                 sig_type[i] = 2 if pos == 1 else 1
                 sig_price[i] = close
                 sig_liq[i] = True
-                pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                sig_spike[i] = True  # spike exit — reverse into opposite direction
+                # Reverse: open opposite position at same price
+                new_pos = 2 if pos == 1 else 1
+                pos = new_pos; entry_price = close; entry_time_num = times_num[i]
                 trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                entry_time_idx = 0; liquidated = True
+                entry_time_idx = i; partial_taken = False; liquidated = True
 
         # --- Trailing stop v4 ---
         # threshold=50pts, angles=50/60/70, anchor locked once set
@@ -595,8 +596,8 @@ def _run_signals_nb(
 
         # Angle readiness — for first entry, require purple or blue to be steep enough
         if min_entry_angle > 0.0 and not first_trade_done:
-            _pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
-            _ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope)   * x_per_unit / y_per_unit)))
+            _pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) / pts_per_bar_visual)))
+            _ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope)   / pts_per_bar_visual)))
             angle_ready = max(_pa, _ba) >= min_entry_angle
         else:
             angle_ready = True
@@ -624,32 +625,32 @@ def _run_signals_nb(
                         if prev_close <= prev_orange and close > prev_orange:
                             new_cross = True; pending_ray_val = prev_orange
                         if not new_cross:
-                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) / pts_per_bar_visual)))
                             if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
                                 if abs(close - curr_orange) > proximity_points:
                                     new_cross = True; pending_ray_val = prev_purple
                         if not new_cross and i > 0 and not np.isnan(magenta_vals[i-1]):
                             pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
-                            ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                            ma = abs(np.rad2deg(np.arctan(abs(ms) / pts_per_bar_visual))) if not np.isnan(ms) else 999.0
                             if ma < steep_angle_threshold and prev_close <= pm and close > pm:
                                 if abs(close - curr_orange) > proximity_points:
                                     new_cross = True; pending_ray_val = pm
                         if new_cross: pending_buy = True; pending_sell = False
                     else:
                         if prev_close <= prev_orange and close > prev_orange:
-                            purple_ang = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            purple_ang = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) / pts_per_bar_visual)))
                             strong_downtrend = (first_entry_steep_only and not first_trade_done and
                                                 prev_purple_slope < 0.0 and purple_ang >= steep_angle_threshold * 0.5)
                             if not strong_downtrend:
                                 buy_triggered = True
                         if not buy_triggered:
-                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
+                            pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) / pts_per_bar_visual)))
                             if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
                                 if abs(close - curr_orange) > proximity_points:
                                     buy_triggered = True
                         if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
                             pm = magenta_vals[i-1]; ms = magenta_slopes[i-1]
-                            ma = abs(np.rad2deg(np.arctan(abs(ms) * x_per_unit / y_per_unit))) if not np.isnan(ms) else 999.0
+                            ma = abs(np.rad2deg(np.arctan(abs(ms) / pts_per_bar_visual))) if not np.isnan(ms) else 999.0
                             if ma < steep_angle_threshold and prev_close <= pm and close > pm:
                                 if abs(close - curr_orange) > proximity_points:
                                     buy_triggered = True
@@ -682,32 +683,32 @@ def _run_signals_nb(
                         if prev_close >= prev_yellow and close < prev_yellow:
                             new_cross = True; pending_ray_val = prev_yellow
                         if not new_cross:
-                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) / pts_per_bar_visual)))
                             if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
                                 if abs(close - curr_yellow) > proximity_points:
                                     new_cross = True; pending_ray_val = prev_blue
                         if not new_cross and i > 0 and not np.isnan(lime_vals[i-1]):
                             pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
-                            la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                            la = abs(np.rad2deg(np.arctan(abs(ls) / pts_per_bar_visual))) if not np.isnan(ls) else 999.0
                             if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
                                 if abs(close - curr_yellow) > proximity_points:
                                     new_cross = True; pending_ray_val = pl2
                         if new_cross: pending_sell = True; pending_buy = False
                     else:
                         if prev_close >= prev_yellow and close < prev_yellow:
-                            blue_ang = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            blue_ang = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) / pts_per_bar_visual)))
                             strong_uptrend = (first_entry_steep_only and not first_trade_done and
                                               prev_blue_slope > 0.0 and blue_ang >= steep_angle_threshold * 0.5)
                             if not strong_uptrend:
                                 sell_triggered = True
                         if not sell_triggered:
-                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) * x_per_unit / y_per_unit)))
+                            ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope) / pts_per_bar_visual)))
                             if ba < steep_angle_threshold and prev_close >= prev_blue and close < prev_blue:
                                 if abs(close - curr_yellow) > proximity_points:
                                     sell_triggered = True
                         if not sell_triggered and i > 0 and not np.isnan(lime_vals[i-1]):
                             pl2 = lime_vals[i-1]; ls = lime_slopes_arr[i-1]
-                            la = abs(np.rad2deg(np.arctan(abs(ls) * x_per_unit / y_per_unit))) if not np.isnan(ls) else 999.0
+                            la = abs(np.rad2deg(np.arctan(abs(ls) / pts_per_bar_visual))) if not np.isnan(ls) else 999.0
                             if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
                                 if abs(close - curr_yellow) > proximity_points:
                                     sell_triggered = True
@@ -717,7 +718,15 @@ def _run_signals_nb(
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
 
-    return sig_type, sig_price, sig_liq, partial_tp_arr
+        # Track cumulative 2-contract P/L (realized + unrealized on contract 2)
+        if pos == 0 or entry_price == 0.0:
+            session_pl_arr[i] = session_pl
+        elif pos == 1:
+            session_pl_arr[i] = session_pl + (closes_arr[i] - entry_price)
+        else:
+            session_pl_arr[i] = session_pl + (entry_price - closes_arr[i])
+
+    return sig_type, sig_price, sig_liq, sig_spike, partial_tp_arr, session_pl_arr
 
 
 def run_trading_algo_fast(
@@ -786,8 +795,12 @@ def run_trading_algo_fast(
         orange_slope_val, yellow_slope_val,
     )
 
+    # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)
+    # 75 bars visible on the standard chart window
+    pts_per_bar_visual = _y_range / 75.0
+
     # --- Signal detection — Numba compiled ---
-    sig_type, sig_price, sig_liq, partial_tp_arr = _run_signals_nb(
+    sig_type, sig_price, sig_liq, sig_spike, partial_tp_arr, session_pl_arr = _run_signals_nb(
         n, cutoff_idx,
         closes_arr, highs_arr, lows_arr, times_num,
         orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -796,6 +809,7 @@ def run_trading_algo_fast(
         magenta_vals, magenta_slopes,
         lime_vals, lime_slopes_arr,
         x_per_unit, y_per_unit,
+        pts_per_bar_visual,
         cfg.steep_angle_threshold, cfg.proximity_points,
         cfg.min_reversal_minutes, cfg.confirmation_bars,
         1 if cfg.first_entry_steep_only else 0,
@@ -811,17 +825,25 @@ def run_trading_algo_fast(
     buy_signals: Dict = {}
     sell_signals: Dict = {}
     liquidation_timestamps: set = set()
+    spike_timestamps: set = set()
     for i in range(n):
         if sig_type[i] == 1:
             buy_signals[times_idx[i]] = sig_price[i]
             if sig_liq[i]: liquidation_timestamps.add(times_idx[i])
+            if sig_spike[i]: spike_timestamps.add(times_idx[i])
         elif sig_type[i] == 2:
             sell_signals[times_idx[i]] = sig_price[i]
             if sig_liq[i]: liquidation_timestamps.add(times_idx[i])
+            if sig_spike[i]: spike_timestamps.add(times_idx[i])
+
+    # Spike exits reverse into opposite direction — remove from liquidation set
+    liquidation_timestamps -= spike_timestamps
 
     # Build result DataFrame (same format as original)
     trading_halted = False; halt_time = None
     result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
+    result["session_pl"] = session_pl_arr  # cumulative 2-contract P/L, bar by bar
+    result["is_spike_exit"] = [times_idx[i] in spike_timestamps for i in range(n)]
 
 
     result["orange_ray"] = orange_vals
@@ -855,8 +877,9 @@ def run_trading_algo_fast(
 
     result["orange_angle"] = _display_angle_from_slope(orange_slope_val, x_per_unit, y_per_unit)
     result["yellow_angle"] = _display_angle_from_slope(yellow_slope_val, x_per_unit, y_per_unit)
-    result["purple_angle"] = [_display_angle_from_slope(s, x_per_unit, y_per_unit) for s in purple_slopes]
-    result["blue_angle"]   = [_display_angle_from_slope(s, x_per_unit, y_per_unit) for s in blue_slopes]
+    # purple/blue slopes are price/bar — use pts_per_bar_visual for correct angle
+    result["purple_angle"] = [float(abs(np.rad2deg(np.arctan(abs(s) / pts_per_bar_visual)))) for s in purple_slopes]
+    result["blue_angle"]   = [float(abs(np.rad2deg(np.arctan(abs(s) / pts_per_bar_visual)))) for s in blue_slopes]
 
     _end_num = times_num[-1]
     result["orange_ray_end_price"] = orange_vals[-1]
