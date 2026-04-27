@@ -54,6 +54,7 @@ class AlgoConfig:
     num_contracts: int = 2
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
+    swing_anchor_threshold: float = 25.0  # min pts to qualify as swing high/low for ray re-anchoring
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +252,7 @@ def _fit_trendlines_nb(high, low, close):
 def _compute_rays_nb(
     n, highs_arr, lows_arr, closes_arr, times_num,
     orange_slope_val, yellow_slope_val,
+    swing_anchor_threshold=25.0,
 ):
     """Compute all ray values in a single Numba-compiled pass.
     Returns: orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -278,7 +280,7 @@ def _compute_rays_nb(
     # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
     # Blue anchors at session low, then re-anchors at each subsequent HIGHER swing low.
     # This keeps lines steep by shortening the window as the session progresses.
-    SWING_ANCHOR_THRESHOLD = 25.0  # min pts to qualify as a swing high/low
+    SWING_ANCHOR_THRESHOLD = swing_anchor_threshold
     purple_vals         = np.full(n, highs_arr[0])
     blue_vals           = np.full(n, lows_arr[0])
     purple_slopes       = np.zeros(n)
@@ -793,6 +795,7 @@ def run_trading_algo_fast(
      p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx) = _compute_rays_nb(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
+        cfg.swing_anchor_threshold,
     )
 
     # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)

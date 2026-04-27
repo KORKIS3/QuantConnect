@@ -8,18 +8,19 @@ Build a bot ("Fred") that trades YM E-mini Dow Jones futures exactly the way the
 - **Full day session only: 9:30 ET start, 17:00 ET end**
 - Never use quick mode (10:30 end) or partial day windows for final results
 - Always report: Total Pts, Avg/Day, Win%, Win Days, Lose Days
-- Always compare against the current baseline: **265.9 pts/day, 78.8% win days, 122 losing days (as of 2026-04-25, 670 days)**
+- **Always compare against the current baseline: **348.5 pts/day, 82.3% win days, 109 losing days (as of 2026-04-27, 670 days)**
 
 ## Current Proven Settings (AlgoConfig)
 ```python
 AlgoConfig(
-    warmup_minutes=12,          # first signal fires on 9:42 close
-    steep_angle_threshold=70.0, # proven optimal over 535 days
-    proximity_points=15.0,      # suppress steep ray cross if within 15pts of shallow ray
-    min_reversal_minutes=0,     # CHANGED 2026-04-22: removing 10-min hold gained +88pts/day (230 vs 142)
-    min_entry_angle=30.0,       # wait for purple or blue to reach 30° before first entry
-    partial_tp_pts=50.0,        # close 1 of 2 contracts at 50pts profit
-    wm_shield_distance=12.0,    # suppress reversal if water mark cluster within 12pts
+    warmup_minutes=7,
+    steep_angle_threshold=90.0,
+    proximity_points=4.0,
+    min_reversal_minutes=0,
+    min_entry_angle=0.0,
+    partial_tp_pts=50.0,
+    wm_shield_distance=0.0,
+    swing_anchor_threshold=10.0,
 )
 ```
 
