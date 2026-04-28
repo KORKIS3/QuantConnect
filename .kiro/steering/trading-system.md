@@ -8,7 +8,7 @@ Build a bot ("Fred") that trades YM E-mini Dow Jones futures exactly the way the
 - **Full day session only: 9:30 ET start, 17:00 ET end**
 - Never use quick mode (10:30 end) or partial day windows for final results
 - Always report: Total Pts, Avg/Day, Win%, Win Days, Lose Days
-- Always compare against the current baseline: **265.9 pts/day, 78.8% win days, 122 losing days (as of 2026-04-25, 670 days)**
+- Always compare against the current baseline: **275.3 pts/day, 74.8% win days, 145 losing days (as of 2026-04-28, 671 days)**
 
 ## Current Proven Settings (AlgoConfig)
 ```python

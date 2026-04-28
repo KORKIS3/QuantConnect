@@ -312,17 +312,13 @@ class ChartPlotter:
             "goldenrod", "gold", -28)
 
         purple_angle = row["purple_angle"][-1] if isinstance(row["purple_angle"], list) else float(row["purple_angle"])
-        self._draw_ray("ray_purple", "purple_angle_annotation",
-            row["purple_ray_start_time"], float(row["purple_ray_start_price"]),
-            float(row["purple_ray_end_price"]),
-            current_time, float(row["purple_ray"]), purple_angle,
+        self._draw_ray_series("ray_purple", "purple_angle_annotation",
+            current_data, "purple_ray", current_time, purple_angle,
             "darkviolet", "darkviolet", 14)
 
         blue_angle = row["blue_angle"][-1] if isinstance(row["blue_angle"], list) else float(row["blue_angle"])
-        self._draw_ray("ray_blue", "blue_angle_annotation",
-            row["blue_ray_start_time"], float(row["blue_ray_start_price"]),
-            float(row["blue_ray_end_price"]),
-            current_time, float(row["blue_ray"]), blue_angle,
+        self._draw_ray_series("ray_blue", "blue_angle_annotation",
+            current_data, "blue_ray", current_time, blue_angle,
             "blue", "blue", 28)
 
         self.lines["ray_dark_purple"].set_data([], [])

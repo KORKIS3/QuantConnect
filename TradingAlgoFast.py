@@ -294,8 +294,8 @@ def _compute_rays_nb(
 
     purple_vals         = np.full(n, highs_arr[0])
     blue_vals           = np.full(n, lows_arr[0])
-    purple_slopes       = np.full(n, _init_purple_slope)
-    blue_slopes         = np.full(n, _init_blue_slope)
+    purple_slopes       = np.zeros(n)
+    blue_slopes         = np.zeros(n)
     purple_start_prices = np.full(n, highs_arr[0])
     blue_start_prices   = np.full(n, lows_arr[0])
     purple_anchor_idxs  = np.zeros(n, dtype=np.int64)
@@ -309,26 +309,32 @@ def _compute_rays_nb(
     b_anchor_idx = 0
 
     for i in range(n):
-        # Track absolute session high/low — also update anchor immediately
+        # Track absolute session high/low
         if highs_arr[i] > p_session_high:
             p_session_high = highs_arr[i]; p_session_high_idx = i
-            p_anchor_idx = i  # purple jumps to every new session high
+            p_anchor_idx = i  # new session high becomes new anchor
         if lows_arr[i] < b_session_low:
             b_session_low = lows_arr[i]; b_session_low_idx = i
-            b_anchor_idx = i  # blue jumps to every new session low
+            b_anchor_idx = i  # new session low becomes new anchor
 
-        # Also re-anchor at most recent confirmed swing high/low (1-bar confirmation)
+        # Re-anchor purple at most recent swing high that is LOWER than current anchor
+        # (confirmed 1 bar later — bar j is a swing high if higher than both neighbours)
         if i >= 2:
             j = i - 1
             h_j = highs_arr[j]
             if (h_j - highs_arr[j-1] >= SWING_ANCHOR_THRESHOLD and
-                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD):
-                p_anchor_idx = j  # update to most recent confirmed swing high
+                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD and
+                j > p_anchor_idx and
+                h_j < highs_arr[p_anchor_idx]):
+                p_anchor_idx = j
 
+            # Re-anchor blue at most recent swing low that is HIGHER than current anchor
             l_j = lows_arr[j]
             if (lows_arr[j-1] - l_j >= SWING_ANCHOR_THRESHOLD and
-                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD):
-                b_anchor_idx = j  # update to most recent confirmed swing low
+                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD and
+                j > b_anchor_idx and
+                l_j > lows_arr[b_anchor_idx]):
+                b_anchor_idx = j
 
         pw_start = p_anchor_idx; bw_start = b_anchor_idx
         pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
@@ -338,35 +344,29 @@ def _compute_rays_nb(
         if pw_len >= 2 and bw_len >= 2:
             pw_h = highs_arr[pw_start:i+1]; pw_l = lows_arr[pw_start:i+1]; pw_c = closes_arr[pw_start:i+1]
             _, _, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            # Purple is resistance — always descends (clamp slope to <= 0)
-            if r_slope_nb > 0.0:
-                r_slope_nb = 0.0
-            # Convert price/bar → price/datenum for consistent projection
             time_step = times_num[pw_start+1] - times_num[pw_start]
             if time_step == 0.0: time_step = 1.0
             r_slope_time = r_slope_nb / time_step
-            # Pin start to actual anchor high so line touches the highs
-            purple_start_prices[i] = highs_arr[pw_start]
+            purple_start_prices[i] = r_int_nb
             purple_slopes[i]       = r_slope_time
-            purple_vals[i] = highs_arr[pw_start] + r_slope_time * (times_num[i] - times_num[pw_start])
+            purple_vals[i] = r_int_nb + r_slope_time * (times_num[i] - times_num[pw_start])
 
             bw_h = highs_arr[bw_start:i+1]; bw_l = lows_arr[bw_start:i+1]; bw_c = closes_arr[bw_start:i+1]
             s_slope_nb2, s_int_nb2, _, _ = _fit_trendlines_nb(bw_h, bw_l, bw_c)
             time_step = times_num[bw_start+1] - times_num[bw_start]
             if time_step == 0.0: time_step = 1.0
             s_slope_time = s_slope_nb2 / time_step
-            # Pin start to actual anchor low so line touches the lows
-            blue_start_prices[i] = lows_arr[bw_start]
+            blue_start_prices[i] = s_int_nb2
             blue_slopes[i]       = s_slope_time
-            blue_vals[i] = lows_arr[bw_start] + s_slope_time * (times_num[i] - times_num[bw_start])
+            blue_vals[i] = s_int_nb2 + s_slope_time * (times_num[i] - times_num[bw_start])
         else:
             if i > 0:
                 purple_slopes[i]       = purple_slopes[i-1]
-                purple_start_prices[i] = highs_arr[p_anchor_idx]
-                purple_vals[i] = highs_arr[p_anchor_idx] + purple_slopes[i] * (times_num[i] - times_num[pw_start])
+                purple_start_prices[i] = purple_start_prices[i-1]
+                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - times_num[pw_start])
                 blue_slopes[i]       = blue_slopes[i-1]
-                blue_start_prices[i] = lows_arr[b_anchor_idx]
-                blue_vals[i] = lows_arr[b_anchor_idx] + blue_slopes[i] * (times_num[i] - times_num[bw_start])
+                blue_start_prices[i] = blue_start_prices[i-1]
+                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
 
         # Keep p_anchor_p/b_anchor_p in sync for compatibility
         p_anchor_p = highs_arr[p_anchor_idx]
@@ -504,6 +504,8 @@ def _run_signals_nb(
     trail_anchor_p = -1e30   # locked trailing stop anchor price (v4)
     trail_anchor_t = 0.0     # locked trailing stop anchor time (v4)
     entry_time_idx = 0        # bar index of current entry
+    orange_breakout = False   # price has closed above orange at least once this session
+    yellow_breakout = False   # price has closed below yellow at least once this session
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -519,6 +521,10 @@ def _run_signals_nb(
         prev_blue_slope   = blue_slopes[i - 1]
         liquidated = False
         is_last = (i == n - 1)
+
+        # Track orange/yellow breakouts — once price closes outside, give trend more weight
+        if close > orange_vals[i]: orange_breakout = True
+        if close < yellow_vals[i]: yellow_breakout = True
 
         # --- Partial take-profit (1 of 2 contracts at partial_tp_pts) ---
         if (partial_tp_pts > 0.0 and pos != 0 and not partial_taken
@@ -614,6 +620,12 @@ def _run_signals_nb(
         safety_override   = (pos == 2 and orange_cross_buy) or (pos == 1 and yellow_cross_sell)
         reversal_blocked  = min_reversal_minutes > 0 and mins_since < min_reversal_minutes and not safety_override
 
+        # Orange/yellow breakout patience:
+        # If orange breakout occurred THIS trade, long positions only reverse on yellow cross (not purple/blue)
+        # If yellow breakout occurred THIS trade, short positions only reverse on orange cross (not purple/blue)
+        breakout_patience_buy  = False
+        breakout_patience_sell = False
+
         # Angle readiness — for first entry, require purple or blue to be steep enough
         if min_entry_angle > 0.0 and not first_trade_done:
             _pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
@@ -626,6 +638,8 @@ def _run_signals_nb(
         if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready:
             if pos == 2 and reversal_blocked:
                 pending_buy = False
+            elif pos == 2 and breakout_patience_buy:
+                pending_buy = False  # yellow breakout active — only reverse on orange cross
             else:
                 # Water mark shield: suppress reversal if cluster supports short position
                 wm_shielded = False
@@ -679,11 +693,14 @@ def _run_signals_nb(
                         sig_type[i] = 1; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        orange_breakout = False; yellow_breakout = False
 
         # --- SELL signals ---
         if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
+            elif pos == 1 and breakout_patience_sell:
+                pending_sell = False  # orange breakout active — only reverse on yellow cross
             else:
                 # Water mark shield: suppress reversal if cluster supports long position
                 wm_shielded = False
@@ -737,6 +754,7 @@ def _run_signals_nb(
                         sig_type[i] = 2; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        orange_breakout = False; yellow_breakout = False
 
         # Track cumulative 2-contract P/L (realized + unrealized on contract 2)
         if pos == 0 or entry_price == 0.0:
