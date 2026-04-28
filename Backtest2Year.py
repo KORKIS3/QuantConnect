@@ -78,14 +78,15 @@ def _process_day(fname, quick=False):
     fpath = os.path.join(_DATA_ROOT, fname)
     # Identical config to live IBDataBridge — single source of truth
     config = AlgoConfig(
-        warmup_minutes=7,
-        steep_angle_threshold=90.0,
-        proximity_points=4.0,
+        warmup_minutes=12,
+        steep_angle_threshold=70.0,
+        proximity_points=15.0,
         min_reversal_minutes=0,
-        min_entry_angle=0.0,
+        min_entry_angle=30.0,
         partial_tp_pts=50.0,
-        wm_shield_distance=0.0,
-        swing_anchor_threshold=10.0,
+        spike_profit_pts=100.0,
+        spike_profit_bars=5,
+        wm_shield_distance=12.0,
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}

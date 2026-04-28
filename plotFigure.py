@@ -116,8 +116,8 @@ class ChartPlotter:
         self.ax = None
         self.ax_top = None
         self.lines = {}
-        self.signal_markers = {"buy": [], "sell": [], "halt": []}
-        self.signal_annotations = {"buy": [], "sell": [], "halt": []}
+        self.signal_markers = {"buy": [], "sell": [], "halt": [], "tp": []}
+        self.signal_annotations = {"buy": [], "sell": [], "halt": [], "tp": []}
 
         self.orange_angle_annotation = None
         self.yellow_angle_annotation = None
@@ -211,12 +211,7 @@ class ChartPlotter:
         self.lines["high"].set_data(times,  current_data["High"])
         self.lines["low"].set_data(times,   current_data["Low"])
         self.lines["close"].set_data(times, current_data["Close"])
-
-        # Dynamically adjust y-axis so High/Low/Close always stay in view.
-        data_min = float(current_data["Low"].min())
-        data_max = float(current_data["High"].max())
-        padding  = max((data_max - data_min) * 0.15, 20.0)
-        self.ax.set_ylim(data_min - padding, data_max + padding)
+        # Y-axis locked to full session range (set once in create_figure)
 
     def _draw_ray(self, line_key, ann_attr,
                   start_time, start_price, end_price,
@@ -232,6 +227,64 @@ class ChartPlotter:
             except Exception:
                 pass
 
+        va = "top" if y_offset < 0 else "bottom"
+        ann = self.ax.annotate(
+            f"{abs(angle):.1f}°",
+            xy=(current_time, current_price),
+            xytext=(6, y_offset), textcoords="offset points",
+            ha="left", va=va, fontsize=8, color=color, fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      alpha=0.75, edgecolor=edge_color, linewidth=1.5))
+        setattr(self, ann_attr, ann)
+
+    def _draw_ray_series(self, line_key, ann_attr,
+                         current_data, col, current_time, angle,
+                         color, edge_color, y_offset):
+        """Draw a ray using the actual bar-by-bar values from the dataframe column."""
+        series = current_data[col].dropna()
+        if series.empty:
+            self.lines[line_key].set_data([], [])
+        else:
+            self.lines[line_key].set_data(series.index, series.values)
+
+        old_ann = getattr(self, ann_attr, None)
+        if old_ann is not None:
+            try:
+                old_ann.remove()
+            except Exception:
+                pass
+
+        current_price = float(current_data[col].iloc[-1]) if not pd.isna(current_data[col].iloc[-1]) else 0
+        va = "top" if y_offset < 0 else "bottom"
+        ann = self.ax.annotate(
+            f"{abs(angle):.1f}°",
+            xy=(current_time, current_price),
+            xytext=(6, y_offset), textcoords="offset points",
+            ha="left", va=va, fontsize=8, color=color, fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      alpha=0.75, edgecolor=edge_color, linewidth=1.5))
+        setattr(self, ann_attr, ann)
+
+    def _draw_ray_straight(self, line_key, ann_attr,
+                           anchor_time, anchor_price, current_time, current_price,
+                           angle, color, edge_color, y_offset):
+        """Draw a straight ray from anchor point, projected to session end."""
+        session_end = self.data.index[-1]
+        dt_anchor_to_current = (current_time - anchor_time).total_seconds()
+        dt_anchor_to_end     = (session_end  - anchor_time).total_seconds()
+        if dt_anchor_to_current > 0:
+            slope = (current_price - anchor_price) / dt_anchor_to_current
+            projected_end = anchor_price + slope * dt_anchor_to_end
+        else:
+            projected_end = anchor_price
+        self.lines[line_key].set_data(
+            [anchor_time, session_end],
+            [anchor_price, projected_end])
+
+        old_ann = getattr(self, ann_attr, None)
+        if old_ann is not None:
+            try: old_ann.remove()
+            except Exception: pass
         va = "top" if y_offset < 0 else "bottom"
         ann = self.ax.annotate(
             f"{abs(angle):.1f}°",
@@ -258,16 +311,18 @@ class ChartPlotter:
             current_time, float(row["yellow_ray"]), float(row["yellow_angle"]),
             "goldenrod", "gold", -28)
 
+        purple_angle = row["purple_angle"][-1] if isinstance(row["purple_angle"], list) else float(row["purple_angle"])
         self._draw_ray("ray_purple", "purple_angle_annotation",
             row["purple_ray_start_time"], float(row["purple_ray_start_price"]),
             float(row["purple_ray_end_price"]),
-            current_time, float(row["purple_ray"]), float(row["purple_angle"]),
+            current_time, float(row["purple_ray"]), purple_angle,
             "darkviolet", "darkviolet", 14)
 
+        blue_angle = row["blue_angle"][-1] if isinstance(row["blue_angle"], list) else float(row["blue_angle"])
         self._draw_ray("ray_blue", "blue_angle_annotation",
             row["blue_ray_start_time"], float(row["blue_ray_start_price"]),
             float(row["blue_ray_end_price"]),
-            current_time, float(row["blue_ray"]), float(row["blue_angle"]),
+            current_time, float(row["blue_ray"]), blue_angle,
             "blue", "blue", 28)
 
         self.lines["ray_dark_purple"].set_data([], [])
@@ -332,19 +387,19 @@ class ChartPlotter:
             self.annotations.append(ann)
 
     def update_signal_markers(self, current_data):
-        for marker in self.signal_markers["buy"] + self.signal_markers["sell"] + self.signal_markers["halt"]:
+        for marker in self.signal_markers["buy"] + self.signal_markers["sell"] + self.signal_markers["halt"] + self.signal_markers.get("tp", []):
             try:
                 marker.remove()
             except Exception:
                 pass
-        for ann in self.signal_annotations["buy"] + self.signal_annotations["sell"] + self.signal_annotations["halt"]:
+        for ann in self.signal_annotations["buy"] + self.signal_annotations["sell"] + self.signal_annotations["halt"] + self.signal_annotations.get("tp", []):
             try:
                 ann.remove()
             except Exception:
                 pass
 
-        self.signal_markers     = {"buy": [], "sell": [], "halt": []}
-        self.signal_annotations = {"buy": [], "sell": [], "halt": []}
+        self.signal_markers     = {"buy": [], "sell": [], "halt": [], "tp": []}
+        self.signal_annotations = {"buy": [], "sell": [], "halt": [], "tp": []}
 
         if "signal" not in current_data.columns:
             return
@@ -388,6 +443,21 @@ class ChartPlotter:
                               edgecolor="darkred", linewidth=1.5),
                     arrowprops=dict(arrowstyle="->", color="red", lw=1.5))
                 self.signal_annotations["sell"].append(ann)
+
+            # Partial TP marker — gold diamond on the bar where TP fired
+            if bool(row.get("partial_tp", False)):
+                tp_price = float(row.get("Close", 0))
+                marker, = self.ax.plot(ts, tp_price, marker="D", markersize=9,
+                                       color="gold", markeredgecolor="darkorange",
+                                       markeredgewidth=1.5, zorder=11)
+                self.signal_markers["tp"].append(marker)
+                ann = self.ax.annotate(
+                    f"TP\n{int(tp_price)}", xy=(ts, tp_price), xytext=(18, 0),
+                    textcoords="offset points",
+                    ha="left", va="center", fontsize=7, color="white", fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="darkorange", alpha=0.9,
+                              edgecolor="gold", linewidth=1.2))
+                self.signal_annotations["tp"].append(ann)
 
     def update_stats(self, current_data):
         row   = current_data.iloc[-1]

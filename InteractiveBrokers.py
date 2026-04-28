@@ -276,6 +276,8 @@ class IBDataBridge:
         self._window_set: bool = False
         self._session_start_dt = None
         self._last_hourly_save: Optional[int] = None  # tracks last hour we saved a snapshot
+        self._last_signal_ts: Optional[pd.Timestamp] = None   # last signal we acted on
+        self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
 
     # -- connection -----------------------------------------------------------
 
@@ -522,6 +524,8 @@ class IBDataBridge:
         self._window_set = False
         self._session_start_dt = None
         self._last_hourly_save = None
+        self._last_signal_ts = None
+        self._last_partial_tp_ts = None
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample accumulated 5-second bars to OHLCV bars.
@@ -674,25 +678,6 @@ class IBDataBridge:
             except Exception as exc:
                 log.error("[OnBar] initial chart error: %s", exc)
 
-        # 16:55 early close — check position and liquidate before market close
-        try:
-            close_naive = datetime.strptime(f"{bar_date} 16:55:00", "%Y-%m-%d %H:%M:%S")
-            close_dt = _EST.localize(close_naive)
-            if bar_time >= close_dt and not self._session_ended:
-                final_position = "flat"
-                if self._last_result is not None and not self._last_result.empty:
-                    final_position = str(self._last_result["position"].iloc[-1])
-                if final_position == "long":
-                    log.info("[EOD] 16:55 — flattening LONG position")
-                    self._place_order("SELL", liquidate=True)
-                elif final_position == "short":
-                    log.info("[EOD] 16:55 — flattening SHORT position")
-                    self._place_order("BUY", liquidate=True)
-                else:
-                    log.info("[EOD] 16:55 — already flat, nothing to do")
-        except Exception as exc:
-            log.error("[EOD] 16:55 flatten error: %s", exc)
-
         # Auto-end session at end_time.
         try:
             end_naive = datetime.strptime(f"{bar_date} {self.end_time}:00", "%Y-%m-%d %H:%M:%S")
@@ -806,40 +791,54 @@ class IBDataBridge:
             return
 
         self._last_result = result
-        last = result.iloc[-1]
-        signal = str(last.get("signal", ""))
-        is_liq = bool(last.get("is_liquidation", False))
-        pl     = float(last.get("pl", 0.0))
-        price  = float(minute_df["Close"].iloc[-1])
-        pos    = str(last.get("position", "flat"))
 
-        # Partial take-profit: close 1 contract when partial_tp fires
-        partial_tp = bool(last.get("partial_tp", False))
-        if partial_tp:
+        # --- Scan ALL new signals since last call, not just the last bar ---
+        new_rows = result[result["signal"].isin(["BUY", "SELL"])]
+        if self._last_signal_ts is not None:
+            new_rows = new_rows[new_rows.index > self._last_signal_ts]
+
+        for ts, last in new_rows.iterrows():
+            signal = str(last.get("signal", ""))
+            is_liq = bool(last.get("is_liquidation", False))
+            pl     = float(last.get("pl", 0.0))
+            price  = float(minute_df["Close"].iloc[-1])
+            pos    = str(last.get("position", "flat"))
+
+            if signal == "BUY":
+                if is_liq:
+                    log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
+                    self._place_order("SELL", liquidate=True)
+                else:
+                    log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
+                    self._place_order("BUY")
+            elif signal == "SELL":
+                if is_liq:
+                    log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
+                    self._place_order("BUY", liquidate=True)
+                else:
+                    log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
+                    self._place_order("SELL")
+            self._last_signal_ts = ts
+
+        # --- Scan ALL new partial TPs since last call ---
+        new_tp_rows = result[result["partial_tp"] == True]
+        if self._last_partial_tp_ts is not None:
+            new_tp_rows = new_tp_rows[new_tp_rows.index > self._last_partial_tp_ts]
+
+        for ts, last in new_tp_rows.iterrows():
+            pl  = float(last.get("pl", 0.0))
+            pos = str(last.get("position", "flat"))
+            price = float(minute_df["Close"].iloc[-1])
             log.info("[TradingAlgo] PARTIAL TP   price=%.2f  pl=%.1f  (1 contract)", price, pl)
             if pos == "long":
-                self._place_order("SELL")   # close 1 of 2 contracts
-            elif pos == "short":
-                self._place_order("BUY")    # close 1 of 2 contracts
-
-        if signal == "BUY":
-            if is_liq:
-                log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                self._place_order("SELL", liquidate=True)
-            else:
-                log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
-                self._place_order("BUY")
-        elif signal == "SELL":
-            if is_liq:
-                log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                self._place_order("BUY", liquidate=True)
-            else:
-                log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
                 self._place_order("SELL")
+            elif pos == "short":
+                self._place_order("BUY")
+            self._last_partial_tp_ts = ts
 
     # -- order execution ------------------------------------------------------
 
-    def _place_order(self, action: str, liquidate: bool = False) -> None:
+    def _place_order(self, action: str, liquidate: bool = False, partial_tp: bool = False) -> None:
         """Submit a market order for MYM contracts.
 
         - Entry (flat → long/short): 2 contracts
@@ -847,7 +846,7 @@ class IBDataBridge:
         - Liquidate (exit only): 2 contracts
         - Reversal (long → short or short → long): 4 contracts (close 2 + open 2)
         """
-        tag = "LIQUIDATE" if liquidate else action
+        tag = "LIQUIDATE" if liquidate else ("PARTIAL_TP" if partial_tp else action)
         if self.dry_run:
             log.info("[ORDER dry_run] %-10s  contract=%s", tag, self._contract.localSymbol)
             return
@@ -862,7 +861,9 @@ class IBDataBridge:
                 current_pos = -2
 
         # Calculate quantity needed
-        if liquidate:
+        if partial_tp:
+            qty = max(1, abs(current_pos) // 2)  # half of current position
+        elif liquidate:
             qty = abs(current_pos) if current_pos != 0 else 2
         else:
             if action == "BUY":

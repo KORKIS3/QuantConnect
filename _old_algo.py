@@ -1,4 +1,4 @@
-"""TradingAlgoFast.py
+﻿"""TradingAlgoFast.py
 
 Exact port of TradingAlgo.run_trading_algo using numpy arrays instead of
 pandas DataFrames for the inner loops. Produces IDENTICAL signals.
@@ -25,7 +25,7 @@ _EST = pytz.timezone("US/Eastern")
 
 
 # ---------------------------------------------------------------------------
-# AlgoConfig — single source of truth (moved here from TradingAlgo.py)
+# AlgoConfig ΓÇö single source of truth (moved here from TradingAlgo.py)
 # ---------------------------------------------------------------------------
 
 from dataclasses import dataclass
@@ -220,7 +220,7 @@ def _optimize_slope_nb(support, pivot, init_slope, y):
 
 @jit(nopython=True, cache=True)
 def _fit_trendlines_nb(high, low, close):
-    """Numba port of fit_trendlines_high_low — exact same logic."""
+    """Numba port of fit_trendlines_high_low ΓÇö exact same logic."""
     n = len(close)
     # Manual polyfit degree 1
     x_mean = 0.0; c_mean = 0.0
@@ -244,7 +244,7 @@ def _fit_trendlines_nb(high, low, close):
 
 
 # ---------------------------------------------------------------------------
-# Numba-compiled ray computation — all 6 rays in one pass
+# Numba-compiled ray computation ΓÇö all 6 rays in one pass
 # ---------------------------------------------------------------------------
 
 @jit(nopython=True, cache=True)
@@ -259,47 +259,32 @@ def _compute_rays_nb(
              p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx
     """
     # --- Orange ray ---
-    orange_vals          = np.zeros(n)
-    orange_anchor_prices = np.zeros(n)
-    orange_anchor_times  = np.zeros(n)
-    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]; o_anchor_i = 0
+    orange_vals = np.zeros(n)
+    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]
     for i in range(n):
         if highs_arr[i] > o_anchor_p:
-            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]; o_anchor_i = i
-        orange_vals[i]          = o_anchor_p + orange_slope_val * (times_num[i] - o_anchor_t)
-        orange_anchor_prices[i] = o_anchor_p
-        orange_anchor_times[i]  = float(o_anchor_i)  # store bar index
+            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]
+        orange_vals[i] = o_anchor_p + orange_slope_val * (times_num[i] - o_anchor_t)
 
     # --- Yellow ray ---
-    yellow_vals          = np.zeros(n)
-    yellow_anchor_prices = np.zeros(n)
-    yellow_anchor_times  = np.zeros(n)
-    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]; y_anchor_i = 0
+    yellow_vals = np.zeros(n)
+    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]
     for i in range(n):
         if lows_arr[i] < y_anchor_p:
-            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]; y_anchor_i = i
-        yellow_vals[i]          = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
-        yellow_anchor_prices[i] = y_anchor_p
-        yellow_anchor_times[i]  = float(y_anchor_i)  # store bar index
+            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]
+        yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
 
     # --- Purple/blue rays ---
     # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
     # Blue anchors at session low, then re-anchors at each subsequent HIGHER swing low.
     # This keeps lines steep by shortening the window as the session progresses.
-    SWING_ANCHOR_THRESHOLD = 25.0  # min pts to qualify as a swing high/low
-
-    # Initial slopes: orange -2.5°, yellow +2.5° (from cfg), purple -60°, blue +60°
-    _init_purple_slope = -np.tan(np.deg2rad(60.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
-    _init_blue_slope   =  np.tan(np.deg2rad(60.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
-
+    SWING_ANCHOR_THRESHOLD = 30.0  # min pts to qualify as a swing high/low
     purple_vals         = np.full(n, highs_arr[0])
     blue_vals           = np.full(n, lows_arr[0])
-    purple_slopes       = np.full(n, _init_purple_slope)
-    blue_slopes         = np.full(n, _init_blue_slope)
+    purple_slopes       = np.zeros(n)
+    blue_slopes         = np.zeros(n)
     purple_start_prices = np.full(n, highs_arr[0])
     blue_start_prices   = np.full(n, lows_arr[0])
-    purple_anchor_idxs  = np.zeros(n, dtype=np.int64)
-    blue_anchor_idxs    = np.zeros(n, dtype=np.int64)
 
     # Purple: start at session high, move forward to each lower swing high
     p_session_high = highs_arr[0]; p_session_high_idx = 0
@@ -317,34 +302,33 @@ def _compute_rays_nb(
             b_session_low = lows_arr[i]; b_session_low_idx = i
             b_anchor_idx = i  # new session low becomes new anchor
 
-        # Re-anchor at most recent confirmed swing high/low (any direction — follow the trend)
+        # Re-anchor purple at most recent swing high that is LOWER than current anchor
+        # (confirmed 1 bar later ΓÇö bar j is a swing high if higher than both neighbours)
         if i >= 2:
             j = i - 1
             h_j = highs_arr[j]
             if (h_j - highs_arr[j-1] >= SWING_ANCHOR_THRESHOLD and
                 h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD and
-                j > p_anchor_idx):
+                j > p_anchor_idx and
+                h_j < highs_arr[p_anchor_idx]):
+                # Lower swing high ΓÇö move anchor forward
                 p_anchor_idx = j
 
+            # Re-anchor blue at most recent swing low that is HIGHER than current anchor
             l_j = lows_arr[j]
             if (lows_arr[j-1] - l_j >= SWING_ANCHOR_THRESHOLD and
                 lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD and
-                j > b_anchor_idx):
+                j > b_anchor_idx and
+                l_j > lows_arr[b_anchor_idx]):
+                # Higher swing low ΓÇö move anchor forward
                 b_anchor_idx = j
 
         pw_start = p_anchor_idx; bw_start = b_anchor_idx
         pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
-        purple_anchor_idxs[i] = p_anchor_idx
-        blue_anchor_idxs[i]   = b_anchor_idx
 
         if pw_len >= 2 and bw_len >= 2:
             pw_h = highs_arr[pw_start:i+1]; pw_l = lows_arr[pw_start:i+1]; pw_c = closes_arr[pw_start:i+1]
             _, _, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            # Purple is resistance — always descends (clamp slope to <= 0)
-            if r_slope_nb > 0.0:
-                r_slope_nb = 0.0
-                r_int_nb = highs_arr[pw_start]  # anchor at the actual high
-            # Convert price/bar → price/datenum for consistent projection
             time_step = times_num[pw_start+1] - times_num[pw_start]
             if time_step == 0.0: time_step = 1.0
             r_slope_time = r_slope_nb / time_step
@@ -431,17 +415,13 @@ def _compute_rays_nb(
     return (orange_vals, yellow_vals, purple_vals, blue_vals,
             purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
             magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
-            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
-            o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
-            orange_anchor_prices, orange_anchor_times,
-            yellow_anchor_prices, yellow_anchor_times,
-            purple_anchor_idxs, blue_anchor_idxs)
+            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx)
 
 
 @jit(nopython=True, cache=True)
 def _has_wm_shield_nb(values, shield_dist, min_touches=4):
     """Check if any price cluster within shield_dist of values[-1] exists.
-    Simplified version for use inside Numba — no time span check."""
+    Simplified version for use inside Numba ΓÇö no time span check."""
     n = len(values)
     if n < min_touches:
         return False
@@ -474,7 +454,6 @@ def _run_signals_nb(
     magenta_vals, magenta_slopes,
     lime_vals, lime_slopes_arr,
     x_per_unit, y_per_unit,
-    pts_per_bar_visual,
     steep_angle_threshold, proximity_points,
     min_reversal_minutes, confirmation_bars,
     first_entry_steep_only,
@@ -482,15 +461,12 @@ def _run_signals_nb(
     partial_tp_pts,
     wm_shield_distance,
     wm_lookback,
-    spike_profit_pts,
-    spike_profit_bars,
 ):
-    """Pure numpy signal detection — returns parallel arrays of signals."""
+    """Pure numpy signal detection ΓÇö returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
     sig_price = np.zeros(n, dtype=np.float64)
     sig_liq   = np.zeros(n, dtype=np.bool_)
-    partial_tp_arr  = np.zeros(n, dtype=np.bool_)
-    session_pl_arr  = np.zeros(n, dtype=np.float64)  # cumulative 2-contract P/L per bar
+    partial_tp_arr = np.zeros(n, dtype=np.bool_)  # True on bar where partial TP fires
 
     pos = 0  # 0=flat, 1=long, 2=short
     entry_price = 0.0
@@ -529,20 +505,6 @@ def _run_signals_nb(
                 session_pl += unrealized  # book 1 contract
                 partial_taken = True
                 partial_tp_arr[i] = True  # flag this bar for order placement
-
-        # --- Spike profit exit: if unrealized >= spike_profit_pts within spike_profit_bars ---
-        if (spike_profit_pts > 0.0 and pos != 0 and entry_price != 0.0
-                and not liquidated and (i - entry_time_idx) <= spike_profit_bars
-                and (i - entry_time_idx) > 0):
-            unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
-            if unrealized >= spike_profit_pts:
-                session_pl += unrealized
-                sig_type[i] = 2 if pos == 1 else 1
-                sig_price[i] = close
-                sig_liq[i] = True
-                pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                entry_time_idx = 0; liquidated = True
 
         # --- Trailing stop v4 ---
         # threshold=50pts, angles=50/60/70, anchor locked once set
@@ -615,7 +577,7 @@ def _run_signals_nb(
         safety_override   = (pos == 2 and orange_cross_buy) or (pos == 1 and yellow_cross_sell)
         reversal_blocked  = min_reversal_minutes > 0 and mins_since < min_reversal_minutes and not safety_override
 
-        # Angle readiness — for first entry, require purple or blue to be steep enough
+        # Angle readiness ΓÇö for first entry, require purple or blue to be steep enough
         if min_entry_angle > 0.0 and not first_trade_done:
             _pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
             _ba = abs(np.rad2deg(np.arctan(abs(prev_blue_slope)   * x_per_unit / y_per_unit)))
@@ -635,7 +597,7 @@ def _run_signals_nb(
                     wm_shielded = _has_wm_shield_nb(highs_arr[ws:i], wm_shield_distance)
 
                 if wm_shielded:
-                    pass  # hold short — cluster is shielding
+                    pass  # hold short ΓÇö cluster is shielding
                 else:
                     buy_triggered = False
                     if confirmation_bars >= 1 and pending_buy:
@@ -693,7 +655,7 @@ def _run_signals_nb(
                     wm_shielded = _has_wm_shield_nb(lows_arr[ws:i], wm_shield_distance)
 
                 if wm_shielded:
-                    pass  # hold long — cluster is shielding
+                    pass  # hold long ΓÇö cluster is shielding
                 else:
                     sell_triggered = False
                     if confirmation_bars >= 1 and pending_sell:
@@ -739,15 +701,7 @@ def _run_signals_nb(
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
 
-        # Track cumulative 2-contract P/L (realized + unrealized on contract 2)
-        if pos == 0 or entry_price == 0.0:
-            session_pl_arr[i] = session_pl
-        elif pos == 1:
-            session_pl_arr[i] = session_pl + (closes_arr[i] - entry_price)
-        else:
-            session_pl_arr[i] = session_pl + (entry_price - closes_arr[i])
-
-    return sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr
+    return sig_type, sig_price, sig_liq, partial_tp_arr
 
 
 def run_trading_algo_fast(
@@ -762,17 +716,15 @@ def run_trading_algo_fast(
     if data is None or data.empty:
         raise ValueError("run_trading_algo_fast expected non-empty intraday data")
 
-    full_data = data
+    full_data = data.copy()
     est = pytz.timezone("US/Eastern")
     try:
         if full_data.index.tz is None:
-            full_data = data.copy()
             full_data.index = pd.to_datetime(full_data.index, errors="coerce").tz_localize(est)
         else:
-            full_data = data  # already tz-aware, no copy needed
             full_data.index = pd.to_datetime(full_data.index).tz_convert(est)
     except:
-        full_data = data.copy()
+        pass
 
     cfg = config or AlgoConfig()
     n = len(full_data)
@@ -786,11 +738,10 @@ def run_trading_algo_fast(
     highs_arr  = full_data["High"].values.astype(np.float64)
     lows_arr   = full_data["Low"].values.astype(np.float64)
     closes_arr = full_data["Close"].values.astype(np.float64)
-    times_idx  = full_data.index
-    # Fast vectorized conversion: pandas timestamps → matplotlib date numbers
-    times_num  = full_data.index.asi8 / 8.64e10 + 719163.0  # µs since epoch → matplotlib datenum
+    times_idx  = full_data.index  # keep as DatetimeIndex for mdates
+    times_num  = np.array([mdates.date2num(t) for t in times_idx])
 
-    # Aspect ratio — match original TradingAlgo.py exactly
+    # Aspect ratio ΓÇö match original TradingAlgo.py exactly
     _ax_w_in = 16.0 * (0.85 - 0.125)
     _ax_h_in = 9.0 * (0.88 - 0.11)
     _x_range = 75 / (24 * 60)
@@ -811,21 +762,13 @@ def run_trading_algo_fast(
     (orange_vals, yellow_vals, purple_vals, blue_vals,
      purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
      magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
-     p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
-     o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
-     orange_anchor_prices, orange_anchor_times,
-     yellow_anchor_prices, yellow_anchor_times,
-     purple_anchor_idxs, blue_anchor_idxs) = _compute_rays_nb(
+     p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx) = _compute_rays_nb(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
     )
 
-    # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)
-    # 75 bars visible on the standard chart window
-    pts_per_bar_visual = _y_range / 75.0
-
-    # --- Signal detection — Numba compiled ---
-    sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr = _run_signals_nb(
+    # --- Signal detection ΓÇö Numba compiled ---
+    sig_type, sig_price, sig_liq, partial_tp_arr = _run_signals_nb(
         n, cutoff_idx,
         closes_arr, highs_arr, lows_arr, times_num,
         orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -834,7 +777,6 @@ def run_trading_algo_fast(
         magenta_vals, magenta_slopes,
         lime_vals, lime_slopes_arr,
         x_per_unit, y_per_unit,
-        pts_per_bar_visual,
         cfg.steep_angle_threshold, cfg.proximity_points,
         cfg.min_reversal_minutes, cfg.confirmation_bars,
         1 if cfg.first_entry_steep_only else 0,
@@ -842,8 +784,6 @@ def run_trading_algo_fast(
         cfg.partial_tp_pts,
         cfg.wm_shield_distance,
         cfg.wm_lookback,
-        cfg.spike_profit_pts,
-        cfg.spike_profit_bars,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
@@ -861,7 +801,6 @@ def run_trading_algo_fast(
     # Build result DataFrame (same format as original)
     trading_halted = False; halt_time = None
     result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
-    result["session_pl"] = session_pl_arr  # cumulative 2-contract P/L, bar by bar
 
 
     result["orange_ray"] = orange_vals
@@ -883,34 +822,26 @@ def run_trading_algo_fast(
     result["blue_anchor_price"]   = b_anchor_p
     result["blue_anchor_time"]    = times_idx[b_anchor_idx]
 
-    # Ray start/end — matches original April 23 approach exactly
-    result["orange_ray_start_price"] = orange_anchor_prices
-    result["orange_ray_start_time"]  = [times_idx[int(orange_anchor_times[i])] for i in range(n)]
-    result["yellow_ray_start_price"] = yellow_anchor_prices
-    result["yellow_ray_start_time"]  = [times_idx[int(yellow_anchor_times[i])] for i in range(n)]
+    # Ray start data ΓÇö anchor price is where the ray originates, end price is where it is at session end
+    result["orange_ray_start_price"] = orange_vals[0]   # ray starts at first bar's anchor
+    result["orange_ray_start_time"]  = times_idx[0]
+    result["yellow_ray_start_price"] = yellow_vals[0]
+    result["yellow_ray_start_time"]  = times_idx[0]
     result["purple_ray_start_price"] = purple_start_prices
-    result["purple_ray_start_time"]  = [times_idx[int(purple_anchor_idxs[i])] for i in range(n)]
+    result["purple_ray_start_time"]  = [times_idx[0]] * n
     result["blue_ray_start_price"]   = blue_start_prices
-    result["blue_ray_start_time"]    = [times_idx[int(blue_anchor_idxs[i])] for i in range(n)]
+    result["blue_ray_start_time"]    = [times_idx[0]] * n
 
     result["orange_angle"] = _display_angle_from_slope(orange_slope_val, x_per_unit, y_per_unit)
     result["yellow_angle"] = _display_angle_from_slope(yellow_slope_val, x_per_unit, y_per_unit)
     result["purple_angle"] = [_display_angle_from_slope(s, x_per_unit, y_per_unit) for s in purple_slopes]
     result["blue_angle"]   = [_display_angle_from_slope(s, x_per_unit, y_per_unit) for s in blue_slopes]
 
-    # End prices: project from bar-0 anchor using fixed slope to session end
-    _dt_full = times_num[-1] - times_num[0]
-    result["orange_ray_end_price"] = [
-        float(orange_anchor_prices[i]) + orange_slope_val * (times_num[-1] - times_num[int(orange_anchor_times[i])])
-        for i in range(n)]
-    result["yellow_ray_end_price"] = [
-        float(yellow_anchor_prices[i]) + yellow_slope_val * (times_num[-1] - times_num[int(yellow_anchor_times[i])])
-        for i in range(n)]
-    # Purple/blue end: per-bar intercept + slope projected to session end
-    result["purple_ray_end_price"] = [
-        float(purple_start_prices[i]) + purple_slopes[i] * _dt_full for i in range(n)]
-    result["blue_ray_end_price"]   = [
-        float(blue_start_prices[i])   + blue_slopes[i]   * _dt_full for i in range(n)]
+    _end_num = times_num[-1]
+    result["orange_ray_end_price"] = orange_vals[-1]
+    result["yellow_ray_end_price"] = yellow_vals[-1]
+    result["purple_ray_end_price"] = purple_vals[-1]
+    result["blue_ray_end_price"]   = blue_vals[-1]
 
     # Display layer pre-computations
     result["y_min"] = lows_arr.min() - 20.0

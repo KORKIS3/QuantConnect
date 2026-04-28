@@ -10,7 +10,6 @@ import pandas as pd
 import pytz
 
 from TradingAlgoFast import run_trading_algo_fast as run_trading_algo
-from Plotter import plot_results
 from plotFigure import ChartPlotter
 
 _EST = pytz.timezone("US/Eastern")
