@@ -674,6 +674,25 @@ class IBDataBridge:
             except Exception as exc:
                 log.error("[OnBar] initial chart error: %s", exc)
 
+        # 16:55 early close — check position and liquidate before market close
+        try:
+            close_naive = datetime.strptime(f"{bar_date} 16:55:00", "%Y-%m-%d %H:%M:%S")
+            close_dt = _EST.localize(close_naive)
+            if bar_time >= close_dt and not self._session_ended:
+                final_position = "flat"
+                if self._last_result is not None and not self._last_result.empty:
+                    final_position = str(self._last_result["position"].iloc[-1])
+                if final_position == "long":
+                    log.info("[EOD] 16:55 — flattening LONG position")
+                    self._place_order("SELL", liquidate=True)
+                elif final_position == "short":
+                    log.info("[EOD] 16:55 — flattening SHORT position")
+                    self._place_order("BUY", liquidate=True)
+                else:
+                    log.info("[EOD] 16:55 — already flat, nothing to do")
+        except Exception as exc:
+            log.error("[EOD] 16:55 flatten error: %s", exc)
+
         # Auto-end session at end_time.
         try:
             end_naive = datetime.strptime(f"{bar_date} {self.end_time}:00", "%Y-%m-%d %H:%M:%S")
