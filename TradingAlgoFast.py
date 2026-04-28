@@ -309,28 +309,26 @@ def _compute_rays_nb(
     b_anchor_idx = 0
 
     for i in range(n):
-        # Track absolute session high/low
+        # Track absolute session high/low — also update anchor immediately
         if highs_arr[i] > p_session_high:
             p_session_high = highs_arr[i]; p_session_high_idx = i
-            p_anchor_idx = i  # new session high becomes new anchor
+            p_anchor_idx = i  # purple jumps to every new session high
         if lows_arr[i] < b_session_low:
             b_session_low = lows_arr[i]; b_session_low_idx = i
-            b_anchor_idx = i  # new session low becomes new anchor
+            b_anchor_idx = i  # blue jumps to every new session low
 
-        # Re-anchor at most recent confirmed swing high/low (any direction — follow the trend)
+        # Also re-anchor at most recent confirmed swing high/low (1-bar confirmation)
         if i >= 2:
             j = i - 1
             h_j = highs_arr[j]
             if (h_j - highs_arr[j-1] >= SWING_ANCHOR_THRESHOLD and
-                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD and
-                j > p_anchor_idx):
-                p_anchor_idx = j
+                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD):
+                p_anchor_idx = j  # update to most recent confirmed swing high
 
             l_j = lows_arr[j]
             if (lows_arr[j-1] - l_j >= SWING_ANCHOR_THRESHOLD and
-                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD and
-                j > b_anchor_idx):
-                b_anchor_idx = j
+                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD):
+                b_anchor_idx = j  # update to most recent confirmed swing low
 
         pw_start = p_anchor_idx; bw_start = b_anchor_idx
         pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
@@ -343,31 +341,32 @@ def _compute_rays_nb(
             # Purple is resistance — always descends (clamp slope to <= 0)
             if r_slope_nb > 0.0:
                 r_slope_nb = 0.0
-                r_int_nb = highs_arr[pw_start]  # anchor at the actual high
             # Convert price/bar → price/datenum for consistent projection
             time_step = times_num[pw_start+1] - times_num[pw_start]
             if time_step == 0.0: time_step = 1.0
             r_slope_time = r_slope_nb / time_step
-            purple_start_prices[i] = r_int_nb
+            # Pin start to actual anchor high so line touches the highs
+            purple_start_prices[i] = highs_arr[pw_start]
             purple_slopes[i]       = r_slope_time
-            purple_vals[i] = r_int_nb + r_slope_time * (times_num[i] - times_num[pw_start])
+            purple_vals[i] = highs_arr[pw_start] + r_slope_time * (times_num[i] - times_num[pw_start])
 
             bw_h = highs_arr[bw_start:i+1]; bw_l = lows_arr[bw_start:i+1]; bw_c = closes_arr[bw_start:i+1]
             s_slope_nb2, s_int_nb2, _, _ = _fit_trendlines_nb(bw_h, bw_l, bw_c)
             time_step = times_num[bw_start+1] - times_num[bw_start]
             if time_step == 0.0: time_step = 1.0
             s_slope_time = s_slope_nb2 / time_step
-            blue_start_prices[i] = s_int_nb2
+            # Pin start to actual anchor low so line touches the lows
+            blue_start_prices[i] = lows_arr[bw_start]
             blue_slopes[i]       = s_slope_time
-            blue_vals[i] = s_int_nb2 + s_slope_time * (times_num[i] - times_num[bw_start])
+            blue_vals[i] = lows_arr[bw_start] + s_slope_time * (times_num[i] - times_num[bw_start])
         else:
             if i > 0:
                 purple_slopes[i]       = purple_slopes[i-1]
-                purple_start_prices[i] = purple_start_prices[i-1]
-                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - times_num[pw_start])
+                purple_start_prices[i] = highs_arr[p_anchor_idx]
+                purple_vals[i] = highs_arr[p_anchor_idx] + purple_slopes[i] * (times_num[i] - times_num[pw_start])
                 blue_slopes[i]       = blue_slopes[i-1]
-                blue_start_prices[i] = blue_start_prices[i-1]
-                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
+                blue_start_prices[i] = lows_arr[b_anchor_idx]
+                blue_vals[i] = lows_arr[b_anchor_idx] + blue_slopes[i] * (times_num[i] - times_num[bw_start])
 
         # Keep p_anchor_p/b_anchor_p in sync for compatibility
         p_anchor_p = highs_arr[p_anchor_idx]
