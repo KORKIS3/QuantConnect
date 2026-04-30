@@ -360,6 +360,17 @@ class IBDataBridge:
         log.info("Front-month: %s  expiry=%s", self._contract.localSymbol,
                  self._contract.lastTradeDateOrContractMonth)
 
+        # Sync _ib_position from actual IB account on connect
+        try:
+            positions = self._ib.positions()
+            for p in positions:
+                if p.contract.symbol in ("YM", "MYM"):
+                    self._ib_position = int(p.position)
+                    log.info("[Connect] Synced _ib_position=%d from IB account", self._ib_position)
+                    break
+        except Exception as exc:
+            log.warning("[Connect] Could not sync position from IB: %s", exc)
+
     def disconnect(self) -> None:
         self._ib.disconnect()
         log.info("Disconnected from IB.")
