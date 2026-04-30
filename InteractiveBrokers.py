@@ -909,9 +909,9 @@ class IBDataBridge:
         elif partial_tp:
             self._ib_position = max(0, abs(self._ib_position) - 1) * (1 if self._ib_position > 0 else -1)
         elif action == "BUY":
-            self._ib_position = nc
+            self._ib_position = 2
         elif action == "SELL":
-            self._ib_position = -nc
+            self._ib_position = -2
 
         # Send trade alert email
         try:
