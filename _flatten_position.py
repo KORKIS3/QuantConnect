@@ -37,4 +37,10 @@ for p in ib.positions():
     if p.contract.symbol in ("YM", "MYM"):
         print(f"  {p.contract.localSymbol}  pos={p.position}")
 
+# Signal Fred to stop if he's still running
+import os
+_stop_file = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "FRED_STOP")
+open(_stop_file, "w").close()
+print(f"\nFRED_STOP signal written — Fred will halt on next bar.")
+
 ib.disconnect()

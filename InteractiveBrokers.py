@@ -610,6 +610,18 @@ class IBDataBridge:
         """Handle each new 5-second real-time bar from reqRealTimeBars."""
         if self._session_ended:
             return
+        # Check for external stop signal (e.g. from _flatten_position.py)
+        _stop_file = os.path.join(_IB_LIVE_ROOT, "FRED_STOP")
+        if os.path.exists(_stop_file):
+            log.info("[Fred] FRED_STOP file detected — stopping session.")
+            try:
+                os.remove(_stop_file)
+            except Exception:
+                pass
+            self._session_ended = True
+            self._on_session_end()
+            self._ib.disconnect()
+            return
         if not bars:
             return
 
@@ -842,9 +854,9 @@ class IBDataBridge:
             price = float(minute_df["Close"].iloc[-1])
             log.info("[TradingAlgo] PARTIAL TP   price=%.2f  pl=%.1f  (1 contract)", price, pl)
             if pos == "long":
-                self._place_order("SELL")
+                self._place_order("SELL", partial_tp=True)
             elif pos == "short":
-                self._place_order("BUY")
+                self._place_order("BUY", partial_tp=True)
             self._last_partial_tp_ts = ts
 
     # -- order execution ------------------------------------------------------
