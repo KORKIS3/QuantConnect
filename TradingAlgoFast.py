@@ -251,6 +251,7 @@ def _fit_trendlines_nb(high, low, close):
 def _compute_rays_nb(
     n, highs_arr, lows_arr, closes_arr, times_num,
     orange_slope_val, yellow_slope_val,
+    warmup_bars,
 ):
     """Compute all ray values in a single Numba-compiled pass.
     Returns: orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -282,95 +283,155 @@ def _compute_rays_nb(
         yellow_anchor_prices[i] = y_anchor_p
         yellow_anchor_times[i]  = float(y_anchor_i)  # store bar index
 
-    # --- Purple/blue rays ---
-    # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
-    # Blue anchors at session low, then re-anchors at each subsequent HIGHER swing low.
-    # This keeps lines steep by shortening the window as the session progresses.
-    SWING_ANCHOR_THRESHOLD = 25.0  # min pts to qualify as a swing high/low
+    # --- Purple/blue rays (two-point frozen straight lines) ---
+    # Blue:   P1 = session low, provisional 45° slope until P2 (first confirmed higher
+    #         swing low) is found, then slope is frozen.  Adjust rule: if a future bar's
+    #         low pierces the line but close is above → P2 updates to that bar's low,
+    #         slope recalculates and freezes again.  Invalidate if slope <= 0.
+    # Purple: exact mirror (descending from session high).
+    # All output is stored as per-bar arrays so the plotter just reads start/end columns.
 
-    # Initial slopes: orange -2.5°, yellow +2.5° (from cfg), purple -60°, blue +60°
-    _init_purple_slope = -np.tan(np.deg2rad(60.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
-    _init_blue_slope   =  np.tan(np.deg2rad(60.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
+    SWING_THRESHOLD = 5.0   # min pts to qualify as a confirmed swing high/low
 
-    purple_vals         = np.full(n, highs_arr[0])
-    blue_vals           = np.full(n, lows_arr[0])
+    # Default slopes: 45° equivalent in price/time units
+    _default_blue_slope   =  np.tan(np.deg2rad(45.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
+    _default_purple_slope = -np.tan(np.deg2rad(45.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
+
+    # Per-bar output arrays
+    purple_vals         = np.zeros(n)
+    blue_vals           = np.zeros(n)
     purple_slopes       = np.zeros(n)
     blue_slopes         = np.zeros(n)
-    purple_start_prices = np.full(n, highs_arr[0])
-    blue_start_prices   = np.full(n, lows_arr[0])
+    purple_start_prices = np.zeros(n)
+    blue_start_prices   = np.zeros(n)
     purple_anchor_idxs  = np.zeros(n, dtype=np.int64)
     blue_anchor_idxs    = np.zeros(n, dtype=np.int64)
+    # end prices projected to session end (times_num[-1])
+    purple_end_prices   = np.zeros(n)
+    blue_end_prices     = np.zeros(n)
 
-    # Purple: start at session high, move forward to each lower swing high
-    p_session_high = highs_arr[0]; p_session_high_idx = 0
-    p_anchor_idx = 0
-    # Blue: start at session low, move forward to each higher swing low
+    # Blue state: p1_idx, p1_price, slope, p2_locked (0=provisional, 1=locked), valid
+    b_p1_idx = 0; b_p1_price = lows_arr[0]; b_slope = _default_blue_slope
+    b_p2_locked = 0; b_valid = 1
     b_session_low = lows_arr[0]; b_session_low_idx = 0
-    b_anchor_idx = 0
+
+    # Purple state
+    p_p1_idx = 0; p_p1_price = highs_arr[0]; p_slope = _default_purple_slope
+    p_p2_locked = 0; p_valid = 1
+    p_session_high = highs_arr[0]; p_session_high_idx = 0
 
     for i in range(n):
-        # Track absolute session high/low
-        if highs_arr[i] > p_session_high:
-            p_session_high = highs_arr[i]; p_session_high_idx = i
-            p_anchor_idx = i  # new session high becomes new anchor
+        t_i = times_num[i]
+
+        # Track session extremes — reset line on new extreme
         if lows_arr[i] < b_session_low:
             b_session_low = lows_arr[i]; b_session_low_idx = i
-            b_anchor_idx = i  # new session low becomes new anchor
+            b_p1_idx = i; b_p1_price = lows_arr[i]
+            b_slope = _default_blue_slope; b_p2_locked = 0; b_valid = 1
 
-        # Re-anchor purple at most recent swing high that is LOWER than current anchor
-        # (confirmed 1 bar later — bar j is a swing high if higher than both neighbours)
+        if highs_arr[i] > p_session_high:
+            p_session_high = highs_arr[i]; p_session_high_idx = i
+            p_p1_idx = i; p_p1_price = highs_arr[i]
+            p_slope = _default_purple_slope; p_p2_locked = 0; p_valid = 1
+
+        # Before warmup ends — lines not active yet, fill with NaN so plotter skips
+        if i < warmup_bars:
+            blue_vals[i]         = b_p1_price
+            blue_slopes[i]       = 0.0
+            blue_start_prices[i] = np.nan
+            blue_anchor_idxs[i]  = b_p1_idx
+            blue_end_prices[i]   = np.nan
+            purple_vals[i]         = p_p1_price
+            purple_slopes[i]       = 0.0
+            purple_start_prices[i] = np.nan
+            purple_anchor_idxs[i]  = p_p1_idx
+            purple_end_prices[i]   = np.nan
+            p_anchor_p = p_p1_price; b_anchor_p = b_p1_price
+            continue
+
+        # Confirmed swing low at bar i-1 (1-bar confirmation)
+        new_sl_idx = -1; new_sl_price = 0.0
+        new_sh_idx = -1; new_sh_price = 0.0
         if i >= 2:
             j = i - 1
-            h_j = highs_arr[j]
-            if (h_j - highs_arr[j-1] >= SWING_ANCHOR_THRESHOLD and
-                h_j - highs_arr[i]   >= SWING_ANCHOR_THRESHOLD and
-                j > p_anchor_idx and
-                h_j < highs_arr[p_anchor_idx]):
-                p_anchor_idx = j
-
-            # Re-anchor blue at most recent swing low that is HIGHER than current anchor
             l_j = lows_arr[j]
-            if (lows_arr[j-1] - l_j >= SWING_ANCHOR_THRESHOLD and
-                lows_arr[i]   - l_j >= SWING_ANCHOR_THRESHOLD and
-                j > b_anchor_idx and
-                l_j > lows_arr[b_anchor_idx]):
-                b_anchor_idx = j
+            if lows_arr[j-1] - l_j >= SWING_THRESHOLD and lows_arr[i] - l_j >= SWING_THRESHOLD:
+                new_sl_idx = j; new_sl_price = l_j
+            h_j = highs_arr[j]
+            if h_j - highs_arr[j-1] >= SWING_THRESHOLD and h_j - highs_arr[i] >= SWING_THRESHOLD:
+                new_sh_idx = j; new_sh_price = h_j
 
-        pw_start = p_anchor_idx; bw_start = b_anchor_idx
-        pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
-        purple_anchor_idxs[i] = p_anchor_idx
-        blue_anchor_idxs[i]   = b_anchor_idx
+        # Lock blue slope to P2 once first confirmed higher swing low found
+        if b_valid == 1 and b_p2_locked == 0 and new_sl_idx >= 0:
+            if new_sl_price > b_session_low and new_sl_idx > b_session_low_idx:
+                dt = times_num[new_sl_idx] - times_num[b_p1_idx]
+                if dt != 0.0:
+                    s = (new_sl_price - b_p1_price) / dt
+                    if s > 0.0:
+                        b_slope = s; b_p2_locked = 1
 
-        if pw_len >= 2 and bw_len >= 2:
-            pw_h = highs_arr[pw_start:i+1]; pw_l = lows_arr[pw_start:i+1]; pw_c = closes_arr[pw_start:i+1]
-            _, _, r_slope_nb, r_int_nb = _fit_trendlines_nb(pw_h, pw_l, pw_c)
-            time_step = times_num[pw_start+1] - times_num[pw_start]
-            if time_step == 0.0: time_step = 1.0
-            r_slope_time = r_slope_nb / time_step
-            purple_start_prices[i] = r_int_nb
-            purple_slopes[i]       = r_slope_time
-            purple_vals[i] = r_int_nb + r_slope_time * (times_num[i] - times_num[pw_start])
+        # Lock purple slope to P2
+        if p_valid == 1 and p_p2_locked == 0 and new_sh_idx >= 0:
+            if new_sh_price < p_session_high and new_sh_idx > p_session_high_idx:
+                dt = times_num[new_sh_idx] - times_num[p_p1_idx]
+                if dt != 0.0:
+                    s = (new_sh_price - p_p1_price) / dt
+                    if s < 0.0:
+                        p_slope = s; p_p2_locked = 1
 
-            bw_h = highs_arr[bw_start:i+1]; bw_l = lows_arr[bw_start:i+1]; bw_c = closes_arr[bw_start:i+1]
-            s_slope_nb2, s_int_nb2, _, _ = _fit_trendlines_nb(bw_h, bw_l, bw_c)
-            time_step = times_num[bw_start+1] - times_num[bw_start]
-            if time_step == 0.0: time_step = 1.0
-            s_slope_time = s_slope_nb2 / time_step
-            blue_start_prices[i] = s_int_nb2
-            blue_slopes[i]       = s_slope_time
-            blue_vals[i] = s_int_nb2 + s_slope_time * (times_num[i] - times_num[bw_start])
+        # Compute current blue line value
+        if b_valid == 1:
+            b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+            # Adjust: low pierces line (with or without a sell signal) → push P2 down to bar's low
+            if lows_arr[i] < b_line_i:
+                dt = t_i - times_num[b_p1_idx]
+                if dt != 0.0:
+                    ns = (lows_arr[i] - b_p1_price) / dt
+                    if ns <= 0.0:
+                        b_valid = 0
+                    else:
+                        b_slope = ns; b_p2_locked = 1
+                        b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+            blue_vals[i]         = b_line_i
+            blue_slopes[i]       = b_slope
+            blue_start_prices[i] = b_p1_price
+            blue_anchor_idxs[i]  = b_p1_idx
+            blue_end_prices[i]   = b_p1_price + b_slope * (times_num[-1] - times_num[b_p1_idx])
         else:
-            if i > 0:
-                purple_slopes[i]       = purple_slopes[i-1]
-                purple_start_prices[i] = purple_start_prices[i-1]
-                purple_vals[i] = purple_start_prices[i-1] + purple_slopes[i-1] * (times_num[i] - times_num[pw_start])
-                blue_slopes[i]       = blue_slopes[i-1]
-                blue_start_prices[i] = blue_start_prices[i-1]
-                blue_vals[i] = blue_start_prices[i-1] + blue_slopes[i-1] * (times_num[i] - times_num[bw_start])
+            blue_vals[i]         = blue_vals[i-1] if i > 0 else lows_arr[0]
+            blue_slopes[i]       = 0.0
+            blue_start_prices[i] = blue_start_prices[i-1] if i > 0 else lows_arr[0]
+            blue_anchor_idxs[i]  = blue_anchor_idxs[i-1] if i > 0 else 0
+            blue_end_prices[i]   = blue_end_prices[i-1] if i > 0 else lows_arr[0]
 
-        # Keep p_anchor_p/b_anchor_p in sync for compatibility
-        p_anchor_p = highs_arr[p_anchor_idx]
-        b_anchor_p = lows_arr[b_anchor_idx]
+        # Compute current purple line value
+        if p_valid == 1:
+            p_line_i = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+            # Adjust: high pierces but close below → update P2, refreeze slope
+            # Also: close above purple (with or without a buy signal) → push P2 up to bar's high
+            if highs_arr[i] > p_line_i:
+                dt = t_i - times_num[p_p1_idx]
+                if dt != 0.0:
+                    ns = (highs_arr[i] - p_p1_price) / dt
+                    if ns >= 0.0:
+                        p_valid = 0
+                    else:
+                        p_slope = ns; p_p2_locked = 1
+                        p_line_i = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+            purple_vals[i]         = p_line_i
+            purple_slopes[i]       = p_slope
+            purple_start_prices[i] = p_p1_price
+            purple_anchor_idxs[i]  = p_p1_idx
+            purple_end_prices[i]   = p_p1_price + p_slope * (times_num[-1] - times_num[p_p1_idx])
+        else:
+            purple_vals[i]         = purple_vals[i-1] if i > 0 else highs_arr[0]
+            purple_slopes[i]       = 0.0
+            purple_start_prices[i] = purple_start_prices[i-1] if i > 0 else highs_arr[0]
+            purple_anchor_idxs[i]  = purple_anchor_idxs[i-1] if i > 0 else 0
+            purple_end_prices[i]   = purple_end_prices[i-1] if i > 0 else highs_arr[0]
+
+        p_anchor_p = highs_arr[p_p1_idx]
+        b_anchor_p = lows_arr[b_p1_idx]
 
     # --- Magenta/lime swing rays ---
     SWING_THRESHOLD = 50.0
@@ -429,8 +490,9 @@ def _compute_rays_nb(
 
     return (orange_vals, yellow_vals, purple_vals, blue_vals,
             purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
+            purple_end_prices, blue_end_prices,
             magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
-            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
+            p_anchor_p, p_p1_idx, b_anchor_p, b_p1_idx,
             o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
             orange_anchor_prices, orange_anchor_times,
             yellow_anchor_prices, yellow_anchor_times,
@@ -827,6 +889,7 @@ def run_trading_algo_fast(
 
     (orange_vals, yellow_vals, purple_vals, blue_vals,
      purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
+     purple_end_prices, blue_end_prices,
      magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
      p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
      o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
@@ -835,8 +898,8 @@ def run_trading_algo_fast(
      purple_anchor_idxs, blue_anchor_idxs) = _compute_rays_nb(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
+        cutoff_idx,
     )
-
     # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)
     # 75 bars visible on the standard chart window
     pts_per_bar_visual = _y_range / 75.0
@@ -923,11 +986,9 @@ def run_trading_algo_fast(
     result["yellow_ray_end_price"] = [
         float(yellow_anchor_prices[i]) + yellow_slope_val * (times_num[-1] - times_num[int(yellow_anchor_times[i])])
         for i in range(n)]
-    # Purple/blue end: per-bar intercept + slope projected to session end
-    result["purple_ray_end_price"] = [
-        float(purple_start_prices[i]) + purple_slopes[i] * _dt_full for i in range(n)]
-    result["blue_ray_end_price"]   = [
-        float(blue_start_prices[i])   + blue_slopes[i]   * _dt_full for i in range(n)]
+    # Purple/blue end: pre-computed in Numba, projected to session end
+    result["purple_ray_end_price"] = purple_end_prices
+    result["blue_ray_end_price"]   = blue_end_prices
 
     # Display layer pre-computations
     result["y_min"] = lows_arr.min() - 20.0

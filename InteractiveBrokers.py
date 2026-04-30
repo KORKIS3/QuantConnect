@@ -278,6 +278,7 @@ class IBDataBridge:
         self._last_hourly_save: Optional[int] = None  # tracks last hour we saved a snapshot
         self._last_signal_ts: Optional[pd.Timestamp] = None   # last signal we acted on
         self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
+        self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
 
     # -- connection -----------------------------------------------------------
 
@@ -607,6 +608,8 @@ class IBDataBridge:
 
     def _on_realtime_bar(self, bars, has_new_bar: bool) -> None:
         """Handle each new 5-second real-time bar from reqRealTimeBars."""
+        if self._session_ended:
+            return
         if not bars:
             return
 
@@ -809,6 +812,10 @@ class IBDataBridge:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
                     self._place_order("SELL", liquidate=True)
                 else:
+                    if self._ib_position > 0:
+                        log.info("[TradingAlgo] BUY skipped — already long (ib_pos=%d)", self._ib_position)
+                        self._last_signal_ts = ts
+                        continue
                     log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
                     self._place_order("BUY")
             elif signal == "SELL":
@@ -816,6 +823,10 @@ class IBDataBridge:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
                     self._place_order("BUY", liquidate=True)
                 else:
+                    if self._ib_position < 0:
+                        log.info("[TradingAlgo] SELL skipped — already short (ib_pos=%d)", self._ib_position)
+                        self._last_signal_ts = ts
+                        continue
                     log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
                     self._place_order("SELL")
             self._last_signal_ts = ts
@@ -873,10 +884,21 @@ class IBDataBridge:
 
         qty = max(1, qty)  # always at least 1
         order = MarketOrder(action, totalQuantity=qty)
+        order.tif = "DAY"
         exec_contract = self._order_contract or self._contract
         trade = self._ib.placeOrder(exec_contract, order)
         log.info("[ORDER placed]  %-10s  qty=%d  contract=%s  orderId=%s",
                  tag, qty, exec_contract.localSymbol, trade.order.orderId)
+
+        # Track actual IB position so same-direction signals can be skipped
+        if liquidate:
+            self._ib_position = 0
+        elif partial_tp:
+            self._ib_position = max(0, abs(self._ib_position) - 1) * (1 if self._ib_position > 0 else -1)
+        elif action == "BUY":
+            self._ib_position = 2
+        elif action == "SELL":
+            self._ib_position = -2
 
         # Send trade alert email
         try:

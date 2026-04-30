@@ -217,7 +217,16 @@ class ChartPlotter:
                   start_time, start_price, end_price,
                   current_time, current_price, angle,
                   color, edge_color, y_offset):
+        import math
         end_time = self.data.index[-1]
+        if math.isnan(float(start_price)) or math.isnan(float(end_price)):
+            self.lines[line_key].set_data([], [])
+            old_ann = getattr(self, ann_attr, None)
+            if old_ann is not None:
+                try: old_ann.remove()
+                except Exception: pass
+            setattr(self, ann_attr, None)
+            return
         self.lines[line_key].set_data([start_time, end_time], [start_price, end_price])
 
         old_ann = getattr(self, ann_attr, None)
@@ -227,64 +236,6 @@ class ChartPlotter:
             except Exception:
                 pass
 
-        va = "top" if y_offset < 0 else "bottom"
-        ann = self.ax.annotate(
-            f"{abs(angle):.1f}°",
-            xy=(current_time, current_price),
-            xytext=(6, y_offset), textcoords="offset points",
-            ha="left", va=va, fontsize=8, color=color, fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                      alpha=0.75, edgecolor=edge_color, linewidth=1.5))
-        setattr(self, ann_attr, ann)
-
-    def _draw_ray_series(self, line_key, ann_attr,
-                         current_data, col, current_time, angle,
-                         color, edge_color, y_offset):
-        """Draw a ray using the actual bar-by-bar values from the dataframe column."""
-        series = current_data[col].dropna()
-        if series.empty:
-            self.lines[line_key].set_data([], [])
-        else:
-            self.lines[line_key].set_data(series.index, series.values)
-
-        old_ann = getattr(self, ann_attr, None)
-        if old_ann is not None:
-            try:
-                old_ann.remove()
-            except Exception:
-                pass
-
-        current_price = float(current_data[col].iloc[-1]) if not pd.isna(current_data[col].iloc[-1]) else 0
-        va = "top" if y_offset < 0 else "bottom"
-        ann = self.ax.annotate(
-            f"{abs(angle):.1f}°",
-            xy=(current_time, current_price),
-            xytext=(6, y_offset), textcoords="offset points",
-            ha="left", va=va, fontsize=8, color=color, fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                      alpha=0.75, edgecolor=edge_color, linewidth=1.5))
-        setattr(self, ann_attr, ann)
-
-    def _draw_ray_straight(self, line_key, ann_attr,
-                           anchor_time, anchor_price, current_time, current_price,
-                           angle, color, edge_color, y_offset):
-        """Draw a straight ray from anchor point, projected to session end."""
-        session_end = self.data.index[-1]
-        dt_anchor_to_current = (current_time - anchor_time).total_seconds()
-        dt_anchor_to_end     = (session_end  - anchor_time).total_seconds()
-        if dt_anchor_to_current > 0:
-            slope = (current_price - anchor_price) / dt_anchor_to_current
-            projected_end = anchor_price + slope * dt_anchor_to_end
-        else:
-            projected_end = anchor_price
-        self.lines[line_key].set_data(
-            [anchor_time, session_end],
-            [anchor_price, projected_end])
-
-        old_ann = getattr(self, ann_attr, None)
-        if old_ann is not None:
-            try: old_ann.remove()
-            except Exception: pass
         va = "top" if y_offset < 0 else "bottom"
         ann = self.ax.annotate(
             f"{abs(angle):.1f}°",
@@ -312,40 +263,22 @@ class ChartPlotter:
             "goldenrod", "gold", -28)
 
         purple_angle = row["purple_angle"][-1] if isinstance(row["purple_angle"], list) else float(row["purple_angle"])
-        self._draw_ray_series("ray_purple", "purple_angle_annotation",
-            current_data, "purple_ray", current_time, purple_angle,
+        self._draw_ray("ray_purple", "purple_angle_annotation",
+            row["purple_ray_start_time"], float(row["purple_ray_start_price"]),
+            float(row["purple_ray_end_price"]),
+            current_time, float(row["purple_ray"]), purple_angle,
             "darkviolet", "darkviolet", 14)
 
         blue_angle = row["blue_angle"][-1] if isinstance(row["blue_angle"], list) else float(row["blue_angle"])
-        self._draw_ray_series("ray_blue", "blue_angle_annotation",
-            current_data, "blue_ray", current_time, blue_angle,
+        self._draw_ray("ray_blue", "blue_angle_annotation",
+            row["blue_ray_start_time"], float(row["blue_ray_start_price"]),
+            float(row["blue_ray_end_price"]),
+            current_time, float(row["blue_ray"]), blue_angle,
             "blue", "blue", 28)
 
         self.lines["ray_dark_purple"].set_data([], [])
-
-        # Magenta swing high ray.
-        if "magenta_ray" in current_data.columns:
-            valid = current_data["magenta_ray"].dropna()
-            if not valid.empty and not pd.isna(row.get("magenta_ray")):
-                self.lines["ray_magenta"].set_data(
-                    [valid.index[0], current_time],
-                    [float(valid.iloc[0]), float(row["magenta_ray"])])
-            else:
-                self.lines["ray_magenta"].set_data([], [])
-        else:
-            self.lines["ray_magenta"].set_data([], [])
-
-        # Lime swing low ray.
-        if "lime_ray" in current_data.columns:
-            valid = current_data["lime_ray"].dropna()
-            if not valid.empty and not pd.isna(row.get("lime_ray")):
-                self.lines["ray_lime"].set_data(
-                    [valid.index[0], current_time],
-                    [float(valid.iloc[0]), float(row["lime_ray"])])
-            else:
-                self.lines["ray_lime"].set_data([], [])
-        else:
-            self.lines["ray_lime"].set_data([], [])
+        self.lines["ray_magenta"].set_data([], [])
+        self.lines["ray_lime"].set_data([], [])
 
     def update_annotations(self, current_data):
         """Draw High / Low / Close labels for every bar."""

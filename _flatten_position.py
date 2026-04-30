@@ -1,4 +1,6 @@
 """_flatten_position.py -- Emergency flatten: closes all open YM/MYM positions."""
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
 from ib_insync import IB, MarketOrder, util
 import time
 
@@ -24,6 +26,7 @@ for p in positions:
     print(f"\nFlattening {sym}: {action} {qty} contracts...")
     p.contract.exchange = "CBOT"
     order = MarketOrder(action, qty)
+    order.tif = "DAY"
     trade = ib.placeOrder(p.contract, order)
     ib.sleep(3)
     print(f"  Status: {trade.orderStatus.status}  filled={trade.orderStatus.filled}  avgFill={trade.orderStatus.avgFillPrice}")
