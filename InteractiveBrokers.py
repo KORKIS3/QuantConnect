@@ -883,16 +883,17 @@ class IBDataBridge:
             elif pos == "short":
                 current_pos = -2
 
-        # Calculate quantity needed
+        # Calculate quantity — driven by config.num_contracts (change once to scale up)
+        nc = self.config.num_contracts
         if partial_tp:
-            qty = max(1, abs(current_pos) // 2)  # half of current position
+            qty = max(1, abs(self._ib_position) // 2)
         elif liquidate:
-            qty = abs(current_pos) if current_pos != 0 else 2
+            qty = abs(self._ib_position) if self._ib_position != 0 else nc
         else:
             if action == "BUY":
-                qty = 2 + max(0, -current_pos)   # cover shorts + go long
+                qty = nc + max(0, -self._ib_position)   # cover shorts + go long
             else:
-                qty = 2 + max(0, current_pos)     # cover longs + go short
+                qty = nc + max(0, self._ib_position)     # cover longs + go short
 
         qty = max(1, qty)  # always at least 1
         order = MarketOrder(action, totalQuantity=qty)
@@ -908,9 +909,9 @@ class IBDataBridge:
         elif partial_tp:
             self._ib_position = max(0, abs(self._ib_position) - 1) * (1 if self._ib_position > 0 else -1)
         elif action == "BUY":
-            self._ib_position = 2
+            self._ib_position = nc
         elif action == "SELL":
-            self._ib_position = -2
+            self._ib_position = -nc
 
         # Send trade alert email
         try:
