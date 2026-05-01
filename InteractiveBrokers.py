@@ -389,6 +389,13 @@ class IBDataBridge:
         # Backfill historical bars from session start (09:30 for day, 18:00 for night).
         self._backfill_from_session_start()
 
+        # Set _last_signal_ts to NOW so backfilled historical signals never trigger orders.
+        # Only signals that arrive AFTER this point will place orders.
+        self._last_signal_ts = pd.Timestamp.now(tz=_EST)
+        self._last_partial_tp_ts = self._last_signal_ts
+        log.info("[Start] Signal guard set to %s — backfill signals will not place orders.",
+                 self._last_signal_ts.strftime("%H:%M:%S"))
+
         # If backfill loaded bars, open the chart immediately so the user can
         # see history before the first live bar arrives.
         if self._session_bars:
