@@ -103,13 +103,13 @@ def _draw(fig, day_override=None):
 
     # --- dynamic figure height based on number of rows ---
     n_rows    = len(fills) if not fills.empty else 0
-    tbl_height = max(1.5, n_rows * 0.28 + 0.6)
-    fig_h      = 6.0 + tbl_height
+    tbl_height = max(2.0, n_rows * 0.35 + 1.0)
+    fig_h      = 7.0 + tbl_height
     fig.set_size_inches(14, fig_h)
 
     tbl_ratio = max(1, round(tbl_height * 3))
     gs = fig.add_gridspec(3, 1, height_ratios=[5, 1, tbl_ratio],
-                          hspace=0.45, left=0.07, right=0.97, top=0.93, bottom=0.03)
+                          hspace=0.45, left=0.07, right=0.97, top=0.93, bottom=0.08)
     ax1    = fig.add_subplot(gs[0])   # price chart — pan/zoom enabled
     ax2    = fig.add_subplot(gs[1])   # summary bar
     ax_tbl = fig.add_subplot(gs[2])   # fills table
