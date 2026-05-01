@@ -8,7 +8,7 @@ DATA_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full
 
 date    = "2026-04-06"
 start_t = "09:30"
-end_t   = "11:30"
+end_t   = "17:00"
 
 df = pd.read_csv(os.path.join(DATA_ROOT, f"CBOT_MINI_YM1_{date}.csv"), index_col=0, parse_dates=True)
 df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)

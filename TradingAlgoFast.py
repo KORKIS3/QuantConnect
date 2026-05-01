@@ -54,6 +54,7 @@ class AlgoConfig:
     num_contracts: int = 2
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
+    steep_line_threshold: float = 50.0    # pts above/below primary line to spawn steeper line
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +252,7 @@ def _fit_trendlines_nb(high, low, close):
 def _compute_rays_nb(
     n, highs_arr, lows_arr, closes_arr, times_num,
     orange_slope_val, yellow_slope_val,
-    warmup_bars,
+    warmup_bars, steep_line_threshold,
 ):
     """Compute all ray values in a single Numba-compiled pass.
     Returns: orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -306,9 +307,46 @@ def _compute_rays_nb(
     blue_start_prices   = np.zeros(n)
     purple_anchor_idxs  = np.zeros(n, dtype=np.int64)
     blue_anchor_idxs    = np.zeros(n, dtype=np.int64)
-    # end prices projected to session end (times_num[-1])
     purple_end_prices   = np.zeros(n)
     blue_end_prices     = np.zeros(n)
+
+    # Steeper line families (up to 4 each) — NaN when not active
+    MAX_STEEP = 4
+    STEEP_THRESHOLD = steep_line_threshold
+    blue_steep_vals         = np.full((MAX_STEEP, n), np.nan)
+    blue_steep_start_prices = np.full((MAX_STEEP, n), np.nan)
+    blue_steep_end_prices   = np.full((MAX_STEEP, n), np.nan)
+    blue_steep_p1_idxs      = np.full((MAX_STEEP, n), -1.0)   # bar index of P1
+    purple_steep_vals         = np.full((MAX_STEEP, n), np.nan)
+    purple_steep_start_prices = np.full((MAX_STEEP, n), np.nan)
+    purple_steep_end_prices   = np.full((MAX_STEEP, n), np.nan)
+    purple_steep_p1_idxs      = np.full((MAX_STEEP, n), -1.0)
+
+    # Steeper line state: p1_idx, p1_price, p2_idx, p2_price, slope, valid
+    bs_p1_idx   = np.zeros(MAX_STEEP, dtype=np.int64)
+    bs_p1_price = np.zeros(MAX_STEEP)
+    bs_p2_idx   = np.zeros(MAX_STEEP, dtype=np.int64)
+    bs_p2_price = np.zeros(MAX_STEEP)
+    bs_slope    = np.zeros(MAX_STEEP)
+    bs_valid    = np.zeros(MAX_STEEP, dtype=np.int64)
+    bs_count    = 0   # number of steeper blue lines active
+
+    ps_p1_idx   = np.zeros(MAX_STEEP, dtype=np.int64)
+    ps_p1_price = np.zeros(MAX_STEEP)
+    ps_p2_idx   = np.zeros(MAX_STEEP, dtype=np.int64)
+    ps_p2_price = np.zeros(MAX_STEEP)
+    ps_slope    = np.zeros(MAX_STEEP)
+    ps_valid    = np.zeros(MAX_STEEP, dtype=np.int64)
+    ps_count    = 0
+
+    # Track most recent confirmed swing low/high for steeper line anchoring
+    last_sl_idx = 0; last_sl_price = lows_arr[0]
+    last_sh_idx = 0; last_sh_price = highs_arr[0]
+
+    # Last touch point on primary lines — P1 for steeper lines
+    # -1 means not yet touched — steeper lines won't spawn until first touch
+    b_last_touch_idx = -1; b_last_touch_price = 0.0
+    p_last_touch_idx = -1; p_last_touch_price = 0.0
 
     # Blue state: p1_idx, p1_price, slope, p2_locked (0=provisional, 1=locked), valid
     b_p1_idx = 0; b_p1_price = lows_arr[0]; b_slope = _default_blue_slope
@@ -334,22 +372,7 @@ def _compute_rays_nb(
             p_p1_idx = i; p_p1_price = highs_arr[i]
             p_slope = _default_purple_slope; p_p2_locked = 0; p_valid = 1
 
-        # Before warmup ends — lines not active yet, fill with NaN so plotter skips
-        if i < warmup_bars:
-            blue_vals[i]         = b_p1_price
-            blue_slopes[i]       = 0.0
-            blue_start_prices[i] = np.nan
-            blue_anchor_idxs[i]  = b_p1_idx
-            blue_end_prices[i]   = np.nan
-            purple_vals[i]         = p_p1_price
-            purple_slopes[i]       = 0.0
-            purple_start_prices[i] = np.nan
-            purple_anchor_idxs[i]  = p_p1_idx
-            purple_end_prices[i]   = np.nan
-            p_anchor_p = p_p1_price; b_anchor_p = b_p1_price
-            continue
-
-        # Confirmed swing low at bar i-1 (1-bar confirmation)
+        # Detect swing points and lock slopes — runs during AND after warmup
         new_sl_idx = -1; new_sl_price = 0.0
         new_sh_idx = -1; new_sh_price = 0.0
         if i >= 2:
@@ -357,20 +380,13 @@ def _compute_rays_nb(
             l_j = lows_arr[j]
             if lows_arr[j-1] - l_j >= SWING_THRESHOLD and lows_arr[i] - l_j >= SWING_THRESHOLD:
                 new_sl_idx = j; new_sl_price = l_j
+                last_sl_idx = j; last_sl_price = l_j
             h_j = highs_arr[j]
             if h_j - highs_arr[j-1] >= SWING_THRESHOLD and h_j - highs_arr[i] >= SWING_THRESHOLD:
                 new_sh_idx = j; new_sh_price = h_j
+                last_sh_idx = j; last_sh_price = h_j
 
-        # Lock blue slope to P2 once first confirmed higher swing low found
-        if b_valid == 1 and b_p2_locked == 0 and new_sl_idx >= 0:
-            if new_sl_price > b_session_low and new_sl_idx > b_session_low_idx:
-                dt = times_num[new_sl_idx] - times_num[b_p1_idx]
-                if dt != 0.0:
-                    s = (new_sl_price - b_p1_price) / dt
-                    if s > 0.0:
-                        b_slope = s; b_p2_locked = 1
-
-        # Lock purple slope to P2
+        # Lock purple slope to P2 (runs during warmup too)
         if p_valid == 1 and p_p2_locked == 0 and new_sh_idx >= 0:
             if new_sh_price < p_session_high and new_sh_idx > p_session_high_idx:
                 dt = times_num[new_sh_idx] - times_num[p_p1_idx]
@@ -378,11 +394,72 @@ def _compute_rays_nb(
                     s = (new_sh_price - p_p1_price) / dt
                     if s < 0.0:
                         p_slope = s; p_p2_locked = 1
+                        p_last_touch_idx = new_sh_idx; p_last_touch_price = new_sh_price
+
+        # Lock blue slope to P2 (runs during warmup too)
+        if b_valid == 1 and b_p2_locked == 0 and new_sl_idx >= 0:
+            if new_sl_price > b_session_low and new_sl_idx > b_session_low_idx:
+                dt = times_num[new_sl_idx] - times_num[b_p1_idx]
+                if dt != 0.0:
+                    s = (new_sl_price - b_p1_price) / dt
+                    if s > 0.0:
+                        b_slope = s; b_p2_locked = 1
+                        b_last_touch_idx = new_sl_idx; b_last_touch_price = new_sl_price
+
+        # Before warmup ends — compute ray values using locked slope if available
+        if i < warmup_bars:
+            if b_p2_locked == 1:
+                b_line_w = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+                # Pierce check during warmup: low below ray -> reanchor
+                if lows_arr[i] < b_line_w:
+                    dt = t_i - times_num[b_p1_idx]
+                    if dt != 0.0:
+                        ns = (lows_arr[i] - b_p1_price) / dt
+                        if ns <= 0.0:
+                            b_valid = 0
+                        else:
+                            b_slope = ns; b_line_w = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+                            b_last_touch_idx = i; b_last_touch_price = b_line_w
+                blue_vals[i]         = b_line_w
+                blue_slopes[i]       = b_slope
+                blue_start_prices[i] = b_p1_price
+                blue_anchor_idxs[i]  = b_p1_idx
+                blue_end_prices[i]   = b_p1_price + b_slope * (times_num[-1] - times_num[b_p1_idx])
+            else:
+                blue_vals[i]         = b_p1_price
+                blue_slopes[i]       = 0.0
+                blue_start_prices[i] = np.nan
+                blue_anchor_idxs[i]  = b_p1_idx
+                blue_end_prices[i]   = np.nan
+            if p_p2_locked == 1:
+                p_line_w = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+                # Pierce check during warmup: high above ray -> reanchor
+                if highs_arr[i] > p_line_w:
+                    dt = t_i - times_num[p_p1_idx]
+                    if dt != 0.0:
+                        ns = (highs_arr[i] - p_p1_price) / dt
+                        if ns >= 0.0:
+                            p_valid = 0
+                        else:
+                            p_slope = ns; p_line_w = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+                            p_last_touch_idx = i; p_last_touch_price = p_line_w
+                purple_vals[i]         = p_line_w
+                purple_slopes[i]       = p_slope
+                purple_start_prices[i] = p_p1_price
+                purple_anchor_idxs[i]  = p_p1_idx
+                purple_end_prices[i]   = p_p1_price + p_slope * (times_num[-1] - times_num[p_p1_idx])
+            else:
+                purple_vals[i]         = p_p1_price
+                purple_slopes[i]       = 0.0
+                purple_start_prices[i] = np.nan
+                purple_anchor_idxs[i]  = p_p1_idx
+                purple_end_prices[i]   = np.nan
+            p_anchor_p = p_p1_price; b_anchor_p = b_p1_price
+            continue
 
         # Compute current blue line value
         if b_valid == 1:
             b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
-            # Adjust: low pierces line (with or without a sell signal) → push P2 down to bar's low
             if lows_arr[i] < b_line_i:
                 dt = t_i - times_num[b_p1_idx]
                 if dt != 0.0:
@@ -392,6 +469,9 @@ def _compute_rays_nb(
                     else:
                         b_slope = ns; b_p2_locked = 1
                         b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+            # Record touch point whenever low is within 5pts of the line (pierce OR graze)
+            if b_valid == 1 and abs(lows_arr[i] - b_line_i) <= 5.0:
+                b_last_touch_idx = i; b_last_touch_price = lows_arr[i]
             blue_vals[i]         = b_line_i
             blue_slopes[i]       = b_slope
             blue_start_prices[i] = b_p1_price
@@ -418,6 +498,10 @@ def _compute_rays_nb(
                     else:
                         p_slope = ns; p_p2_locked = 1
                         p_line_i = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+            # Record touch point whenever high is within 5pts of the line (pierce OR graze)
+            # Store the purple ray value (not the high) so steeper line sits above the highs
+            if p_valid == 1 and abs(highs_arr[i] - p_line_i) <= 5.0:
+                p_last_touch_idx = i; p_last_touch_price = p_line_i
             purple_vals[i]         = p_line_i
             purple_slopes[i]       = p_slope
             purple_start_prices[i] = p_p1_price
@@ -432,6 +516,76 @@ def _compute_rays_nb(
 
         p_anchor_p = highs_arr[p_p1_idx]
         b_anchor_p = lows_arr[b_p1_idx]
+
+        # --- Steeper blue lines ---
+        # Spawn when the LOW is STEEP_THRESHOLD pts above blue (price running up)
+        # P1 = last touch point on primary blue, P2 = current bar's low
+        if b_valid == 1 and i >= warmup_bars and lows_arr[i] > b_line_i:
+            ref_val = b_line_i
+            if bs_count > 0:
+                lv = bs_count - 1
+                if bs_valid[lv] == 1:
+                    ref_val = bs_p1_price[lv] + bs_slope[lv] * (t_i - times_num[bs_p1_idx[lv]])
+            if lows_arr[i] - ref_val >= STEEP_THRESHOLD and bs_count < MAX_STEEP:
+                if b_last_touch_idx >= 0 and b_last_touch_idx < i:
+                    dt = t_i - times_num[b_last_touch_idx]
+                    if dt != 0.0:
+                        ns = (lows_arr[i] - b_last_touch_price) / dt
+                        if ns > 0.0:
+                            li = bs_count
+                            bs_p1_idx[li] = b_last_touch_idx; bs_p1_price[li] = b_last_touch_price
+                            bs_p2_idx[li] = i;                bs_p2_price[li] = lows_arr[i]
+                            bs_slope[li]  = ns;               bs_valid[li]    = 1
+                            bs_count += 1
+
+        # Update existing steeper blue lines
+        for li in range(bs_count):
+            if bs_valid[li] == 0:
+                continue
+            lv = bs_p1_price[li] + bs_slope[li] * (t_i - times_num[bs_p1_idx[li]])
+            # Adjust: low pierces → update P2
+            if lows_arr[i] < lv:
+                dt = t_i - times_num[bs_p1_idx[li]]
+                if dt != 0.0:
+                    ns = (lows_arr[i] - bs_p1_price[li]) / dt
+                    if ns <= 0.0:
+                        bs_valid[li] = 0
+                    else:
+                        bs_slope[li] = ns; lv = bs_p1_price[li] + ns * (t_i - times_num[bs_p1_idx[li]])
+            if bs_valid[li] == 1:
+                blue_steep_vals[li, i]         = lv
+                blue_steep_start_prices[li, i] = bs_p1_price[li]
+                blue_steep_p1_idxs[li, i]      = float(bs_p1_idx[li])
+                blue_steep_end_prices[li, i]   = bs_p1_price[li] + bs_slope[li] * (times_num[-1] - times_num[bs_p1_idx[li]])
+
+        # --- Steeper purple lines ---
+        # Spawn when price has moved STEEP_THRESHOLD pts below purple ray
+        # Slope = purple ray slope * steepness factor, anchored at last touch point
+        # This gives a line steeper than purple but with a natural angle
+        STEEP_FACTOR = 1.3  # how much steeper than the purple ray
+        if p_valid == 1 and i >= warmup_bars and p_last_touch_idx >= 0:
+            if ps_count < MAX_STEEP and (p_line_i - highs_arr[i]) >= STEEP_THRESHOLD:
+                already = False
+                for lx in range(ps_count):
+                    if ps_p1_idx[lx] == p_last_touch_idx:
+                        already = True
+                if not already:
+                    ns = p_slope * STEEP_FACTOR  # steeper than purple ray
+                    li = ps_count
+                    ps_p1_idx[li] = p_last_touch_idx; ps_p1_price[li] = p_last_touch_price
+                    ps_p2_idx[li] = i;                ps_p2_price[li] = p_last_touch_price + ns * (t_i - times_num[p_last_touch_idx])
+                    ps_slope[li]  = ns;               ps_valid[li]    = 1
+                    ps_count += 1
+
+        for li in range(ps_count):
+            if ps_valid[li] == 0:
+                continue
+            lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
+            # Keep line active — just draw it, no invalidation
+            purple_steep_vals[li, i]         = lv
+            purple_steep_start_prices[li, i] = ps_p1_price[li]
+            purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
+            purple_steep_end_prices[li, i]   = ps_p1_price[li] + ps_slope[li] * (times_num[-1] - times_num[ps_p1_idx[li]])
 
     # --- Magenta/lime swing rays ---
     SWING_THRESHOLD = 50.0
@@ -491,6 +645,8 @@ def _compute_rays_nb(
     return (orange_vals, yellow_vals, purple_vals, blue_vals,
             purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
             purple_end_prices, blue_end_prices,
+            blue_steep_vals, blue_steep_start_prices, blue_steep_end_prices, blue_steep_p1_idxs,
+            purple_steep_vals, purple_steep_start_prices, purple_steep_end_prices, purple_steep_p1_idxs,
             magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
             p_anchor_p, p_p1_idx, b_anchor_p, b_p1_idx,
             o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
@@ -534,6 +690,7 @@ def _run_signals_nb(
     purple_slopes, blue_slopes,
     magenta_vals, magenta_slopes,
     lime_vals, lime_slopes_arr,
+    purple_steep_vals, blue_steep_vals,
     x_per_unit, y_per_unit,
     pts_per_bar_visual,
     steep_angle_threshold, proximity_points,
@@ -674,6 +831,46 @@ def _run_signals_nb(
                                 pos = 0; entry_price = 0.0; entry_time_num = 0.0
                                 trail_anchor_p = -1e30; trail_anchor_t = 0.0
                                 entry_time_idx = 0; liquidated = True
+
+        # --- Steeper line reversal ---
+        # Steep purple = descending resistance above price (relevant when SHORT)
+        #   Close crosses ABOVE steep purple -> price broke out up -> reverse short->long
+        # Steep blue = ascending support below price (relevant when LONG)
+        #   Close crosses BELOW steep blue -> price broke down -> reverse long->short
+        # Only fire if held position for at least 2 bars
+        if not liquidated and pos != 0 and (i - entry_time_idx) >= 2:
+            if pos == 2:
+                # Short: steep purple above us, cross above = reverse to long
+                for li in range(purple_steep_vals.shape[0]):
+                    pv_prev = purple_steep_vals[li, i - 1]
+                    pv_curr = purple_steep_vals[li, i]
+                    if np.isnan(pv_prev) or np.isnan(pv_curr):
+                        continue
+                    if closes_arr[i - 1] <= pv_prev and closes_arr[i] > pv_curr:
+                        session_pl += entry_price - closes_arr[i]
+                        sig_type[i] = 1; sig_price[i] = closes_arr[i]; sig_liq[i] = False
+                        pos = 1; entry_price = closes_arr[i]; entry_time_num = times_num[i]
+                        entry_time_idx = i; first_trade_done = True
+                        partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        orange_breakout = False; yellow_breakout = False
+                        liquidated = True
+                        break
+            elif pos == 1:
+                # Long: steep blue below us, cross below = reverse to short
+                for li in range(blue_steep_vals.shape[0]):
+                    bv_prev = blue_steep_vals[li, i - 1]
+                    bv_curr = blue_steep_vals[li, i]
+                    if np.isnan(bv_prev) or np.isnan(bv_curr):
+                        continue
+                    if closes_arr[i - 1] >= bv_prev and closes_arr[i] < bv_curr:
+                        session_pl += closes_arr[i] - entry_price
+                        sig_type[i] = 2; sig_price[i] = closes_arr[i]; sig_liq[i] = False
+                        pos = 2; entry_price = closes_arr[i]; entry_time_num = times_num[i]
+                        entry_time_idx = i; first_trade_done = True
+                        partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        orange_breakout = False; yellow_breakout = False
+                        liquidated = True
+                        break
 
         # Reversal guard
         mins_since = (times_num[i] - entry_time_num) / min_per_unit if entry_time_num > 0.0 else 9999.0
@@ -890,6 +1087,8 @@ def run_trading_algo_fast(
     (orange_vals, yellow_vals, purple_vals, blue_vals,
      purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
      purple_end_prices, blue_end_prices,
+     blue_steep_vals, blue_steep_start_prices, blue_steep_end_prices, blue_steep_p1_idxs,
+     purple_steep_vals, purple_steep_start_prices, purple_steep_end_prices, purple_steep_p1_idxs,
      magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
      p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
      o_anchor_p, o_anchor_t, y_anchor_p, y_anchor_t,
@@ -898,7 +1097,7 @@ def run_trading_algo_fast(
      purple_anchor_idxs, blue_anchor_idxs) = _compute_rays_nb(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
-        cutoff_idx,
+        cutoff_idx, cfg.steep_line_threshold,
     )
     # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)
     # 75 bars visible on the standard chart window
@@ -913,6 +1112,7 @@ def run_trading_algo_fast(
         purple_slopes, blue_slopes,
         magenta_vals, magenta_slopes,
         lime_vals, lime_slopes_arr,
+        purple_steep_vals, blue_steep_vals,
         x_per_unit, y_per_unit,
         pts_per_bar_visual,
         cfg.steep_angle_threshold, cfg.proximity_points,
@@ -989,6 +1189,17 @@ def run_trading_algo_fast(
     # Purple/blue end: pre-computed in Numba, projected to session end
     result["purple_ray_end_price"] = purple_end_prices
     result["blue_ray_end_price"]   = blue_end_prices
+
+    # Steeper blue/purple family (up to 4 each)
+    for li in range(4):
+        result[f"blue_steep_{li}_vals"]         = blue_steep_vals[li, :]
+        result[f"blue_steep_{li}_start_prices"] = blue_steep_start_prices[li, :]
+        result[f"blue_steep_{li}_end_prices"]   = blue_steep_end_prices[li, :]
+        result[f"blue_steep_{li}_p1_idxs"]      = blue_steep_p1_idxs[li, :]
+        result[f"purple_steep_{li}_vals"]         = purple_steep_vals[li, :]
+        result[f"purple_steep_{li}_start_prices"] = purple_steep_start_prices[li, :]
+        result[f"purple_steep_{li}_end_prices"]   = purple_steep_end_prices[li, :]
+        result[f"purple_steep_{li}_p1_idxs"]      = purple_steep_p1_idxs[li, :]
 
     # Display layer pre-computations
     result["y_min"] = lows_arr.min() - 20.0

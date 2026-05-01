@@ -148,7 +148,7 @@ class ChartPlotter:
         self.lines["low"],   = self.ax.plot([], [], color="red",    linewidth=1.8, marker="o", markersize=4, label="Low")
         self.lines["close"], = self.ax.plot([], [], color="black",  linewidth=2.2, marker="s", markersize=4, label="Close")
 
-        # Ray lines
+        # Ray lines — orange/yellow fixed, blue/purple families dynamic
         self.lines["ray_orange"],      = self.ax.plot([], [], color="orange",     linewidth=2, label="Orange ray",  alpha=0.9)
         self.lines["ray_yellow"],      = self.ax.plot([], [], color="gold",       linewidth=2, label="Yellow ray",  alpha=0.9)
         self.lines["ray_purple"],      = self.ax.plot([], [], color="darkviolet", linewidth=2, label="Purple ray",  alpha=0.9)
@@ -156,6 +156,15 @@ class ChartPlotter:
         self.lines["ray_dark_purple"], = self.ax.plot([], [], color="indigo",     linewidth=2, label="Dark purple", alpha=0.9)
         self.lines["ray_magenta"],     = self.ax.plot([], [], color="magenta",    linewidth=1.5, label="Swing High", alpha=0.85, linestyle="--")
         self.lines["ray_lime"],        = self.ax.plot([], [], color="limegreen",  linewidth=1.5, label="Swing Low",  alpha=0.85, linestyle="--")
+
+        # Steeper blue lines (progressively darker blue)
+        _steep_blue_colors   = ["#0055CC", "#003399", "#001166", "#000033"]
+        _steep_purple_colors = ["#7700CC", "#550099", "#330066", "#110033"]
+        for li in range(4):
+            self.lines[f"ray_blue_steep_{li}"],   = self.ax.plot([], [], color=_steep_blue_colors[li],
+                                                                   linewidth=1.8, alpha=0.85, linestyle="--")
+            self.lines[f"ray_purple_steep_{li}"], = self.ax.plot([], [], color=_steep_purple_colors[li],
+                                                                   linewidth=1.8, alpha=0.85, linestyle="--")
 
         self.ax.set_ylabel("Price", fontsize=12)
         self.ax.set_xlabel("Time (ET)", fontsize=12)
@@ -280,6 +289,49 @@ class ChartPlotter:
         self.lines["ray_magenta"].set_data([], [])
         self.lines["ray_lime"].set_data([], [])
 
+        # Steeper blue/purple lines
+        # Draw from P1 anchor (last touch on primary line) to current bar value
+        for li in range(4):
+            # Steeper blue
+            col_v  = f"blue_steep_{li}_vals"
+            col_s  = f"blue_steep_{li}_start_prices"
+            col_p1 = f"blue_steep_{li}_p1_idxs"
+            key    = f"ray_blue_steep_{li}"
+            if col_v in current_data.columns:
+                series = current_data[col_v].dropna()
+                if not series.empty:
+                    p1_series = current_data[col_p1]
+                    valid_p1  = p1_series[p1_series >= 0]
+                    p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
+                    p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
+                    sp        = float(current_data[col_s].dropna().iloc[-1])
+                    ep        = float(series.iloc[-1])
+                    self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                else:
+                    self.lines[key].set_data([], [])
+            else:
+                self.lines[key].set_data([], [])
+
+            # Steeper purple
+            col_v  = f"purple_steep_{li}_vals"
+            col_s  = f"purple_steep_{li}_start_prices"
+            col_p1 = f"purple_steep_{li}_p1_idxs"
+            key    = f"ray_purple_steep_{li}"
+            if col_v in current_data.columns:
+                series = current_data[col_v].dropna()
+                if not series.empty:
+                    p1_series = current_data[col_p1]
+                    valid_p1  = p1_series[p1_series >= 0]
+                    p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
+                    p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
+                    sp        = float(current_data[col_s].dropna().iloc[-1])
+                    ep        = float(series.iloc[-1])
+                    self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                else:
+                    self.lines[key].set_data([], [])
+            else:
+                self.lines[key].set_data([], [])
+
     def update_annotations(self, current_data):
         """Draw High / Low / Close labels for every bar."""
         for ann in getattr(self, "annotations", []):
@@ -402,7 +454,7 @@ class ChartPlotter:
         min_time      = pd.Timestamp(row["rolling_min_low_time"]).strftime("%H:%M")
         n_buy         = int(row["rolling_buy_count"])
         n_sell        = int(row["rolling_sell_count"])
-        pl            = float(row.get("pl", 0.0))
+        pl            = float(row.get("session_pl", row.get("pl", 0.0)))
         position      = str(row.get("position", "flat"))
         pl_sign       = "+" if pl >= 0 else ""
         pl_color_tag  = "▲" if pl > 0 else ("▼" if pl < 0 else "–")
