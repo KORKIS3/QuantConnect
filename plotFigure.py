@@ -475,22 +475,6 @@ class ChartPlotter:
         stats_text += "─" * 18 + "\n"
         stats_text += f"Sigs:  {n_buy}B  {n_sell}S"
 
-        # --- Trade log: per-trade P/L change and cumulative ---
-        signals = current_data[current_data["signal"].isin(["BUY", "SELL"])]
-        if not signals.empty:
-            stats_text += "\n" + "─" * 18 + "\n"
-            stats_text += f"{'Time':<6} {'Sig':<5} {'Chg':>6} {'Tot':>7}\n"
-            stats_text += "─" * 18 + "\n"
-            prev_pl = 0.0
-            for ts, sig_row in signals.iterrows():
-                sig = str(sig_row.get("signal", ""))
-                cur_pl = float(sig_row.get("session_pl", sig_row.get("pl", 0.0)))
-                trade_chg = cur_pl - prev_pl
-                prev_pl = cur_pl
-                chg_str = f"{trade_chg:+.0f}"
-                tot_str = f"{cur_pl:+.0f}"
-                stats_text += f"{ts.strftime('%H:%M'):<6} {sig:<5} {chg_str:>6} {tot_str:>7}\n"
-
         self.stats_box.set_text(stats_text)
         self.current_time_text.set_text(times[-1].strftime("%H:%M:%S  ET"))
 
