@@ -55,6 +55,7 @@ class AlgoConfig:
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
     steep_line_threshold: float = 50.0    # pts above/below primary line to spawn steeper line
+    disable_trailing_stop: bool = False   # set True to test steep lines without trailing stop v4
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +703,7 @@ def _run_signals_nb(
     wm_lookback,
     spike_profit_pts,
     spike_profit_bars,
+    disable_trailing_stop,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -770,7 +772,7 @@ def _run_signals_nb(
 
         # --- Trailing stop v4 ---
         # threshold=50pts, angles=50/60/70, anchor locked once set
-        if pos != 0 and i >= 5:
+        if pos != 0 and i >= 5 and disable_trailing_stop == 0:
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
             if unrealized >= 50.0:
                 # Determine angle based on profit level
@@ -1124,6 +1126,7 @@ def run_trading_algo_fast(
         cfg.wm_lookback,
         cfg.spike_profit_pts,
         cfg.spike_profit_bars,
+        1 if cfg.disable_trailing_stop else 0,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
