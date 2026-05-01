@@ -583,11 +583,32 @@ class ChartPlotter:
             self.btn_play.label.set_text("Play")
             self.fig.canvas.draw()
 
+    def _on_scroll(self, event):
+        """Mouse wheel zoom: scroll up = zoom in, scroll down = zoom out."""
+        if event.inaxes != self.ax:
+            return
+        ax = self.ax
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        xdata = event.xdata
+        ydata = event.ydata
+        if xdata is None or ydata is None:
+            return
+        scale = 0.85 if event.button == 'up' else 1.15
+        # Zoom around mouse position
+        ax.set_xlim([xdata - (xdata - xlim[0]) * scale,
+                     xdata + (xlim[1] - xdata) * scale])
+        ax.set_ylim([ydata - (ydata - ylim[0]) * scale,
+                     ydata + (ylim[1] - ydata) * scale])
+        self.fig.canvas.draw_idle()
+
     def show(self):
         self.create_figure()
         self.current_frame = 0
         self.update_plot(self.current_frame)
         self.create_navigation_buttons()
+        # Wire up mouse wheel zoom
+        self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.fig.canvas.draw()
         plt.show()
 
