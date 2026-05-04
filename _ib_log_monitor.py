@@ -83,7 +83,10 @@ def _draw(fig, day_override=None):
 
     today_key = day_override if day_override else _today()
     today_str = f"{today_key[:4]}-{today_key[4:6]}-{today_key[6:]}"
-    log_path  = os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}.log")
+    # Find the most recent log file for today (handles timestamped filenames)
+    import glob as _glob
+    matches = sorted(_glob.glob(os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}*.log")))
+    log_path = matches[-1] if matches else os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}.log")
 
     fills   = _parse_fred_fills(log_path)
     last_px = _latest_mym_price(log_path)

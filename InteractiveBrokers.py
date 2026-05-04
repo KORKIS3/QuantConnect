@@ -54,7 +54,7 @@ import datetime as _dt
 
 _LOG_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
-_LOG_FILE = os.path.join(_LOG_DIR, f"fred_ib_{_dt.date.today().strftime('%Y%m%d')}.log")
+_LOG_FILE = os.path.join(_LOG_DIR, f"fred_ib_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.log")
 
 logging.basicConfig(
     level=logging.INFO,
