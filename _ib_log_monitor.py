@@ -44,7 +44,9 @@ def _parse_fred_fills(log_path):
 def _calc_pl(fills):
     pos, ep, realized = 0.0, 0.0, 0.0
     trade_pls = []
-    for _, r in fills.iterrows():
+    fill_list = list(fills.iterrows())
+    exit_prices = [None] * len(fill_list)
+    for idx, (_, r) in enumerate(fill_list):
         qty, price = r["qty"], r["price"]
         trade_realized = 0.0
         if r["side"] == "BUY":
@@ -52,6 +54,12 @@ def _calc_pl(fills):
                 cq = min(qty, abs(pos))
                 trade_realized += (ep - price) * cq
                 realized += trade_realized
+                remaining = cq
+                for j in range(idx - 1, -1, -1):
+                    if exit_prices[j] is None and fill_list[j][1]["side"] == "SELL":
+                        exit_prices[j] = price
+                        remaining -= fill_list[j][1]["qty"]
+                        if remaining <= 0: break
                 pos += cq; qty -= cq
             if qty > 0:
                 ep = (ep * pos + price * qty) / (pos + qty) if pos + qty > 0 else price
@@ -61,11 +69,17 @@ def _calc_pl(fills):
                 cq = min(qty, pos)
                 trade_realized += (price - ep) * cq
                 realized += trade_realized
+                remaining = cq
+                for j in range(idx - 1, -1, -1):
+                    if exit_prices[j] is None and fill_list[j][1]["side"] == "BUY":
+                        exit_prices[j] = price
+                        remaining -= fill_list[j][1]["qty"]
+                        if remaining <= 0: break
                 pos -= cq; qty -= cq
             if qty > 0:
                 ep = (ep * abs(pos) + price * qty) / (abs(pos) + qty) if abs(pos) + qty > 0 else price
                 pos -= qty
-        trade_pls.append((trade_realized, realized))
+        trade_pls.append((trade_realized, realized, exit_prices[idx]))
     return realized, pos, ep, trade_pls
 
 
@@ -172,12 +186,13 @@ def _draw(fig, day_override=None):
     if not fills.empty:
         tbl_data = []
         for i, (_, r) in enumerate(fills.iterrows()):
-            chg, cum = trade_pls[i] if i < len(trade_pls) else (0.0, 0.0)
-            chg_str = f"{chg:+.1f}" if chg != 0.0 else "-"
-            cum_str = f"{cum:+.1f}"
-            tbl_data.append([r["time"], r["side"], int(r["qty"]), f"{r['price']:.0f}", chg_str, cum_str])
+            chg, cum, exit_px = trade_pls[i] if i < len(trade_pls) else (0.0, 0.0, None)
+            chg_str  = f"{chg:+.1f}" if chg != 0.0 else "-"
+            cum_str  = f"{cum:+.1f}"
+            exit_str = f"{exit_px:.0f}" if exit_px is not None else "open"
+            tbl_data.append([r["time"], r["side"], int(r["qty"]), f"{r['price']:.0f}", exit_str, chg_str, cum_str])
         tbl = ax_tbl.table(cellText=tbl_data,
-                           colLabels=["Time ET", "Side", "Qty", "Price", "Trade P/L", "Total P/L"],
+                           colLabels=["Time ET", "Side", "Qty", "Entry", "Exit", "Trade P/L", "Total P/L"],
                            loc="center", cellLoc="center")
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(9)
