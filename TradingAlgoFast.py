@@ -55,6 +55,8 @@ class AlgoConfig:
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
     steep_line_threshold: float = 50.0    # pts above/below primary line to spawn steeper line
+    steep_line_proximity: float = 0.0     # suppress steep line reversal if close is within N pts of original primary ray
+    steep_line_reentry: bool = False      # allow steep line cross to trigger fresh entry when flat (after first trade)
     disable_trailing_stop: bool = False   # set True to test steep lines without trailing stop v4
 
 
@@ -704,6 +706,8 @@ def _run_signals_nb(
     spike_profit_pts,
     spike_profit_bars,
     disable_trailing_stop,
+    steep_line_proximity,
+    steep_line_reentry,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -821,18 +825,28 @@ def _run_signals_nb(
                     if t_diff > 0.0:
                         if pos == 1:
                             if close < trail_anchor_p + trailing_slope * t_diff:
-                                session_pl += close - entry_price
-                                sig_type[i] = 2; sig_price[i] = close; sig_liq[i] = True
-                                pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                                trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                                entry_time_idx = 0; liquidated = True
+                                # Suppress if close is within steep_line_proximity of original blue ray
+                                _bl = blue_vals[i]
+                                if steep_line_proximity > 0.0 and not np.isnan(_bl) and abs(close - _bl) <= steep_line_proximity:
+                                    pass  # near original blue — hold long
+                                else:
+                                    session_pl += close - entry_price
+                                    sig_type[i] = 2; sig_price[i] = close; sig_liq[i] = True
+                                    pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                                    trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                    entry_time_idx = 0; liquidated = True
                         else:
                             if close > trail_anchor_p - trailing_slope * t_diff:
-                                session_pl += entry_price - close
-                                sig_type[i] = 1; sig_price[i] = close; sig_liq[i] = True
-                                pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                                trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                                entry_time_idx = 0; liquidated = True
+                                # Suppress if close is within steep_line_proximity of original purple ray
+                                _pu = purple_vals[i]
+                                if steep_line_proximity > 0.0 and not np.isnan(_pu) and abs(close - _pu) <= steep_line_proximity:
+                                    pass  # near original purple — hold short
+                                else:
+                                    session_pl += entry_price - close
+                                    sig_type[i] = 1; sig_price[i] = close; sig_liq[i] = True
+                                    pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                                    trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                    entry_time_idx = 0; liquidated = True
 
         # --- Steeper line reversal ---
         # Steep purple = descending resistance above price (relevant when SHORT)
@@ -843,12 +857,16 @@ def _run_signals_nb(
         if not liquidated and pos != 0 and (i - entry_time_idx) >= 2:
             if pos == 2:
                 # Short: steep purple above us, cross above = reverse to long
+                # Suppress if close is within steep_line_proximity pts of original purple ray
+                curr_purple = purple_vals[i]
                 for li in range(purple_steep_vals.shape[0]):
                     pv_prev = purple_steep_vals[li, i - 1]
                     pv_curr = purple_steep_vals[li, i]
                     if np.isnan(pv_prev) or np.isnan(pv_curr):
                         continue
                     if closes_arr[i - 1] <= pv_prev and closes_arr[i] > pv_curr:
+                        if steep_line_proximity > 0.0 and not np.isnan(curr_purple) and abs(closes_arr[i] - curr_purple) <= steep_line_proximity:
+                            break  # too close to original purple — hold short
                         session_pl += entry_price - closes_arr[i]
                         sig_type[i] = 1; sig_price[i] = closes_arr[i]; sig_liq[i] = False
                         pos = 1; entry_price = closes_arr[i]; entry_time_num = times_num[i]
@@ -859,12 +877,16 @@ def _run_signals_nb(
                         break
             elif pos == 1:
                 # Long: steep blue below us, cross below = reverse to short
+                # Suppress if close is within steep_line_proximity pts of original blue ray
+                curr_blue = blue_vals[i]
                 for li in range(blue_steep_vals.shape[0]):
                     bv_prev = blue_steep_vals[li, i - 1]
                     bv_curr = blue_steep_vals[li, i]
                     if np.isnan(bv_prev) or np.isnan(bv_curr):
                         continue
                     if closes_arr[i - 1] >= bv_prev and closes_arr[i] < bv_curr:
+                        if steep_line_proximity > 0.0 and not np.isnan(curr_blue) and abs(closes_arr[i] - curr_blue) <= steep_line_proximity:
+                            break  # too close to original blue — hold long
                         session_pl += closes_arr[i] - entry_price
                         sig_type[i] = 2; sig_price[i] = closes_arr[i]; sig_liq[i] = False
                         pos = 2; entry_price = closes_arr[i]; entry_time_num = times_num[i]
@@ -949,9 +971,21 @@ def _run_signals_nb(
                             if ma < steep_angle_threshold and prev_close <= pm and close > pm:
                                 if abs(close - curr_orange) > proximity_points:
                                     buy_triggered = True
+                        # Steep line re-entry: when flat after first trade, cross above steep purple = BUY
+                        if not buy_triggered and steep_line_reentry and pos == 0 and first_trade_done:
+                            for li in range(purple_steep_vals.shape[0]):
+                                pv_prev = purple_steep_vals[li, i - 1]
+                                pv_curr = purple_steep_vals[li, i]
+                                if np.isnan(pv_prev) or np.isnan(pv_curr):
+                                    continue
+                                if prev_close <= pv_prev and close > pv_curr:
+                                    _pu = purple_vals[i]
+                                    if steep_line_proximity > 0.0 and not np.isnan(_pu) and abs(close - _pu) <= steep_line_proximity:
+                                        break  # too close to original purple — skip
+                                    buy_triggered = True
+                                    break
                     if buy_triggered:
                         if pos == 2: session_pl += entry_price - close
-                        sig_type[i] = 1; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
                         orange_breakout = False; yellow_breakout = False
@@ -1010,6 +1044,19 @@ def _run_signals_nb(
                             if la < steep_angle_threshold and prev_close >= pl2 and close < pl2:
                                 if abs(close - curr_yellow) > proximity_points:
                                     sell_triggered = True
+                        # Steep line re-entry: when flat after first trade, cross below steep blue = SELL
+                        if not sell_triggered and steep_line_reentry and pos == 0 and first_trade_done:
+                            for li in range(blue_steep_vals.shape[0]):
+                                bv_prev = blue_steep_vals[li, i - 1]
+                                bv_curr = blue_steep_vals[li, i]
+                                if np.isnan(bv_prev) or np.isnan(bv_curr):
+                                    continue
+                                if prev_close >= bv_prev and close < bv_curr:
+                                    _bl = blue_vals[i]
+                                    if steep_line_proximity > 0.0 and not np.isnan(_bl) and abs(close - _bl) <= steep_line_proximity:
+                                        break  # too close to original blue — skip
+                                    sell_triggered = True
+                                    break
                     if sell_triggered:
                         if pos == 1: session_pl += close - entry_price
                         sig_type[i] = 2; sig_price[i] = close
@@ -1135,6 +1182,8 @@ def run_trading_algo_fast(
         cfg.spike_profit_pts,
         cfg.spike_profit_bars,
         1 if cfg.disable_trailing_stop else 0,
+        cfg.steep_line_proximity,
+        1 if cfg.steep_line_reentry else 0,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame

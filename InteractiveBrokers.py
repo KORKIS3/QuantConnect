@@ -251,6 +251,11 @@ class IBDataBridge:
             proximity_points=15.0,
             min_reversal_minutes=0,
             min_entry_angle=30.0,
+            partial_tp_pts=50.0,
+            spike_profit_pts=100.0,
+            spike_profit_bars=5,
+            wm_shield_distance=12.0,
+            steep_line_reentry=True,
         )
         self.dry_run = dry_run
         self.start_time = start_time

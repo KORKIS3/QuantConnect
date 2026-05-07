@@ -87,6 +87,7 @@ def _process_day(fname, quick=False):
         spike_profit_pts=100.0,
         spike_profit_bars=5,
         wm_shield_distance=12.0,
+        steep_line_reentry=True,
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}
