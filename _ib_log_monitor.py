@@ -23,7 +23,7 @@ def _parse_fred_fills(log_path):
     if not os.path.exists(log_path):
         return pd.DataFrame()
     text = open(log_path, encoding="utf-8", errors="ignore").read()
-    pattern = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?execDetails Execution\(execId='([^']+)'.*?side='(BOT|SLD)', shares=([\d.]+), price=([\d.]+).*?clientId=1,"
+    pattern = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?execDetails Execution\(execId='([^']+)'.*?side='(BOT|SLD)', shares=([\d.]+), price=([\d.]+)"
     rows = {}
     for m in re.finditer(pattern, text):
         eid = m.group(2)
@@ -91,6 +91,19 @@ def _latest_mym_price(log_path):
     return float(matches[-1]) if matches else 0.0
 
 
+def _latest_ib_position(log_path):
+    """Read the most recent confirmed IB position from updatePortfolio entries."""
+    if not os.path.exists(log_path):
+        return 0.0, 0.0
+    text = open(log_path, encoding="utf-8", errors="ignore").read()
+    pos_matches = re.findall(
+        r"updatePortfolio:.*?symbol='MYM'.*?position=([-\d.]+).*?averageCost=([\d.]+)",
+        text, re.DOTALL)
+    if pos_matches:
+        return float(pos_matches[-1][0]), float(pos_matches[-1][1])
+    return 0.0, 0.0
+
+
 def _draw(fig, day_override=None):
     """Clear and redraw the figure in-place."""
     fig.clf()
@@ -104,15 +117,20 @@ def _draw(fig, day_override=None):
 
     fills   = _parse_fred_fills(log_path)
     last_px = _latest_mym_price(log_path)
+    ib_pos, ib_avg_cost = _latest_ib_position(log_path)
 
     realized_pts, open_pos, open_ep, trade_pls = 0.0, 0.0, 0.0, []
     if not fills.empty:
         realized_pts, open_pos, open_ep, trade_pls = _calc_pl(fills)
 
-    if open_pos > 0 and open_ep > 0 and last_px > 0:
-        unreal_pts = (last_px - open_ep) * abs(open_pos)
-    elif open_pos < 0 and open_ep > 0 and last_px > 0:
-        unreal_pts = (open_ep - last_px) * abs(open_pos)
+    # Use real IB position for unrealized P/L — catches manual trades too
+    display_pos = ib_pos if ib_pos != 0 else open_pos
+    display_ep  = ib_avg_cost * 2 if ib_pos != 0 else open_ep  # avgCost is per-contract in IB
+
+    if display_pos > 0 and display_ep > 0 and last_px > 0:
+        unreal_pts = (last_px - display_ep) * abs(display_pos)
+    elif display_pos < 0 and display_ep > 0 and last_px > 0:
+        unreal_pts = (display_ep - last_px) * abs(display_pos)
     else:
         unreal_pts = 0.0
 
@@ -136,7 +154,7 @@ def _draw(fig, day_override=None):
                  fontsize=13, fontweight="bold", y=0.99)
 
     # --- price chart ---
-    ax1.set_title("MYM  ▲ BUY (green)  ▼ SELL (red)  — Fred fills only", fontsize=10)
+    ax1.set_title("MYM  ▲ BUY (green)  ▼ SELL (red)  ◆ TP (orange)  — Fred fills", fontsize=10)
     ax1.set_ylabel("Price")
 
     if not fills.empty:
@@ -147,11 +165,13 @@ def _draw(fig, day_override=None):
             prices.append(last_px)
         ax1.plot(times, prices, color="steelblue", linewidth=1.5, alpha=0.4)
         for _, row in fills.iterrows():
-            color  = "green" if row["side"] == "BUY" else "red"
-            marker = "^"     if row["side"] == "BUY" else "v"
+            is_tp  = (row["side"] == "SELL" and row["qty"] < 2) or (row["side"] == "BUY" and row["qty"] < 2)
+            color  = "orange" if is_tp else ("green" if row["side"] == "BUY" else "red")
+            marker = "^" if row["side"] == "BUY" else "v"
+            label  = f"TP {int(row['qty'])}@{row['price']:.0f}" if is_tp else f"{row['side']} {int(row['qty'])}@{row['price']:.0f}"
             ax1.scatter(row["ts"], row["price"], marker=marker, color=color,
                         s=200, zorder=5, edgecolors="black", linewidths=0.8)
-            ax1.annotate(f"{row['side']} {int(row['qty'])}@{row['price']:.0f}",
+            ax1.annotate(label,
                          xy=(row["ts"], row["price"]),
                          xytext=(0, 14 if row["side"] == "BUY" else -20),
                          textcoords="offset points",

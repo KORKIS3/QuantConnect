@@ -279,6 +279,7 @@ class IBDataBridge:
         self._last_signal_ts: Optional[pd.Timestamp] = None   # last signal we acted on
         self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
         self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
+        self._pending_order: bool = False  # True while an order is placed but not yet confirmed
 
     # -- connection -----------------------------------------------------------
 
@@ -371,6 +372,20 @@ class IBDataBridge:
         except Exception as exc:
             log.warning("[Connect] Could not sync position from IB: %s", exc)
 
+        # Subscribe to portfolio updates so _ib_position stays accurate from real fills
+        self._ib.updatePortfolioEvent += self._on_portfolio_update
+
+    def _on_portfolio_update(self, item) -> None:
+        """Called by IB on every fill - keeps _ib_position in sync with real fills."""
+        if item.contract.symbol in ("YM", "MYM"):
+            new_pos = int(item.position)
+            if new_pos != self._ib_position:
+                log.info("[PositionSync] IB fill confirmed: _ib_position %d -> %d",
+                         self._ib_position, new_pos)
+                self._ib_position = new_pos
+                self._pending_order = False  # fill confirmed — safe to place next order
+                log.info("[PositionSync] _pending_order cleared")
+
     def disconnect(self) -> None:
         self._ib.disconnect()
         log.info("Disconnected from IB.")
@@ -428,8 +443,11 @@ class IBDataBridge:
         except Exception as exc:
             log.error("Unexpected error in event loop: %s", exc)
         finally:
-            log.info("Flattening any open position before exit ...")
-            self._on_session_end()
+            # Only flatten here if auto-end didn't already handle it.
+            # _session_ended=True means auto-end already ran _on_session_end.
+            if not self._session_ended:
+                log.info("Flattening any open position before exit ...")
+                self._on_session_end()
             self.disconnect()
 
     # -- dynamic session window -----------------------------------------------
@@ -469,17 +487,28 @@ class IBDataBridge:
 
         log.info("[Session] %s ended — saving data and chart.", self._current_date)
 
-        # Flatten any open position at session end
+        # Flatten any open position at session end — use actual IB position as source of truth
         try:
-            final_position = "flat"
-            if self._last_result is not None and not self._last_result.empty:
-                final_position = str(self._last_result["position"].iloc[-1])
-            if final_position == "long":
-                log.info("[Session] flattening LONG position at session end")
+            # Refresh from IB first to get the real position
+            try:
+                positions = self._ib.positions()
+                for p in positions:
+                    if p.contract.symbol in ("YM", "MYM"):
+                        self._ib_position = int(p.position)
+                        break
+            except Exception as exc:
+                log.warning("[Session] could not refresh IB position before flatten: %s", exc)
+
+            if self._ib_position > 0:
+                log.info("[Session] flattening LONG %d contracts at session end", self._ib_position)
                 self._place_order("SELL", liquidate=True)
-            elif final_position == "short":
-                log.info("[Session] flattening SHORT position at session end")
+                self._ib.sleep(5)  # wait for fill before disconnect
+            elif self._ib_position < 0:
+                log.info("[Session] flattening SHORT %d contracts at session end", abs(self._ib_position))
                 self._place_order("BUY", liquidate=True)
+                self._ib.sleep(5)  # wait for fill before disconnect
+            else:
+                log.info("[Session] position already flat at session end")
         except Exception as exc:
             log.error("[Session] flatten error: %s", exc)
 
@@ -545,6 +574,7 @@ class IBDataBridge:
         self._last_hourly_save = None
         self._last_signal_ts = None
         self._last_partial_tp_ts = None
+        self._pending_order = False
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample accumulated 5-second bars to OHLCV bars.
@@ -724,6 +754,7 @@ class IBDataBridge:
                 self._session_ended = True
                 log.info("[OnBar] end_time %s reached — finalising session.", self.end_time)
                 self._on_session_end()
+                self._ib.sleep(3)  # ensure flatten order is processed before disconnect
                 self._ib.disconnect()
         except Exception as exc:
             log.error("[OnBar] auto-end check error: %s", exc)
@@ -842,6 +873,10 @@ class IBDataBridge:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
                     self._place_order("SELL", liquidate=True)
                 else:
+                    if self._pending_order:
+                        log.info("[TradingAlgo] BUY skipped — pending order not yet filled")
+                        self._last_signal_ts = ts
+                        continue
                     if self._ib_position > 0:
                         log.info("[TradingAlgo] BUY skipped — already long (ib_pos=%d)", self._ib_position)
                         self._last_signal_ts = ts
@@ -853,6 +888,10 @@ class IBDataBridge:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
                     self._place_order("BUY", liquidate=True)
                 else:
+                    if self._pending_order:
+                        log.info("[TradingAlgo] SELL skipped — pending order not yet filled")
+                        self._last_signal_ts = ts
+                        continue
                     if self._ib_position < 0:
                         log.info("[TradingAlgo] SELL skipped — already short (ib_pos=%d)", self._ib_position)
                         self._last_signal_ts = ts
@@ -901,6 +940,20 @@ class IBDataBridge:
             elif pos == "short":
                 current_pos = -2
 
+        # Refresh position from IB before calculating qty to avoid stale estimates
+        try:
+            positions = self._ib.positions()
+            for p in positions:
+                if p.contract.symbol in ("YM", "MYM"):
+                    real_pos = int(p.position)
+                    if real_pos != self._ib_position:
+                        log.info("[PositionSync] Pre-order reconcile: _ib_position %d -> %d",
+                                 self._ib_position, real_pos)
+                        self._ib_position = real_pos
+                    break
+        except Exception as exc:
+            log.warning("[PositionSync] Could not refresh position before order: %s", exc)
+
         # Calculate quantity — driven by config.num_contracts (change once to scale up)
         nc = self.config.num_contracts
         if partial_tp:
@@ -918,18 +971,13 @@ class IBDataBridge:
         order.tif = "DAY"
         exec_contract = self._order_contract or self._contract
         trade = self._ib.placeOrder(exec_contract, order)
+        self._pending_order = True  # cleared by _on_portfolio_update on fill confirmation
         log.info("[ORDER placed]  %-10s  qty=%d  contract=%s  orderId=%s",
                  tag, qty, exec_contract.localSymbol, trade.order.orderId)
 
-        # Track actual IB position so same-direction signals can be skipped
-        if liquidate:
-            self._ib_position = 0
-        elif partial_tp:
-            self._ib_position = max(0, abs(self._ib_position) - 1) * (1 if self._ib_position > 0 else -1)
-        elif action == "BUY":
-            self._ib_position = 2
-        elif action == "SELL":
-            self._ib_position = -2
+        # NOTE: _ib_position is now updated by _on_portfolio_update() on fill confirmation,
+        # not here on order placement. This prevents the race condition where a partial TP
+        # order is placed but not yet filled when the next signal fires.
 
         # Send trade alert email
         try:

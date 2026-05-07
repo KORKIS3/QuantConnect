@@ -1055,10 +1055,18 @@ def run_trading_algo_fast(
     cfg = config or AlgoConfig()
     n = len(full_data)
 
-    if cfg.warmup_minutes is not None:
-        cutoff_time = full_data.index[0] + pd.Timedelta(minutes=cfg.warmup_minutes)
+    # Hard cutoff times — no trading before these absolute times regardless of
+    # when the first bar arrives or how many warmup minutes are configured.
+    # Day session:   starts 9:30, no trades before 9:42 ET
+    # Night session: starts 3:00 AM, no trades before 3:12 AM ET (next calendar day)
+    _is_night = start_time >= "18:00" or start_time <= "09:00"
+    if _is_night:
+        # Night session: data starts at 3:00 AM on the date passed in as target_date
+        # Hard cutoff is 3:12 AM same date
+        cutoff_time = pd.Timestamp(f"{target_date} 03:12:00", tz=est)
     else:
-        cutoff_time = pd.Timestamp(f"{target_date} {start_time}:00", tz=est) + pd.Timedelta(minutes=8)
+        # Day session — always 9:42 ET
+        cutoff_time = pd.Timestamp(f"{target_date} 09:42:00", tz=est)
 
     # --- Extract numpy arrays ONCE ---
     highs_arr  = full_data["High"].values.astype(np.float64)
