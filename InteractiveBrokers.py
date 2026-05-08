@@ -876,7 +876,7 @@ class IBDataBridge:
             if signal == "BUY":
                 if is_liq:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("SELL", liquidate=True)
+                    self._place_order("BUY", liquidate=True)
                 else:
                     if self._pending_order:
                         log.info("[TradingAlgo] BUY skipped — pending order not yet filled")
@@ -891,7 +891,7 @@ class IBDataBridge:
             elif signal == "SELL":
                 if is_liq:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("BUY", liquidate=True)
+                    self._place_order("SELL", liquidate=True)
                 else:
                     if self._pending_order:
                         log.info("[TradingAlgo] SELL skipped — pending order not yet filled")
