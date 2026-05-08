@@ -12,7 +12,7 @@ echo.
 start "Fred IB Monitor" C:\Python314\python.exe _ib_log_monitor.py
 
 :: Launch Fred with live chart (Python311 required for ib_insync)
-C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 450
+C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --duration 445
 
 echo.
 echo Session ended.

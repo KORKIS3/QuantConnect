@@ -7,7 +7,7 @@ echo   Session: 03:00 - 09:00 ET (overnight)
 echo   Mode: PAPER TRADING
 echo ==========================================
 echo.
-C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --start-time 03:00 --duration 360 --client-id 4
+C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe run_fred.py --start-time 03:00 --duration 355 --client-id 4
 echo.
 echo Night session ended. Press any key to close.
 pause
