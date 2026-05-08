@@ -58,6 +58,9 @@ class AlgoConfig:
     steep_line_proximity: float = 0.0     # suppress steep line reversal if close is within N pts of original primary ray
     steep_line_reentry: bool = False      # allow steep line cross to trigger fresh entry when flat (after first trade)
     disable_trailing_stop: bool = False   # set True to test steep lines without trailing stop v4
+    reanchor_blue_purple: bool = True     # re-anchor blue/purple from next swing point when invalidated mid-session
+    reanchor_min_bars: int = 30           # minimum bars after invalidation before re-anchoring (prevents thrashing)
+    reanchor_swing_threshold: float = 5.0 # min pts for a swing low/high to qualify as re-anchor point
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +259,7 @@ def _compute_rays_nb(
     n, highs_arr, lows_arr, closes_arr, times_num,
     orange_slope_val, yellow_slope_val,
     warmup_bars, steep_line_threshold,
+    reanchor_blue_purple=1, reanchor_min_bars=30, reanchor_swing_threshold=5.0,
 ):
     """Compute all ray values in a single Numba-compiled pass.
     Returns: orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -295,7 +299,7 @@ def _compute_rays_nb(
     # Purple: exact mirror (descending from session high).
     # All output is stored as per-bar arrays so the plotter just reads start/end columns.
 
-    SWING_THRESHOLD = 5.0   # min pts to qualify as a confirmed swing high/low
+    SWING_THRESHOLD = reanchor_swing_threshold   # min pts to qualify as a confirmed swing high/low
 
     # Default slopes: 45° equivalent in price/time units
     _default_blue_slope   =  np.tan(np.deg2rad(45.0)) * (yellow_slope_val / np.tan(np.deg2rad(2.5)))
@@ -360,6 +364,11 @@ def _compute_rays_nb(
     p_p1_idx = 0; p_p1_price = highs_arr[0]; p_slope = _default_purple_slope
     p_p2_locked = 0; p_valid = 1
     p_session_high = highs_arr[0]; p_session_high_idx = 0
+
+    # Re-anchor state: track when each line was last invalidated so we can
+    # re-anchor from the next confirmed swing point after reanchor_min_bars
+    b_invalidated_at = -1   # bar index when blue was last invalidated (-1 = never)
+    p_invalidated_at = -1   # bar index when purple was last invalidated (-1 = never)
 
     for i in range(n):
         t_i = times_num[i]
@@ -469,6 +478,7 @@ def _compute_rays_nb(
                     ns = (lows_arr[i] - b_p1_price) / dt
                     if ns <= 0.0:
                         b_valid = 0
+                        b_invalidated_at = i
                     else:
                         b_slope = ns; b_p2_locked = 1
                         b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
@@ -481,11 +491,28 @@ def _compute_rays_nb(
             blue_anchor_idxs[i]  = b_p1_idx
             blue_end_prices[i]   = b_p1_price + b_slope * (times_num[-1] - times_num[b_p1_idx])
         else:
-            blue_vals[i]         = blue_vals[i-1] if i > 0 else lows_arr[0]
-            blue_slopes[i]       = 0.0
-            blue_start_prices[i] = blue_start_prices[i-1] if i > 0 else lows_arr[0]
-            blue_anchor_idxs[i]  = blue_anchor_idxs[i-1] if i > 0 else 0
-            blue_end_prices[i]   = blue_end_prices[i-1] if i > 0 else lows_arr[0]
+            # Re-anchor: if enabled and a confirmed swing low has appeared at least
+            # reanchor_min_bars after invalidation, restart blue from that swing low
+            if (reanchor_blue_purple == 1 and b_invalidated_at >= 0
+                    and new_sl_idx >= 0
+                    and new_sl_idx > b_invalidated_at
+                    and (new_sl_idx - b_invalidated_at) >= reanchor_min_bars):
+                b_p1_idx = new_sl_idx; b_p1_price = new_sl_price
+                b_slope = _default_blue_slope; b_p2_locked = 0; b_valid = 1
+                b_invalidated_at = -1
+                b_last_touch_idx = new_sl_idx; b_last_touch_price = new_sl_price
+                b_line_i = b_p1_price + b_slope * (t_i - times_num[b_p1_idx])
+                blue_vals[i]         = b_line_i
+                blue_slopes[i]       = b_slope
+                blue_start_prices[i] = b_p1_price
+                blue_anchor_idxs[i]  = b_p1_idx
+                blue_end_prices[i]   = b_p1_price + b_slope * (times_num[-1] - times_num[b_p1_idx])
+            else:
+                blue_vals[i]         = blue_vals[i-1] if i > 0 else lows_arr[0]
+                blue_slopes[i]       = 0.0
+                blue_start_prices[i] = blue_start_prices[i-1] if i > 0 else lows_arr[0]
+                blue_anchor_idxs[i]  = blue_anchor_idxs[i-1] if i > 0 else 0
+                blue_end_prices[i]   = blue_end_prices[i-1] if i > 0 else lows_arr[0]
 
         # Compute current purple line value
         if p_valid == 1:
@@ -498,6 +525,7 @@ def _compute_rays_nb(
                     ns = (highs_arr[i] - p_p1_price) / dt
                     if ns >= 0.0:
                         p_valid = 0
+                        p_invalidated_at = i
                     else:
                         p_slope = ns; p_p2_locked = 1
                         p_line_i = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
@@ -511,11 +539,28 @@ def _compute_rays_nb(
             purple_anchor_idxs[i]  = p_p1_idx
             purple_end_prices[i]   = p_p1_price + p_slope * (times_num[-1] - times_num[p_p1_idx])
         else:
-            purple_vals[i]         = purple_vals[i-1] if i > 0 else highs_arr[0]
-            purple_slopes[i]       = 0.0
-            purple_start_prices[i] = purple_start_prices[i-1] if i > 0 else highs_arr[0]
-            purple_anchor_idxs[i]  = purple_anchor_idxs[i-1] if i > 0 else 0
-            purple_end_prices[i]   = purple_end_prices[i-1] if i > 0 else highs_arr[0]
+            # Re-anchor: if enabled and a confirmed swing high has appeared at least
+            # reanchor_min_bars after invalidation, restart purple from that swing high
+            if (reanchor_blue_purple == 1 and p_invalidated_at >= 0
+                    and new_sh_idx >= 0
+                    and new_sh_idx > p_invalidated_at
+                    and (new_sh_idx - p_invalidated_at) >= reanchor_min_bars):
+                p_p1_idx = new_sh_idx; p_p1_price = new_sh_price
+                p_slope = _default_purple_slope; p_p2_locked = 0; p_valid = 1
+                p_invalidated_at = -1
+                p_last_touch_idx = new_sh_idx; p_last_touch_price = new_sh_price
+                p_line_i = p_p1_price + p_slope * (t_i - times_num[p_p1_idx])
+                purple_vals[i]         = p_line_i
+                purple_slopes[i]       = p_slope
+                purple_start_prices[i] = p_p1_price
+                purple_anchor_idxs[i]  = p_p1_idx
+                purple_end_prices[i]   = p_p1_price + p_slope * (times_num[-1] - times_num[p_p1_idx])
+            else:
+                purple_vals[i]         = purple_vals[i-1] if i > 0 else highs_arr[0]
+                purple_slopes[i]       = 0.0
+                purple_start_prices[i] = purple_start_prices[i-1] if i > 0 else highs_arr[0]
+                purple_anchor_idxs[i]  = purple_anchor_idxs[i-1] if i > 0 else 0
+                purple_end_prices[i]   = purple_end_prices[i-1] if i > 0 else highs_arr[0]
 
         p_anchor_p = highs_arr[p_p1_idx]
         b_anchor_p = lows_arr[b_p1_idx]
@@ -1155,6 +1200,9 @@ def run_trading_algo_fast(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
         cutoff_idx, cfg.steep_line_threshold,
+        1 if cfg.reanchor_blue_purple else 0,
+        cfg.reanchor_min_bars,
+        cfg.reanchor_swing_threshold,
     )
     # pts_per_bar_visual: how many price points = 1 bar width on the chart (for angle calc)
     # 75 bars visible on the standard chart window
