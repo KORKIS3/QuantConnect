@@ -44,7 +44,7 @@ from openpyxl import Workbook
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
-from Emailer import send_session_summary, send_trade_alert
+from Emailer import send_session_summary, send_trade_alert, send_connection_failure_alert
 # from Notifier import send_signal_alert
 
 # ---------------------------------------------------------------------------
@@ -359,8 +359,14 @@ class IBDataBridge:
 
     def connect(self) -> None:
         """Connect to TWS / IB Gateway and qualify the YM contract."""
-        self._ib.connect(self.host, self.port, clientId=self.client_id)
-        log.info("Connected to IB at %s:%s (clientId=%s)", self.host, self.port, self.client_id)
+        try:
+            self._ib.connect(self.host, self.port, clientId=self.client_id)
+            log.info("Connected to IB at %s:%s (clientId=%s)", self.host, self.port, self.client_id)
+        except Exception as exc:
+            error_msg = f"Failed to connect to IB Gateway at {self.host}:{self.port} — {exc}"
+            log.error(error_msg)
+            send_connection_failure_alert(error_msg)
+            raise RuntimeError(error_msg) from exc
 
         self._contract = resolve_ym_front_month(self._ib)
         log.info("Front-month: %s  expiry=%s", self._contract.localSymbol,
