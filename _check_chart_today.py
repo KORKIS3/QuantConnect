@@ -4,11 +4,11 @@ from TradingAlgoFast import run_trading_algo_fast, AlgoConfig
 from plotFigure import ChartPlotter
 
 _EST = pytz.timezone("US/Eastern")
-date    = "2026-05-04"
+date    = "2026-05-07"
 start_t = "09:30"
-end_t   = "11:30"
+end_t   = "17:00"
 
-track_path = os.path.expanduser("~/Desktop/IB_Live/tracking/YM_tracking_2026-05-04.csv")
+track_path = os.path.expanduser("~/Desktop/IB_Live/tracking/YM_tracking_2026-05-07.csv")
 df = pd.read_csv(track_path, index_col=0, parse_dates=True)
 df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
 

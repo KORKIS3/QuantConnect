@@ -10,6 +10,9 @@ Usage:
     python download_yesterday.py 2026-04-18  # downloads a specific date
 """
 
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
+
 import os
 import sys
 import time

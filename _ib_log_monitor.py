@@ -23,30 +23,19 @@ def _parse_fred_fills(log_path):
     if not os.path.exists(log_path):
         return pd.DataFrame()
     text = open(log_path, encoding="utf-8", errors="ignore").read()
-    # Match execId, actual fill time (UTC inside the Execution object), side, qty, price
-    pattern = r"execDetails Execution\(execId='([^']+)'.*?time=datetime\.datetime\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+).*?tzinfo=datetime\.timezone\.utc\).*?side='(BOT|SLD)', shares=([\d.]+), price=([\d.]+)"
+    pattern = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?execDetails Execution\(execId='([^']+)'.*?side='(BOT|SLD)', shares=([\d.]+), price=([\d.]+)"
     rows = {}
-    # Only count fills from today's session start (9:30 AM ET) onwards
-    today_session_start = pd.Timestamp(date.today().strftime("%Y-%m-%d") + " 09:30:00", tz=_EST)
-    for m in re.finditer(pattern, text, re.DOTALL):
-        eid = m.group(1)
+    for m in re.finditer(pattern, text):
+        eid = m.group(2)
         if eid in rows:
             continue
-        side = "BUY" if m.group(8) == "BOT" else "SELL"
+        side = "BUY" if m.group(3) == "BOT" else "SELL"
         try:
-            # Reconstruct actual fill time from UTC components inside Execution object
-            fill_utc = pd.Timestamp(
-                year=int(m.group(2)), month=int(m.group(3)), day=int(m.group(4)),
-                hour=int(m.group(5)), minute=int(m.group(6)), second=int(m.group(7)),
-                tz="UTC"
-            )
-            ts = fill_utc.tz_convert(_EST)
+            ts = pd.Timestamp(m.group(1), tz=_EST)
         except Exception:
             continue
-        if ts < today_session_start:
-            continue  # skip fills from before today's session
         rows[eid] = {"ts": ts, "time": ts.strftime("%I:%M %p"),
-                     "side": side, "qty": float(m.group(9)), "price": float(m.group(10))}
+                     "side": side, "qty": float(m.group(4)), "price": float(m.group(5))}
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows.values()).sort_values("ts").reset_index(drop=True)
@@ -123,32 +112,12 @@ def _draw(fig, day_override=None):
     today_str = f"{today_key[:4]}-{today_key[4:6]}-{today_key[6:]}"
     # Find the most recent log file for today (handles timestamped filenames)
     import glob as _glob
-    # Merge ALL log files for today — Fred restarts create new files, manual orders
-    # may appear in different sessions. Reading all of them gives the full picture.
-    all_logs = sorted(_glob.glob(os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}*.log")))
-    log_path = all_logs[-1] if all_logs else os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}.log")
+    matches = sorted(_glob.glob(os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}*.log")))
+    log_path = matches[-1] if matches else os.path.join(_EST_LOG_DIR, f"fred_ib_{today_key}.log")
 
-    # Merge text from all today's logs for fills and position parsing
-    merged_text_path = log_path  # fallback for single-file functions
-    if len(all_logs) > 1:
-        merged_text = "\n".join(
-            open(p, encoding="utf-8", errors="ignore").read() for p in all_logs
-        )
-        import tempfile
-        _tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8")
-        _tmp.write(merged_text)
-        _tmp.close()
-        merged_text_path = _tmp.name
-
-    fills   = _parse_fred_fills(merged_text_path)
-    last_px = _latest_mym_price(merged_text_path)
-    ib_pos, ib_avg_cost = _latest_ib_position(merged_text_path)
-
-    if len(all_logs) > 1:
-        try:
-            os.unlink(merged_text_path)
-        except Exception:
-            pass
+    fills   = _parse_fred_fills(log_path)
+    last_px = _latest_mym_price(log_path)
+    ib_pos, ib_avg_cost = _latest_ib_position(log_path)
 
     realized_pts, open_pos, open_ep, trade_pls = 0.0, 0.0, 0.0, []
     if not fills.empty:

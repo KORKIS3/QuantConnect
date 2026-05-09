@@ -803,10 +803,12 @@ class IBDataBridge:
     # -- per-minute tracking CSV ---------------------------------------------
 
     def _save_tracking_csv(self) -> None:
-        """Resample current session bars and overwrite the live tracking CSV.
+        """Resample current session bars and save the live tracking CSV.
 
-        Called at every minute boundary so ``YM_tracking_{date}.csv`` reflects
+        Called at every minute boundary so ``YM_tracking_{date}_{time}.csv`` reflects
         the latest algo output throughout the session, not just at session end.
+        
+        Uses timestamped filename to prevent overwriting on restart.
         """
         if not self.tracking_root or not self._current_date or not self._session_bars:
             return
@@ -829,7 +831,10 @@ class IBDataBridge:
 
         try:
             os.makedirs(self.tracking_root, exist_ok=True)
-            path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}.csv")
+            # Use timestamped filename to prevent overwriting on restart
+            # Format: YM_tracking_2026-05-08_0930.csv
+            start_time_str = self.start_time.replace(':', '')
+            path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}_{start_time_str}.csv")
             algo_df.to_csv(path)
             log.info("[TrackingCSV] saved  %s  rows=%d", path, len(algo_df))
         except Exception as exc:
@@ -860,6 +865,20 @@ class IBDataBridge:
             return
 
         self._last_result = result
+
+        # --- PRE-TRADE POSITION RECONCILIATION (safety check before every signal) ---
+        try:
+            positions = self._ib.positions()
+            for p in positions:
+                if p.contract.symbol in ("YM", "MYM"):
+                    real_pos = int(p.position)
+                    if real_pos != self._ib_position:
+                        log.warning("[PositionSync] PRE-TRADE RECONCILE: _ib_position %d -> %d (CORRECTED)",
+                                    self._ib_position, real_pos)
+                        self._ib_position = real_pos
+                    break
+        except Exception as exc:
+            log.error("[PositionSync] Pre-trade reconcile failed: %s", exc)
 
         # --- Scan ALL new signals since last call, not just the last bar ---
         new_rows = result[result["signal"].isin(["BUY", "SELL"])]
