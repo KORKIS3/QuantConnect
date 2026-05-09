@@ -373,6 +373,46 @@ class IBDataBridge:
                 if p.contract.symbol in ("YM", "MYM"):
                     self._ib_position = int(p.position)
                     log.info("[Connect] Synced _ib_position=%d from IB account", self._ib_position)
+                    
+                    # SAFETY CHECK: Flatten any position at session start
+                    if self._ib_position != 0:
+                        log.warning("=" * 80)
+                        log.warning("WARNING: Account is NOT FLAT at session start!")
+                        log.warning("Current position: %d contracts", self._ib_position)
+                        log.warning("Flattening position now...")
+                        log.warning("=" * 80)
+                        
+                        # Flatten the position
+                        if self._ib_position > 0:
+                            # Long position - sell to flatten
+                            from ib_insync import MarketOrder
+                            order = MarketOrder("SELL", abs(self._ib_position))
+                            order.tif = "DAY"
+                            trade = self._ib.placeOrder(self._contract, order)
+                            log.info("[Connect] Placed SELL %d to flatten long position", abs(self._ib_position))
+                            self._ib.sleep(3)  # wait for fill
+                        elif self._ib_position < 0:
+                            # Short position - buy to flatten
+                            from ib_insync import MarketOrder
+                            order = MarketOrder("BUY", abs(self._ib_position))
+                            order.tif = "DAY"
+                            trade = self._ib.placeOrder(self._contract, order)
+                            log.info("[Connect] Placed BUY %d to flatten short position", abs(self._ib_position))
+                            self._ib.sleep(3)  # wait for fill
+                        
+                        # Re-check position after flatten
+                        positions = self._ib.positions()
+                        for p in positions:
+                            if p.contract.symbol in ("YM", "MYM"):
+                                self._ib_position = int(p.position)
+                                break
+                        
+                        if self._ib_position == 0:
+                            log.info("[Connect] ✓ Position flattened successfully — ready to trade")
+                        else:
+                            log.error("[Connect] ✗ Position still not flat: %d contracts", self._ib_position)
+                    else:
+                        log.info("[Connect] ✓ Account is FLAT — ready to trade")
                     break
         except Exception as exc:
             log.warning("[Connect] Could not sync position from IB: %s", exc)
