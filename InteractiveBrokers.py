@@ -1027,7 +1027,11 @@ class IBDataBridge:
         # Calculate quantity — driven by config.num_contracts (change once to scale up)
         nc = self.config.num_contracts
         if partial_tp:
-            qty = max(1, abs(self._ib_position) // 2)
+            # Close the larger half: (position // 2) + 1 for odd numbers
+            # Examples: 2→1, 3→2, 5→3, 7→4, 9→5, 11→6
+            pos_size = abs(self._ib_position)
+            qty = (pos_size // 2) + (pos_size % 2)  # rounds up for odd numbers
+            qty = max(1, qty)
         elif liquidate:
             qty = abs(self._ib_position) if self._ib_position != 0 else nc
         else:
