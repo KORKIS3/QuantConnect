@@ -54,8 +54,11 @@ import datetime as _dt
 
 _LOG_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
+
+# For single-account mode, use the original log file name
 _LOG_FILE = os.path.join(_LOG_DIR, f"fred_ib_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.log")
 
+# Configure basic logging (will be enhanced per-account in multi-account mode)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -241,10 +244,12 @@ class IBDataBridge:
         tracking_root: Optional[str] = None,
         image_root: Optional[str] = None,
         session_duration_minutes: int = 105,
+        account_id: Optional[str] = None,  # NEW: for multi-account logging
     ) -> None:
         self.host = host
         self.port = port
         self.client_id = client_id
+        self.account_id = account_id  # NEW: store account ID for file naming
         self.config = config or AlgoConfig(
             warmup_minutes=12,
             steep_angle_threshold=70.0,
@@ -285,6 +290,24 @@ class IBDataBridge:
         self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
         self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
         self._pending_order: bool = False  # True while an order is placed but not yet confirmed
+        
+        # NEW: Create account-specific logger if account_id is provided
+        if self.account_id:
+            self._setup_account_logger()
+
+    def _setup_account_logger(self) -> None:
+        """Create a separate log file for this account."""
+        import datetime as _dt
+        log_file = os.path.join(_LOG_DIR, f"fred_ib_{self.account_id}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.log")
+        handler = logging.FileHandler(log_file, encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        # Add handler to root logger so all messages go to this account's log
+        logging.getLogger().addHandler(handler)
+        log.info("[Account %s] Logging to %s", self.account_id, log_file)
 
     # -- connection -----------------------------------------------------------
 
@@ -831,7 +854,10 @@ class IBDataBridge:
         if not self.tracking_root:
             return
 
-        path = os.path.join(self.tracking_root, f"YM_raw_{self._current_date}.xlsx")
+        if self.account_id:
+            path = os.path.join(self.tracking_root, f"YM_raw_{self.account_id}_{self._current_date}.xlsx")
+        else:
+            path = os.path.join(self.tracking_root, f"YM_raw_{self._current_date}.xlsx")
 
         if self._raw_wb is None:
             os.makedirs(self.tracking_root, exist_ok=True)
@@ -878,9 +904,12 @@ class IBDataBridge:
         try:
             os.makedirs(self.tracking_root, exist_ok=True)
             # Use timestamped filename to prevent overwriting on restart
-            # Format: YM_tracking_2026-05-08_0930.csv
+            # Format: YM_tracking_2026-05-08_0930.csv (or YM_tracking_DUO158495_2026-05-08_0930.csv for multi-account)
             start_time_str = self.start_time.replace(':', '')
-            path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}_{start_time_str}.csv")
+            if self.account_id:
+                path = os.path.join(self.tracking_root, f"YM_tracking_{self.account_id}_{self._current_date}_{start_time_str}.csv")
+            else:
+                path = os.path.join(self.tracking_root, f"YM_tracking_{self._current_date}_{start_time_str}.csv")
             algo_df.to_csv(path)
             log.info("[TrackingCSV] saved  %s  rows=%d", path, len(algo_df))
         except Exception as exc:
@@ -1122,6 +1151,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Run connection test only, then exit.")
     p.add_argument("--dry-run",        action="store_true", dest="dry_run",
                    help="Log signals without placing orders.")
+    p.add_argument("--multi-account",  action="store_true", dest="multi_account",
+                   help="Trade multiple accounts simultaneously (DUO158495 on port 4002, DUQ921172 on port 4003).")
     # start_time and end_time are set dynamically from the first bar received.
     # These args are kept for manual override / backtesting use only.
     p.add_argument("--start-time",     default="09:30", dest="start_time",
@@ -1140,6 +1171,84 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def run_multi_account():
+    """Run Fred with multiple IB accounts simultaneously.
+    
+    Each account connects to a separate IB Gateway instance on a different port.
+    All accounts receive identical signals and trade synchronously.
+    """
+    util.logToConsole(logging.WARNING)
+    
+    # Define accounts to trade
+    accounts = [
+        {
+            "name": "Account1_DUO158495",
+            "host": "127.0.0.1",
+            "port": 4002,
+            "client_id": 1,
+            "account_id": "DUO158495",
+        },
+        {
+            "name": "Account2_DUQ921172",
+            "host": "127.0.0.1",
+            "port": 4003,
+            "client_id": 2,
+            "account_id": "DUQ921172",
+        },
+    ]
+    
+    args = _build_parser().parse_args()
+    
+    # Create a bridge for each account
+    bridges = []
+    for acc in accounts:
+        log.info("[MultiAccount] Setting up %s on port %d", acc["name"], acc["port"])
+        bridge = IBDataBridge(
+            host=acc["host"],
+            port=acc["port"],
+            client_id=acc["client_id"],
+            account_id=acc["account_id"],  # NEW: pass account ID for file naming
+            dry_run=args.dry_run,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            show_plot=(args.show_plot and acc["client_id"] == 1),  # only show chart for first account
+            tracking_root=args.tracking_root,
+            image_root=args.image_root,
+            session_duration_minutes=args.duration,
+        )
+        bridges.append((acc["name"], bridge))
+    
+    # Connect all bridges
+    for name, bridge in bridges:
+        try:
+            log.info("[MultiAccount] Connecting %s...", name)
+            bridge.connect()
+        except Exception as exc:
+            log.error("[MultiAccount] Failed to connect %s: %s", name, exc)
+            # Disconnect any already connected bridges
+            for _, b in bridges:
+                try:
+                    b.disconnect()
+                except Exception:
+                    pass
+            return
+    
+    log.info("[MultiAccount] All accounts connected. Starting trading...")
+    
+    # Start all bridges (they will run in parallel via ib_insync event loop)
+    try:
+        for name, bridge in bridges:
+            log.info("[MultiAccount] Starting %s...", name)
+            bridge.start()
+    except KeyboardInterrupt:
+        log.info("[MultiAccount] Keyboard interrupt - shutting down all accounts...")
+        for name, bridge in bridges:
+            try:
+                bridge.disconnect()
+            except Exception as exc:
+                log.error("[MultiAccount] Error disconnecting %s: %s", name, exc)
+
+
 if __name__ == "__main__":
     util.logToConsole(logging.WARNING)   # suppress ib_insync verbose output
 
@@ -1148,17 +1257,23 @@ if __name__ == "__main__":
     if args.test:
         run_connection_test(args.host, args.port, args.client_id)
     else:
-        bridge = IBDataBridge(
-            host=args.host,
-            port=args.port,
-            client_id=args.client_id,
-            dry_run=args.dry_run,
-            start_time=args.start_time,
-            end_time=args.end_time,
-            show_plot=args.show_plot,
-            tracking_root=args.tracking_root,
-            image_root=args.image_root,
-            session_duration_minutes=args.duration,
-        )
-        bridge.connect()
-        bridge.start()
+        # Check if --multi-account flag is present (we'll add this to parser)
+        import sys
+        if "--multi-account" in sys.argv:
+            run_multi_account()
+        else:
+            # Single account mode (original behavior)
+            bridge = IBDataBridge(
+                host=args.host,
+                port=args.port,
+                client_id=args.client_id,
+                dry_run=args.dry_run,
+                start_time=args.start_time,
+                end_time=args.end_time,
+                show_plot=args.show_plot,
+                tracking_root=args.tracking_root,
+                image_root=args.image_root,
+                session_duration_minutes=args.duration,
+            )
+            bridge.connect()
+            bridge.start()

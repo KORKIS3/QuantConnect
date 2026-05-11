@@ -1007,7 +1007,9 @@ def _run_signals_nb(
                                 buy_triggered = True
                         if not buy_triggered:
                             pa = abs(np.rad2deg(np.arctan(abs(prev_purple_slope) * x_per_unit / y_per_unit)))
-                            if pa < steep_angle_threshold and prev_close <= prev_purple and close > prev_purple:
+                            # For first trade, purple angle must be >= min_entry_angle
+                            purple_angle_ready = pa >= min_entry_angle if (min_entry_angle > 0.0 and not first_trade_done) else True
+                            if pa < steep_angle_threshold and purple_angle_ready and prev_close <= prev_purple and close > prev_purple:
                                 if abs(close - curr_orange) > proximity_points:
                                     buy_triggered = True
                         if not buy_triggered and i > 0 and not np.isnan(magenta_vals[i-1]):
@@ -1177,10 +1179,11 @@ def run_trading_algo_fast(
     y_per_unit = _y_range / _ax_h_in
 
     # Find cutoff index
-    cutoff_idx = 0
+    cutoff_idx = n  # Default to end of data if cutoff time not reached yet
     for i in range(n):
         if times_idx[i] >= cutoff_time:
-            cutoff_idx = i; break
+            cutoff_idx = i
+            break
 
     # --- Compute ALL rays via Numba ---
     orange_slope_val = -np.tan(np.deg2rad(cfg.orange_angle)) * (y_per_unit / x_per_unit)
