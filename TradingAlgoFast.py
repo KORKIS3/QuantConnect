@@ -632,8 +632,8 @@ def _compute_rays_nb(
 
         # --- Steeper purple lines ---
         # Spawn when price has moved STEEP_THRESHOLD pts below the last touch point
-        # Slope = purple ray slope * steepness factor, anchored at last touch point
-        # Steeper line gives a natural trailing stop angle
+        # Slope calculated as the LEAST STEEP (most negative) slope from touch point through any subsequent high
+        # This ensures line stays above all highs without being unnecessarily steep
         STEEP_FACTOR = 1.3  # how much steeper than the purple ray
         if p_valid == 1 and p_last_touch_idx >= 0 and p_slope != 0.0:
             # Check distance from last touch point
@@ -644,11 +644,35 @@ def _compute_rays_nb(
                     if ps_p1_idx[lx] == p_last_touch_idx:
                         already = True
                 if not already:
-                    ns = p_slope * STEEP_FACTOR  # steeper than purple ray
+                    # Anchor at purple touch point (e.g., 10:00)
                     li = ps_count
-                    ps_p1_idx[li] = p_last_touch_idx; ps_p1_price[li] = p_last_touch_price
-                    ps_p2_idx[li] = i;                ps_p2_price[li] = p_last_touch_price + ns * (t_i - times_num[p_last_touch_idx])
-                    ps_slope[li] = ns; ps_valid[li] = 1
+                    ps_p1_idx[li] = p_last_touch_idx
+                    ps_p1_price[li] = p_last_touch_price
+                    
+                    # Find the LEAST STEEP slope (most negative) from touch point through any subsequent high
+                    # This is the slope that stays closest to the highs without going below them
+                    least_steep_slope = -1e30  # Start with very negative (very steep)
+                    target_idx = i
+                    
+                    for j in range(p_last_touch_idx + 1, i + 1):
+                        dt = times_num[j] - times_num[p_last_touch_idx]
+                        if dt > 0.0:
+                            slope_to_j = (highs_arr[j] - p_last_touch_price) / dt
+                            # We want the LEAST STEEP (most negative, closest to 0)
+                            if slope_to_j > least_steep_slope:
+                                least_steep_slope = slope_to_j
+                                target_idx = j
+                    
+                    # Use the least steep slope found
+                    if least_steep_slope > -1e30:
+                        ns = least_steep_slope
+                    else:
+                        ns = p_slope * STEEP_FACTOR
+                    
+                    ps_p2_idx[li] = target_idx
+                    ps_p2_price[li] = highs_arr[target_idx]
+                    ps_slope[li] = ns
+                    ps_valid[li] = 1
                     ps_count += 1
 
         for li in range(ps_count):
@@ -666,8 +690,9 @@ def _compute_rays_nb(
             
             lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
             
-            # Adjust slope to pass through EVERY subsequent high
-            # This makes the line touch the highs at 10:00, 10:01, 10:02, 10:03, 10:04, 10:05
+            # Adjust slope to pass through subsequent highs
+            # BUT: only adjust if new slope is LESS negative (line rises, like 10:04->10:05)
+            # Do NOT adjust if new slope is MORE negative (line drops, like 10:05->10:06)
             if i > ps_p1_idx[li]:  # Only adjust for bars after the anchor
                 dt = t_i - times_num[ps_p1_idx[li]]
                 if dt != 0.0:
@@ -676,12 +701,13 @@ def _compute_rays_nb(
                     if ns >= 0.0:
                         # High went above anchor — invalidate this steep line
                         ps_valid[li] = 0
-                    else:
-                        # Adjust to pass through this high
-                        # ns < ps_slope[li] = more negative = line moves down (lower high)
-                        # ns > ps_slope[li] = less negative = line moves up (higher high like 10:02)
+                    elif ns > ps_slope[li]:
+                        # New slope is LESS negative (more positive) - line rises - safe to adjust
+                        # Example: 10:04->10:05 slope goes from -0.408 to -0.340 (rises)
                         ps_slope[li] = ns
                         lv = ps_p1_price[li] + ns * (t_i - times_num[ps_p1_idx[li]])
+                    # If ns < ps_slope[li] (more negative), DON'T adjust - would make line drop
+                    # Example: 10:05->10:06 slope would go from -0.340 to -0.386 (drops) - SKIP
             
             if ps_valid[li] == 1:
                 purple_steep_vals[li, i]         = lv
