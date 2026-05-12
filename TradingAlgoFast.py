@@ -666,8 +666,8 @@ def _compute_rays_nb(
             
             lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
             
-            # Adjust slope to pass through subsequent highs, but ONLY move UP (never down)
-            # When 10:02 is higher than 10:01, push the line UP to touch 10:02
+            # Adjust slope to pass through EVERY subsequent high
+            # This makes the line touch the highs at 10:00, 10:01, 10:02, 10:03
             if i > ps_p1_idx[li]:  # Only adjust for bars after the anchor
                 dt = t_i - times_num[ps_p1_idx[li]]
                 if dt != 0.0:
@@ -676,9 +676,10 @@ def _compute_rays_nb(
                     if ns >= 0.0:
                         # High went above anchor — invalidate this steep line
                         ps_valid[li] = 0
-                    elif ns > ps_slope[li]:
-                        # New slope is LESS negative (line moves UP) — adjust to touch this higher high
-                        # This happens when 10:02 > 10:01, pushing line up to 10:02
+                    else:
+                        # Adjust to pass through this high
+                        # ns < ps_slope[li] = more negative = line moves down (lower high)
+                        # ns > ps_slope[li] = less negative = line moves up (higher high like 10:02)
                         ps_slope[li] = ns
                         lv = ps_p1_price[li] + ns * (t_i - times_num[ps_p1_idx[li]])
             
