@@ -123,6 +123,8 @@ def _build_signals_frame(
             buy_price = float(buy_signals[ts])
             if position == "short" and entry_price is not None:
                 cumulative_realized_pl += entry_price - buy_price
+            elif position == "long" and entry_price is not None and is_liq:
+                cumulative_realized_pl += buy_price - entry_price  # Close LONG position
             position   = "flat" if is_liq else "long"
             entry_price = None  if is_liq else buy_price
 
@@ -130,6 +132,8 @@ def _build_signals_frame(
             sell_price = float(sell_signals[ts])
             if position == "long" and entry_price is not None:
                 cumulative_realized_pl += sell_price - entry_price
+            elif position == "short" and entry_price is not None and is_liq:
+                cumulative_realized_pl += entry_price - sell_price  # Close SHORT position
             position   = "flat"  if is_liq else "short"
             entry_price = None   if is_liq else sell_price
 
@@ -351,9 +355,9 @@ def _compute_rays_nb(
     last_sh_idx = 0; last_sh_price = highs_arr[0]
 
     # Last touch point on primary lines — P1 for steeper lines
-    # -1 means not yet touched — steeper lines won't spawn until first touch
+    # Purple starts at session high (immediately touched), blue starts at session low (not touched until price comes down)
     b_last_touch_idx = -1; b_last_touch_price = 0.0
-    p_last_touch_idx = -1; p_last_touch_price = 0.0
+    p_last_touch_idx = 0; p_last_touch_price = highs_arr[0]
 
     # Blue state: p1_idx, p1_price, slope, p2_locked (0=provisional, 1=locked), valid
     b_p1_idx = 0; b_p1_price = lows_arr[0]; b_slope = _default_blue_slope
@@ -467,6 +471,25 @@ def _compute_rays_nb(
                 purple_anchor_idxs[i]  = p_p1_idx
                 purple_end_prices[i]   = np.nan
             p_anchor_p = p_p1_price; b_anchor_p = b_p1_price
+            
+            # Steep line spawning during warmup (before continue)
+            # Purple steep lines
+            STEEP_FACTOR = 1.3
+            if p_valid == 1 and p_last_touch_idx >= 0 and p_slope != 0.0:
+                dist = p_last_touch_price - highs_arr[i]
+                if ps_count < MAX_STEEP and dist >= STEEP_THRESHOLD:
+                    already = False
+                    for lx in range(ps_count):
+                        if ps_p1_idx[lx] == p_last_touch_idx:
+                            already = True
+                    if not already:
+                        ns = p_slope * STEEP_FACTOR
+                        li = ps_count
+                        ps_p1_idx[li] = p_last_touch_idx; ps_p1_price[li] = p_last_touch_price
+                        ps_p2_idx[li] = i;                ps_p2_price[li] = p_last_touch_price + ns * (t_i - times_num[p_last_touch_idx])
+                        ps_slope[li] = ns; ps_valid[li] = 1
+                        ps_count += 1
+            
             continue
 
         # Compute current blue line value
@@ -568,7 +591,8 @@ def _compute_rays_nb(
         # --- Steeper blue lines ---
         # Spawn when the LOW is STEEP_THRESHOLD pts above blue (price running up)
         # P1 = last touch point on primary blue, P2 = current bar's low
-        if b_valid == 1 and i >= warmup_bars and lows_arr[i] > b_line_i:
+        # Progressive spawning: each new steep line spawns when price moves above the previous one
+        if b_valid == 1 and lows_arr[i] > b_line_i:
             ref_val = b_line_i
             if bs_count > 0:
                 lv = bs_count - 1
@@ -607,12 +631,14 @@ def _compute_rays_nb(
                 blue_steep_end_prices[li, i]   = bs_p1_price[li] + bs_slope[li] * (times_num[-1] - times_num[bs_p1_idx[li]])
 
         # --- Steeper purple lines ---
-        # Spawn when price has moved STEEP_THRESHOLD pts below purple ray
+        # Spawn when price has moved STEEP_THRESHOLD pts below the last touch point
         # Slope = purple ray slope * steepness factor, anchored at last touch point
-        # This gives a line steeper than purple but with a natural angle
+        # Steeper line gives a natural trailing stop angle
         STEEP_FACTOR = 1.3  # how much steeper than the purple ray
-        if p_valid == 1 and i >= warmup_bars and p_last_touch_idx >= 0:
-            if ps_count < MAX_STEEP and (p_line_i - highs_arr[i]) >= STEEP_THRESHOLD:
+        if p_valid == 1 and p_last_touch_idx >= 0 and p_slope != 0.0:
+            # Check distance from last touch point
+            dist = p_last_touch_price - highs_arr[i]
+            if ps_count < MAX_STEEP and dist >= STEEP_THRESHOLD:
                 already = False
                 for lx in range(ps_count):
                     if ps_p1_idx[lx] == p_last_touch_idx:
@@ -622,18 +648,47 @@ def _compute_rays_nb(
                     li = ps_count
                     ps_p1_idx[li] = p_last_touch_idx; ps_p1_price[li] = p_last_touch_price
                     ps_p2_idx[li] = i;                ps_p2_price[li] = p_last_touch_price + ns * (t_i - times_num[p_last_touch_idx])
-                    ps_slope[li]  = ns;               ps_valid[li]    = 1
+                    ps_slope[li] = ns; ps_valid[li] = 1
                     ps_count += 1
 
         for li in range(ps_count):
             if ps_valid[li] == 0:
                 continue
             lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
-            # Keep line active — just draw it, no invalidation
-            purple_steep_vals[li, i]         = lv
-            purple_steep_start_prices[li, i] = ps_p1_price[li]
-            purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
-            purple_steep_end_prices[li, i]   = ps_p1_price[li] + ps_slope[li] * (times_num[-1] - times_num[ps_p1_idx[li]])
+            
+            # Re-anchor to each bar where high touches the purple ray (within 5pts)
+            # This makes the steep line follow the purple ray's touch points
+            if p_valid == 1 and abs(highs_arr[i] - p_line_i) <= 5.0 and highs_arr[i] < ps_p1_price[li]:
+                # High is touching purple ray and is lower than our current anchor
+                # Re-anchor from this touch point, adjusting slope to keep line at or above current position
+                dt = t_i - times_num[i]
+                if dt != 0.0:
+                    # Calculate slope needed to maintain current line value
+                    ns = (lv - p_line_i) / dt
+                    if ns < 0.0:  # Must be descending
+                        ps_p1_idx[li] = i
+                        ps_p1_price[li] = p_line_i  # Anchor at purple ray value, not the high
+                        ps_slope[li] = ns
+                        # lv stays the same (line doesn't move down)
+            
+            # Adjust slope when high pierces — makes line steeper (tightening trailing stop)
+            elif highs_arr[i] > lv:
+                dt = t_i - times_num[ps_p1_idx[li]]
+                if dt != 0.0:
+                    ns = (highs_arr[i] - ps_p1_price[li]) / dt
+                    if ns >= 0.0:
+                        # High went above anchor — invalidate this steep line
+                        ps_valid[li] = 0
+                    else:
+                        # Adjust slope to pass through new high (makes it steeper, moves line UP)
+                        ps_slope[li] = ns
+                        lv = ps_p1_price[li] + ns * (t_i - times_num[ps_p1_idx[li]])
+            
+            if ps_valid[li] == 1:
+                purple_steep_vals[li, i]         = lv
+                purple_steep_start_prices[li, i] = ps_p1_price[li]
+                purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
+                purple_steep_end_prices[li, i]   = ps_p1_price[li] + ps_slope[li] * (times_num[-1] - times_num[ps_p1_idx[li]])
 
     # --- Magenta/lime swing rays ---
     SWING_THRESHOLD = 50.0
@@ -1032,10 +1087,14 @@ def _run_signals_nb(
                                     buy_triggered = True
                                     break
                     if buy_triggered:
-                        if pos == 2: session_pl += entry_price - close
-                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                        orange_breakout = False; yellow_breakout = False
+                        # BUG FIX: Defensive check to prevent duplicate BUY when already LONG
+                        if pos == 1:
+                            pass  # Already LONG - ignore duplicate BUY signal
+                        else:
+                            if pos == 2: session_pl += entry_price - close
+                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                            else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            orange_breakout = False; yellow_breakout = False
 
         # --- SELL signals ---
         if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
@@ -1105,11 +1164,15 @@ def _run_signals_nb(
                                     sell_triggered = True
                                     break
                     if sell_triggered:
-                        if pos == 1: session_pl += close - entry_price
-                        sig_type[i] = 2; sig_price[i] = close
-                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                        orange_breakout = False; yellow_breakout = False
+                        # BUG FIX: Defensive check to prevent duplicate SELL when already SHORT
+                        if pos == 2:
+                            pass  # Already SHORT - ignore duplicate SELL signal
+                        else:
+                            if pos == 1: session_pl += close - entry_price
+                            sig_type[i] = 2; sig_price[i] = close
+                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                            else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            orange_breakout = False; yellow_breakout = False
 
         # Track cumulative 2-contract P/L (realized + unrealized on contract 2)
         if pos == 0 or entry_price == 0.0:
