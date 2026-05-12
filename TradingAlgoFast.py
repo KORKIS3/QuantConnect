@@ -588,43 +588,83 @@ def _compute_rays_nb(
         p_anchor_p = highs_arr[p_p1_idx]
         b_anchor_p = lows_arr[b_p1_idx]
 
-        # --- Steeper blue lines ---
-        # Spawn when the LOW is STEEP_THRESHOLD pts above blue (price running up)
-        # P1 = last touch point on primary blue, P2 = current bar's low
-        # Progressive spawning: each new steep line spawns when price moves above the previous one
-        if b_valid == 1 and lows_arr[i] > b_line_i:
-            ref_val = b_line_i
-            if bs_count > 0:
-                lv = bs_count - 1
-                if bs_valid[lv] == 1:
-                    ref_val = bs_p1_price[lv] + bs_slope[lv] * (t_i - times_num[bs_p1_idx[lv]])
-            if lows_arr[i] - ref_val >= STEEP_THRESHOLD and bs_count < MAX_STEEP:
-                if b_last_touch_idx >= 0 and b_last_touch_idx < i:
-                    dt = t_i - times_num[b_last_touch_idx]
-                    if dt != 0.0:
-                        ns = (lows_arr[i] - b_last_touch_price) / dt
-                        if ns > 0.0:
-                            li = bs_count
-                            bs_p1_idx[li] = b_last_touch_idx; bs_p1_price[li] = b_last_touch_price
-                            bs_p2_idx[li] = i;                bs_p2_price[li] = lows_arr[i]
-                            bs_slope[li]  = ns;               bs_valid[li]    = 1
-                            bs_count += 1
+        # --- Steeper blue lines --- UPDATED TO MATCH PURPLE LOGIC
+        # Spawn when price has moved STEEP_THRESHOLD pts above the last touch point
+        # Slope calculated as the LEAST STEEP (closest to 0) slope from touch point through any subsequent low
+        STEEP_FACTOR = 1.3
+        if b_valid == 1 and b_last_touch_idx >= 0 and b_slope != 0.0:
+            # Check distance from last touch point
+            dist = lows_arr[i] - b_last_touch_price
+            if bs_count < MAX_STEEP and dist >= STEEP_THRESHOLD:
+                already = False
+                for lx in range(bs_count):
+                    if bs_p1_idx[lx] == b_last_touch_idx:
+                        already = True
+                if not already:
+                    # Anchor at blue touch point
+                    li = bs_count
+                    bs_p1_idx[li] = b_last_touch_idx
+                    bs_p1_price[li] = b_last_touch_price
+                    
+                    # Find the LEAST STEEP slope (closest to 0) from touch point through any subsequent low
+                    # Calculate slope to each low and choose the one closest to horizontal
+                    least_steep_slope = 1e30  # Start with very positive (very steep)
+                    target_idx = i
+                    
+                    for j in range(b_last_touch_idx + 1, i + 1):
+                        dt = times_num[j] - times_num[b_last_touch_idx]
+                        if dt > 0.0:
+                            slope_to_j = (lows_arr[j] - b_last_touch_price) / dt
+                            # We want the LEAST STEEP (closest to 0, smallest value since all are positive)
+                            if slope_to_j < least_steep_slope:
+                                least_steep_slope = slope_to_j
+                                target_idx = j
+                    
+                    # Use the least steep slope found
+                    if least_steep_slope < 1e30:
+                        ns = least_steep_slope
+                    else:
+                        ns = b_slope * STEEP_FACTOR
+                    
+                    bs_p2_idx[li] = target_idx
+                    bs_p2_price[li] = lows_arr[target_idx]
+                    bs_slope[li] = ns
+                    bs_valid[li] = 1
+                    bs_count += 1
 
-        # Update existing steeper blue lines
         for li in range(bs_count):
             if bs_valid[li] == 0:
                 continue
-            lv = bs_p1_price[li] + bs_slope[li] * (t_i - times_num[bs_p1_idx[li]])
-            # Adjust: low pierces → update P2
-            if lows_arr[i] < lv:
-                dt = t_i - times_num[bs_p1_idx[li]]
-                if dt != 0.0:
-                    ns = (lows_arr[i] - bs_p1_price[li]) / dt
-                    if ns <= 0.0:
-                        bs_valid[li] = 0
-                    else:
-                        bs_slope[li] = ns; lv = bs_p1_price[li] + ns * (t_i - times_num[bs_p1_idx[li]])
+            
+            # ALWAYS anchor from the LAST touch point of the blue ray
+            # When blue ray gets a new touch point, move the steep line anchor forward
+            if b_valid == 1 and b_last_touch_idx > bs_p1_idx[li]:
+                # Blue ray has a NEW touch point ahead of our current anchor
+                # Move the steep line anchor forward to this new touch point
+                bs_p1_idx[li] = b_last_touch_idx
+                bs_p1_price[li] = b_last_touch_price
+                # Don't set slope yet - will be calculated below
+            
+            # Calculate the LEAST STEEP slope from anchor through all lows up to current bar
+            # This ensures the line stays below all lows without being unnecessarily steep
+            if i > bs_p1_idx[li]:
+                least_steep_slope = 1e30
+                for j in range(bs_p1_idx[li] + 1, i + 1):
+                    dt = times_num[j] - times_num[bs_p1_idx[li]]
+                    if dt > 0.0:
+                        slope_to_j = (lows_arr[j] - bs_p1_price[li]) / dt
+                        if slope_to_j <= 0.0:
+                            # Low went below anchor - invalidate
+                            bs_valid[li] = 0
+                            break
+                        if slope_to_j < least_steep_slope:
+                            least_steep_slope = slope_to_j
+                
+                if bs_valid[li] == 1 and least_steep_slope < 1e30:
+                    bs_slope[li] = least_steep_slope
+            
             if bs_valid[li] == 1:
+                lv = bs_p1_price[li] + bs_slope[li] * (t_i - times_num[bs_p1_idx[li]])
                 blue_steep_vals[li, i]         = lv
                 blue_steep_start_prices[li, i] = bs_p1_price[li]
                 blue_steep_p1_idxs[li, i]      = float(bs_p1_idx[li])
