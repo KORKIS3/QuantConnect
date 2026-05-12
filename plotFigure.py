@@ -454,7 +454,7 @@ class ChartPlotter:
         min_time      = pd.Timestamp(row["rolling_min_low_time"]).strftime("%H:%M")
         n_buy         = int(row["rolling_buy_count"])
         n_sell        = int(row["rolling_sell_count"])
-        pl            = float(row.get("session_pl", row.get("pl", 0.0)))
+        pl            = float(row.get("pl", 0.0))
         position      = str(row.get("position", "flat"))
         pl_sign       = "+" if pl >= 0 else ""
         pl_color_tag  = "▲" if pl > 0 else ("▼" if pl < 0 else "–")

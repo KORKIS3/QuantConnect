@@ -656,20 +656,30 @@ def _compute_rays_nb(
                 continue
             lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
             
-            # Re-anchor to each bar where high touches the purple ray (within 5pts)
-            # This makes the steep line follow the purple ray's touch points
-            if p_valid == 1 and abs(highs_arr[i] - p_line_i) <= 5.0 and highs_arr[i] < ps_p1_price[li]:
-                # High is touching purple ray and is lower than our current anchor
-                # Re-anchor from this touch point, adjusting slope to keep line at or above current position
-                dt = t_i - times_num[i]
-                if dt != 0.0:
-                    # Calculate slope needed to maintain current line value
-                    ns = (lv - p_line_i) / dt
-                    if ns < 0.0:  # Must be descending
-                        ps_p1_idx[li] = i
-                        ps_p1_price[li] = p_line_i  # Anchor at purple ray value, not the high
-                        ps_slope[li] = ns
-                        # lv stays the same (line doesn't move down)
+            # Re-anchor to each swing high that touches the purple ray (within 5pts)
+            # This makes the steep line follow the purple ray's touch points, just like the purple ray itself
+            if p_valid == 1 and abs(highs_arr[i] - p_line_i) <= 5.0:
+                # High is touching purple ray — this is a swing high
+                # Re-anchor from this touch point
+                # If new high is HIGHER than current anchor → move line UP (new higher high)
+                # If new high is LOWER than current anchor → re-anchor but adjust slope to prevent line from dropping
+                if highs_arr[i] > ps_p1_price[li]:
+                    # New higher high — move anchor UP
+                    ps_p1_idx[li] = i
+                    ps_p1_price[li] = p_line_i  # Anchor at purple ray value
+                    ps_slope[li] = p_slope * STEEP_FACTOR  # Maintain steep factor relative to purple ray
+                    lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
+                else:
+                    # Lower swing high — re-anchor but keep line from dropping
+                    # Calculate slope needed to maintain current line value at this bar
+                    dt = t_i - times_num[i]
+                    if dt != 0.0:
+                        ns = (lv - p_line_i) / dt
+                        if ns < 0.0:  # Must be descending
+                            ps_p1_idx[li] = i
+                            ps_p1_price[li] = p_line_i
+                            ps_slope[li] = ns
+                            # lv stays the same (line doesn't move down)
             
             # Adjust slope when high pierces — makes line steeper (tightening trailing stop)
             elif highs_arr[i] > lv:

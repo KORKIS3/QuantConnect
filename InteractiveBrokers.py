@@ -27,6 +27,15 @@ Quick start
 
 from __future__ import annotations
 
+# Fix for Python 3.14 asyncio event loop issue with ib_insync
+import asyncio
+import sys
+if sys.version_info >= (3, 10):
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
 import argparse
 import logging
 import os
@@ -1147,12 +1156,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port",      type=int, default=4002,
                    help="TWS/Gateway port (default: 4002 = IB Gateway paper)")
     p.add_argument("--client-id",     type=int, default=1, dest="client_id")
+    p.add_argument("--account-id",    type=str, default=None, dest="account_id",
+                   help="Account ID for file naming (e.g., DUO158495, DUQ921172)")
     p.add_argument("--test",           action="store_true",
                    help="Run connection test only, then exit.")
     p.add_argument("--dry-run",        action="store_true", dest="dry_run",
                    help="Log signals without placing orders.")
-    p.add_argument("--multi-account",  action="store_true", dest="multi_account",
-                   help="Trade multiple accounts simultaneously (DUO158495 on port 4002, DUQ921172 on port 4003).")
     # start_time and end_time are set dynamically from the first bar received.
     # These args are kept for manual override / backtesting use only.
     p.add_argument("--start-time",     default="09:30", dest="start_time",
@@ -1171,82 +1180,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def run_multi_account():
-    """Run Fred with multiple IB accounts simultaneously.
-    
-    Each account connects to a separate IB Gateway instance on a different port.
-    All accounts receive identical signals and trade synchronously.
-    """
-    util.logToConsole(logging.WARNING)
-    
-    # Define accounts to trade
-    accounts = [
-        {
-            "name": "Account1_DUO158495",
-            "host": "127.0.0.1",
-            "port": 4002,
-            "client_id": 1,
-            "account_id": "DUO158495",
-        },
-        {
-            "name": "Account2_DUQ921172",
-            "host": "127.0.0.1",
-            "port": 4003,
-            "client_id": 2,
-            "account_id": "DUQ921172",
-        },
-    ]
-    
-    args = _build_parser().parse_args()
-    
-    # Create a bridge for each account
-    bridges = []
-    for acc in accounts:
-        log.info("[MultiAccount] Setting up %s on port %d", acc["name"], acc["port"])
-        bridge = IBDataBridge(
-            host=acc["host"],
-            port=acc["port"],
-            client_id=acc["client_id"],
-            account_id=acc["account_id"],  # NEW: pass account ID for file naming
-            dry_run=args.dry_run,
-            start_time=args.start_time,
-            end_time=args.end_time,
-            show_plot=(args.show_plot and acc["client_id"] == 1),  # only show chart for first account
-            tracking_root=args.tracking_root,
-            image_root=args.image_root,
-            session_duration_minutes=args.duration,
-        )
-        bridges.append((acc["name"], bridge))
-    
-    # Connect all bridges
-    for name, bridge in bridges:
-        try:
-            log.info("[MultiAccount] Connecting %s...", name)
-            bridge.connect()
-        except Exception as exc:
-            log.error("[MultiAccount] Failed to connect %s: %s", name, exc)
-            # Disconnect any already connected bridges
-            for _, b in bridges:
-                try:
-                    b.disconnect()
-                except Exception:
-                    pass
-            return
-    
-    log.info("[MultiAccount] All accounts connected. Starting trading...")
-    
-    # Start all bridges (they will run in parallel via ib_insync event loop)
-    try:
-        for name, bridge in bridges:
-            log.info("[MultiAccount] Starting %s...", name)
-            bridge.start()
-    except KeyboardInterrupt:
-        log.info("[MultiAccount] Keyboard interrupt - shutting down all accounts...")
-        for name, bridge in bridges:
-            try:
-                bridge.disconnect()
-            except Exception as exc:
-                log.error("[MultiAccount] Error disconnecting %s: %s", name, exc)
+
 
 
 if __name__ == "__main__":
@@ -1257,23 +1191,19 @@ if __name__ == "__main__":
     if args.test:
         run_connection_test(args.host, args.port, args.client_id)
     else:
-        # Check if --multi-account flag is present (we'll add this to parser)
-        import sys
-        if "--multi-account" in sys.argv:
-            run_multi_account()
-        else:
-            # Single account mode (original behavior)
-            bridge = IBDataBridge(
-                host=args.host,
-                port=args.port,
-                client_id=args.client_id,
-                dry_run=args.dry_run,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                show_plot=args.show_plot,
-                tracking_root=args.tracking_root,
-                image_root=args.image_root,
-                session_duration_minutes=args.duration,
-            )
-            bridge.connect()
-            bridge.start()
+        # Single account mode
+        bridge = IBDataBridge(
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account_id=args.account_id,
+            dry_run=args.dry_run,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            show_plot=args.show_plot,
+            tracking_root=args.tracking_root,
+            image_root=args.image_root,
+            session_duration_minutes=args.duration,
+        )
+        bridge.connect()
+        bridge.start()
