@@ -667,7 +667,7 @@ def _compute_rays_nb(
             lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
             
             # Adjust slope to pass through EVERY subsequent high
-            # This makes the line touch the highs at 10:00, 10:01, 10:02, 10:03
+            # This makes the line touch the highs at 10:00, 10:01, 10:02, 10:03, 10:04, 10:05
             if i > ps_p1_idx[li]:  # Only adjust for bars after the anchor
                 dt = t_i - times_num[ps_p1_idx[li]]
                 if dt != 0.0:
