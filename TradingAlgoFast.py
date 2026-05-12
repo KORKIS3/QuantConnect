@@ -686,30 +686,28 @@ def _compute_rays_nb(
                 # Move the steep line anchor forward to this new touch point
                 ps_p1_idx[li] = p_last_touch_idx
                 ps_p1_price[li] = p_last_touch_price
-                ps_slope[li] = p_slope * STEEP_FACTOR  # Maintain steep factor relative to purple ray
+                # Don't set slope yet - will be calculated below
             
-            lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
-            
-            # Adjust slope to pass through subsequent highs
-            # BUT: only adjust if new slope is LESS negative (line rises, like 10:04->10:05)
-            # Do NOT adjust if new slope is MORE negative (line drops, like 10:05->10:06)
-            if i > ps_p1_idx[li]:  # Only adjust for bars after the anchor
-                dt = t_i - times_num[ps_p1_idx[li]]
-                if dt != 0.0:
-                    # Calculate slope needed to pass through this bar's high
-                    ns = (highs_arr[i] - ps_p1_price[li]) / dt
-                    if ns >= 0.0:
-                        # High went above anchor — invalidate this steep line
-                        ps_valid[li] = 0
-                    elif ns > ps_slope[li]:
-                        # New slope is LESS negative (more positive) - line rises - safe to adjust
-                        # Example: 10:04->10:05 slope goes from -0.408 to -0.340 (rises)
-                        ps_slope[li] = ns
-                        lv = ps_p1_price[li] + ns * (t_i - times_num[ps_p1_idx[li]])
-                    # If ns < ps_slope[li] (more negative), DON'T adjust - would make line drop
-                    # Example: 10:05->10:06 slope would go from -0.340 to -0.386 (drops) - SKIP
+            # Calculate the LEAST STEEP slope from anchor through all highs up to current bar
+            # This ensures the line stays above all highs without being unnecessarily steep
+            if i > ps_p1_idx[li]:
+                least_steep_slope = -1e30
+                for j in range(ps_p1_idx[li] + 1, i + 1):
+                    dt = times_num[j] - times_num[ps_p1_idx[li]]
+                    if dt > 0.0:
+                        slope_to_j = (highs_arr[j] - ps_p1_price[li]) / dt
+                        if slope_to_j >= 0.0:
+                            # High went above anchor - invalidate
+                            ps_valid[li] = 0
+                            break
+                        if slope_to_j > least_steep_slope:
+                            least_steep_slope = slope_to_j
+                
+                if ps_valid[li] == 1 and least_steep_slope > -1e30:
+                    ps_slope[li] = least_steep_slope
             
             if ps_valid[li] == 1:
+                lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
                 purple_steep_vals[li, i]         = lv
                 purple_steep_start_prices[li, i] = ps_p1_price[li]
                 purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
