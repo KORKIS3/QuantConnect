@@ -269,7 +269,9 @@ class IBDataBridge:
             spike_profit_pts=100.0,
             spike_profit_bars=5,
             wm_shield_distance=12.0,
-            steep_line_reentry=True,
+            steep_line_reentry=False,
+            steep_line_proximity=0.0,
+            num_contracts=2,
         )
         self.dry_run = dry_run
         self.start_time = start_time
