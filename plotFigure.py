@@ -300,13 +300,23 @@ class ChartPlotter:
             if col_v in current_data.columns:
                 series = current_data[col_v].dropna()
                 if not series.empty:
-                    p1_series = current_data[col_p1]
-                    valid_p1  = p1_series[p1_series >= 0]
-                    p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
-                    p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
-                    sp        = float(current_data[col_s].dropna().iloc[-1])
-                    ep        = float(series.iloc[-1])
-                    self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                    # Only show the steep line up to the LAST valid bar (where it's not NaN)
+                    # This makes invalidated lines disappear from the chart
+                    last_valid_time = series.index[-1]
+                    
+                    # Check if this steep line is still valid at the current time
+                    # If the last valid time is before the current time, don't show it
+                    if last_valid_time >= current_data.index[-1]:
+                        p1_series = current_data[col_p1]
+                        valid_p1  = p1_series[p1_series >= 0]
+                        p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
+                        p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
+                        sp        = float(current_data[col_s].dropna().iloc[-1])
+                        ep        = float(series.iloc[-1])
+                        self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                    else:
+                        # Steep line was invalidated - don't show it
+                        self.lines[key].set_data([], [])
                 else:
                     self.lines[key].set_data([], [])
             else:
@@ -320,13 +330,23 @@ class ChartPlotter:
             if col_v in current_data.columns:
                 series = current_data[col_v].dropna()
                 if not series.empty:
-                    p1_series = current_data[col_p1]
-                    valid_p1  = p1_series[p1_series >= 0]
-                    p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
-                    p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
-                    sp        = float(current_data[col_s].dropna().iloc[-1])
-                    ep        = float(series.iloc[-1])
-                    self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                    # Only show the steep line up to the LAST valid bar (where it's not NaN)
+                    # This makes invalidated lines disappear from the chart
+                    last_valid_time = series.index[-1]
+                    
+                    # Check if this steep line is still valid at the current time
+                    # If the last valid time is before the current time, don't show it
+                    if last_valid_time >= current_data.index[-1]:
+                        p1_series = current_data[col_p1]
+                        valid_p1  = p1_series[p1_series >= 0]
+                        p1i       = int(valid_p1.iloc[-1]) if not valid_p1.empty else -1
+                        p1_time   = self.data.index[p1i] if 0 <= p1i < len(self.data) else series.index[0]
+                        sp        = float(current_data[col_s].dropna().iloc[-1])
+                        ep        = float(series.iloc[-1])
+                        self.lines[key].set_data([p1_time, series.index[-1]], [sp, ep])
+                    else:
+                        # Steep line was invalidated - don't show it
+                        self.lines[key].set_data([], [])
                 else:
                     self.lines[key].set_data([], [])
             else:

@@ -616,15 +616,27 @@ def _compute_rays_nb(
             if bs_valid[li] == 0:
                 continue
             lv = bs_p1_price[li] + bs_slope[li] * (t_i - times_num[bs_p1_idx[li]])
-            # Adjust: low pierces → update P2
+            
+            # Check if steep line is nearly horizontal (angle < 10 degrees)
+            # For nearly horizontal lines, invalidate if low drops below
+            # For steeper lines, allow slope adjustment
+            angle_deg = abs(np.rad2deg(np.arctan(bs_slope[li] * (times_num[-1] - times_num[0]) / (highs_arr[0] - lows_arr[0]))))
+            is_nearly_horizontal = angle_deg < 10.0
+            
             if lows_arr[i] < lv:
-                dt = t_i - times_num[bs_p1_idx[li]]
-                if dt != 0.0:
-                    ns = (lows_arr[i] - bs_p1_price[li]) / dt
-                    if ns <= 0.0:
-                        bs_valid[li] = 0
-                    else:
-                        bs_slope[li] = ns; lv = bs_p1_price[li] + ns * (t_i - times_num[bs_p1_idx[li]])
+                if is_nearly_horizontal:
+                    # Nearly horizontal line - invalidate immediately
+                    bs_valid[li] = 0
+                else:
+                    # Steeper line - try to adjust slope
+                    dt = t_i - times_num[bs_p1_idx[li]]
+                    if dt != 0.0:
+                        ns = (lows_arr[i] - bs_p1_price[li]) / dt
+                        if ns <= 0.0:
+                            bs_valid[li] = 0
+                        else:
+                            bs_slope[li] = ns; lv = bs_p1_price[li] + ns * (t_i - times_num[bs_p1_idx[li]])
+            
             if bs_valid[li] == 1:
                 blue_steep_vals[li, i]         = lv
                 blue_steep_start_prices[li, i] = bs_p1_price[li]
@@ -709,10 +721,21 @@ def _compute_rays_nb(
             
             if ps_valid[li] == 1:
                 lv = ps_p1_price[li] + ps_slope[li] * (t_i - times_num[ps_p1_idx[li]])
-                purple_steep_vals[li, i]         = lv
-                purple_steep_start_prices[li, i] = ps_p1_price[li]
-                purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
-                purple_steep_end_prices[li, i]   = ps_p1_price[li] + ps_slope[li] * (times_num[-1] - times_num[ps_p1_idx[li]])
+                
+                # Check if steep line is nearly horizontal (angle < 10 degrees)
+                # For nearly horizontal lines, invalidate if high goes above
+                angle_deg = abs(np.rad2deg(np.arctan(ps_slope[li] * (times_num[-1] - times_num[0]) / (highs_arr[0] - lows_arr[0]))))
+                is_nearly_horizontal = angle_deg < 10.0
+                
+                if highs_arr[i] > lv and is_nearly_horizontal:
+                    # Nearly horizontal line - invalidate immediately
+                    ps_valid[li] = 0
+                
+                if ps_valid[li] == 1:
+                    purple_steep_vals[li, i]         = lv
+                    purple_steep_start_prices[li, i] = ps_p1_price[li]
+                    purple_steep_p1_idxs[li, i]      = float(ps_p1_idx[li])
+                    purple_steep_end_prices[li, i]   = ps_p1_price[li] + ps_slope[li] * (times_num[-1] - times_num[ps_p1_idx[li]])
 
     # --- Magenta/lime swing rays ---
     SWING_THRESHOLD = 50.0
