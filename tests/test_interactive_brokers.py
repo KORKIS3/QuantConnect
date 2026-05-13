@@ -647,3 +647,431 @@ class TestLiveTrackingCSV:
         with patch("InteractiveBrokers.run_trading_algo", side_effect=ValueError("boom")):
             b._save_tracking_csv()   # must not raise
         assert not (tmp_path / "YM_tracking_2024-01-15.csv").exists()
+
+
+# ---------------------------------------------------------------------------
+# IB Signal Validation: Algo signals match IB order execution
+# ---------------------------------------------------------------------------
+
+class TestIBSignalValidation:
+    """Validate that algo signals match what IB would actually execute.
+    
+    This test ensures that:
+    1. The algo doesn't generate duplicate BUY signals when already LONG
+    2. The algo doesn't generate duplicate SELL signals when already SHORT
+    3. IB's duplicate protection logic correctly filters signals
+    4. The number of IB orders matches the number of valid algo signals
+    """
+
+    def test_no_duplicate_signals_may_12_2026(self):
+        """Test that May 12, 2026 generates valid signals with no duplicates."""
+        from pathlib import Path
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        # Load May 12, 2026 data
+        csv_path = Path.home() / "Desktop" / "2YearsData" / "full_day" / "CBOT_MINI_YM1_2026-05-12.csv"
+        
+        if not csv_path.exists():
+            pytest.skip(f"Test data not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        
+        # Filter to day session
+        day_start = pd.Timestamp("2026-05-12 09:30", tz=_EST)
+        day_end = pd.Timestamp("2026-05-12 17:00", tz=_EST)
+        df = df[(df.index >= day_start) & (df.index <= day_end)]
+        
+        # Config matching live trading
+        config = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=50.0,
+            spike_profit_pts=50.0,
+            spike_profit_bars=9,
+            wm_shield_distance=0.0,
+            steep_line_reentry=False,
+            steep_line_proximity=5.0,
+            steep_line_exit_only=False,
+        )
+        
+        # Run algo
+        result = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config)
+        
+        # Extract signals
+        signals = result[result['signal'].isin(['BUY', 'SELL'])].copy()
+        
+        # Simulate IB order logic using algo's pos_debug column
+        ib_orders = []
+        skipped_signals = []
+        
+        for i, (idx, row) in enumerate(signals.iterrows()):
+            signal = row['signal']
+            
+            # Get position BEFORE this signal (from previous bar in result DataFrame)
+            bar_idx = result.index.get_loc(idx)
+            if bar_idx > 0:
+                pos_before = result.iloc[bar_idx - 1]['pos_debug']
+            else:
+                pos_before = 0  # start flat
+            
+            # IB duplicate protection: check position BEFORE signal
+            skip = False
+            if signal == 'BUY' and pos_before == 1:  # already long
+                skipped_signals.append((idx, signal, pos_before))
+                skip = True
+            elif signal == 'SELL' and pos_before == 2:  # already short
+                skipped_signals.append((idx, signal, pos_before))
+                skip = True
+            
+            if not skip:
+                ib_orders.append({
+                    'time': idx,
+                    'signal': signal,
+                    'contracts': 2
+                })
+        
+        # Assertions
+        algo_buys = (signals['signal'] == 'BUY').sum()
+        algo_sells = (signals['signal'] == 'SELL').sum()
+        ib_buys = sum(1 for o in ib_orders if o['signal'] == 'BUY')
+        ib_sells = sum(1 for o in ib_orders if o['signal'] == 'SELL')
+        
+        # No signals should be skipped (no duplicates)
+        assert len(skipped_signals) == 0, \
+            f"Found {len(skipped_signals)} duplicate signals: {skipped_signals}"
+        
+        # IB orders should match algo signals
+        assert algo_buys == ib_buys, \
+            f"BUY mismatch: algo={algo_buys}, IB={ib_buys}"
+        assert algo_sells == ib_sells, \
+            f"SELL mismatch: algo={algo_sells}, IB={ib_sells}"
+        
+        # Verify specific counts for May 12, 2026
+        assert algo_buys == 11, f"Expected 11 BUY signals, got {algo_buys}"
+        assert algo_sells == 12, f"Expected 12 SELL signals, got {algo_sells}"
+
+    def test_position_tracking_logic(self):
+        """Test that position tracking correctly identifies duplicates."""
+        # Create a simple test case with known signals
+        test_data = pd.DataFrame({
+            'signal': ['', 'SELL', '', 'BUY', '', 'SELL', '', 'SELL', '', 'BUY', ''],
+            'pos_debug': [0, 2, 2, 1, 1, 0, 0, 2, 2, 1, 1],  # 0=flat, 1=long, 2=short
+        }, index=pd.date_range('2024-01-15 09:30', periods=11, freq='1min', tz=_EST))
+        
+        signals = test_data[test_data['signal'].isin(['BUY', 'SELL'])].copy()
+        
+        # Simulate IB duplicate detection
+        duplicates = []
+        for idx, row in signals.iterrows():
+            signal = row['signal']
+            bar_idx = test_data.index.get_loc(idx)
+            pos_before = test_data.iloc[bar_idx - 1]['pos_debug'] if bar_idx > 0 else 0
+            
+            if signal == 'BUY' and pos_before == 1:
+                duplicates.append(('BUY', idx))
+            elif signal == 'SELL' and pos_before == 2:
+                duplicates.append(('SELL', idx))
+        
+        # Should have no duplicates in this sequence:
+        # FLAT -> SELL (go SHORT) -> BUY (go LONG) -> SELL (go FLAT) -> SELL (go SHORT) -> BUY (go LONG)
+        assert len(duplicates) == 0, f"Found unexpected duplicates: {duplicates}"
+
+    def test_duplicate_buy_detection(self):
+        """Test that duplicate BUY signals are correctly detected."""
+        # Create test case with duplicate BUY
+        test_data = pd.DataFrame({
+            'signal': ['', 'BUY', '', 'BUY', ''],  # Second BUY is duplicate
+            'pos_debug': [0, 1, 1, 1, 1],  # Already LONG before second BUY
+        }, index=pd.date_range('2024-01-15 09:30', periods=5, freq='1min', tz=_EST))
+        
+        signals = test_data[test_data['signal'].isin(['BUY', 'SELL'])].copy()
+        
+        duplicates = []
+        for idx, row in signals.iterrows():
+            signal = row['signal']
+            bar_idx = test_data.index.get_loc(idx)
+            pos_before = test_data.iloc[bar_idx - 1]['pos_debug'] if bar_idx > 0 else 0
+            
+            if signal == 'BUY' and pos_before == 1:
+                duplicates.append(('BUY', idx))
+        
+        assert len(duplicates) == 1, f"Expected 1 duplicate BUY, found {len(duplicates)}"
+
+    def test_duplicate_sell_detection(self):
+        """Test that duplicate SELL signals are correctly detected."""
+        # Create test case with duplicate SELL
+        test_data = pd.DataFrame({
+            'signal': ['', 'SELL', '', 'SELL', ''],  # Second SELL is duplicate
+            'pos_debug': [0, 2, 2, 2, 2],  # Already SHORT before second SELL
+        }, index=pd.date_range('2024-01-15 09:30', periods=5, freq='1min', tz=_EST))
+        
+        signals = test_data[test_data['signal'].isin(['BUY', 'SELL'])].copy()
+        
+        duplicates = []
+        for idx, row in signals.iterrows():
+            signal = row['signal']
+            bar_idx = test_data.index.get_loc(idx)
+            pos_before = test_data.iloc[bar_idx - 1]['pos_debug'] if bar_idx > 0 else 0
+            
+            if signal == 'SELL' and pos_before == 2:
+                duplicates.append(('SELL', idx))
+        
+        assert len(duplicates) == 1, f"Expected 1 duplicate SELL, found {len(duplicates)}"
+
+    def test_consecutive_sells_from_long_to_flat_to_short(self):
+        """Test that two consecutive SELLs are valid when going LONG -> FLAT -> SHORT."""
+        # This is the pattern that was incorrectly flagged as duplicate
+        test_data = pd.DataFrame({
+            'signal': ['', 'BUY', '', 'SELL', '', 'SELL', ''],
+            'pos_debug': [0, 1, 1, 0, 0, 2, 2],  # FLAT -> LONG -> FLAT -> SHORT
+        }, index=pd.date_range('2024-01-15 09:30', periods=7, freq='1min', tz=_EST))
+        
+        signals = test_data[test_data['signal'].isin(['BUY', 'SELL'])].copy()
+        
+        duplicates = []
+        for idx, row in signals.iterrows():
+            signal = row['signal']
+            bar_idx = test_data.index.get_loc(idx)
+            pos_before = test_data.iloc[bar_idx - 1]['pos_debug'] if bar_idx > 0 else 0
+            
+            if signal == 'BUY' and pos_before == 1:
+                duplicates.append(('BUY', idx))
+            elif signal == 'SELL' and pos_before == 2:
+                duplicates.append(('SELL', idx))
+        
+        # Both SELLs are valid: first closes LONG, second opens SHORT
+        assert len(duplicates) == 0, f"Found unexpected duplicates: {duplicates}"
+
+
+# ---------------------------------------------------------------------------
+# IB P/L Validation: Algo P/L calculation matches expected behavior
+# ---------------------------------------------------------------------------
+
+class TestIBPLValidation:
+    """Validate that algo P/L calculation is correct and consistent.
+    
+    This test ensures that:
+    1. P/L is calculated correctly for position closes
+    2. Partial TP events are tracked correctly
+    3. The algo's session_pl matches expected cumulative P/L
+    """
+
+    def test_pl_calculation_may_12_2026(self):
+        """Test P/L calculation for May 12, 2026 including partial TP."""
+        from pathlib import Path
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        # Load May 12, 2026 data
+        csv_path = Path.home() / "Desktop" / "2YearsData" / "full_day" / "CBOT_MINI_YM1_2026-05-12.csv"
+        
+        if not csv_path.exists():
+            pytest.skip(f"Test data not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        
+        # Filter to day session
+        day_start = pd.Timestamp("2026-05-12 09:30", tz=_EST)
+        day_end = pd.Timestamp("2026-05-12 17:00", tz=_EST)
+        df = df[(df.index >= day_start) & (df.index <= day_end)]
+        
+        # Config with partial TP enabled
+        config = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=50.0,
+            spike_profit_pts=50.0,
+            spike_profit_bars=9,
+            wm_shield_distance=0.0,
+            steep_line_reentry=False,
+            steep_line_proximity=5.0,
+            steep_line_exit_only=False,
+        )
+        
+        # Run algo
+        result = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config)
+        
+        # Check partial TP events
+        partial_tp_events = result[result['partial_tp'] == True]
+        
+        # Verify partial TP count
+        assert len(partial_tp_events) == 8, f"Expected 8 partial TP events, got {len(partial_tp_events)}"
+        
+        # Verify final P/L
+        final_pl = result.iloc[-1]['session_pl']
+        assert abs(final_pl - 672.0) < 1.0, f"Expected final P/L ~672 pts, got {final_pl:.1f}"
+        
+        # Verify partial TP times
+        expected_tp_times = ['09:59', '10:11', '11:33', '11:54', '12:56', '13:02', '14:24', '15:33']
+        actual_tp_times = [idx.strftime('%H:%M') for idx in partial_tp_events.index]
+        assert actual_tp_times == expected_tp_times, f"Partial TP times mismatch: {actual_tp_times}"
+
+    def test_pl_increases_monotonically_on_wins(self):
+        """Test that P/L increases when closing winning positions."""
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        # Create simple test data with a winning trade
+        test_data = pd.DataFrame({
+            'Open': [100, 100, 100, 100, 100],
+            'High': [105, 105, 105, 105, 105],
+            'Low': [95, 95, 95, 95, 95],
+            'Close': [100, 100, 105, 105, 105],  # Price goes up
+            'Volume': [100, 100, 100, 100, 100],
+        }, index=pd.date_range('2024-01-15 09:30', periods=5, freq='1min', tz=_EST))
+        
+        config = AlgoConfig(
+            warmup_minutes=0,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=0.0,
+            partial_tp_pts=0.0,  # Disable partial TP for this test
+            spike_profit_pts=0.0,
+            wm_shield_distance=0.0,
+        )
+        
+        from TradingAlgoFast import run_trading_algo_fast
+        result = run_trading_algo_fast(test_data, target_date="2024-01-15", start_time="09:30", end_time="10:00", config=config)
+        
+        # Check that session_pl is non-decreasing (can only increase or stay same)
+        session_pl_values = result['session_pl'].values
+        for i in range(1, len(session_pl_values)):
+            assert session_pl_values[i] >= session_pl_values[i-1] or session_pl_values[i] == 0, \
+                f"P/L decreased from {session_pl_values[i-1]} to {session_pl_values[i]} at index {i}"
+
+    def test_pl_with_partial_tp(self):
+        """Test that partial TP correctly adds 50 pts to session_pl."""
+        from pathlib import Path
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        csv_path = Path.home() / "Desktop" / "2YearsData" / "full_day" / "CBOT_MINI_YM1_2026-05-12.csv"
+        
+        if not csv_path.exists():
+            pytest.skip(f"Test data not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        
+        day_start = pd.Timestamp("2026-05-12 09:30", tz=_EST)
+        day_end = pd.Timestamp("2026-05-12 17:00", tz=_EST)
+        df = df[(df.index >= day_start) & (df.index <= day_end)]
+        
+        # Run with partial TP enabled
+        config_with_tp = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=50.0,  # Enable partial TP
+            spike_profit_pts=50.0,
+            wm_shield_distance=0.0,
+            steep_line_reentry=False,
+            steep_line_proximity=5.0,
+        )
+        
+        result_with_tp = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config_with_tp)
+        
+        # Run without partial TP
+        config_no_tp = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=0.0,  # Disable partial TP
+            spike_profit_pts=50.0,
+            wm_shield_distance=0.0,
+            steep_line_reentry=False,
+            steep_line_proximity=5.0,
+        )
+        
+        result_no_tp = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config_no_tp)
+        
+        # With partial TP should have higher P/L due to booking profits early
+        pl_with_tp = result_with_tp.iloc[-1]['session_pl']
+        pl_no_tp = result_no_tp.iloc[-1]['session_pl']
+        
+        # Verify partial TP adds to P/L
+        partial_tp_count = (result_with_tp['partial_tp'] == True).sum()
+        assert partial_tp_count > 0, "Expected at least one partial TP event"
+        
+        # P/L with partial TP should be different (usually higher)
+        assert pl_with_tp != pl_no_tp, f"P/L should differ with/without partial TP: {pl_with_tp} vs {pl_no_tp}"
+
+    def test_session_pl_starts_at_zero(self):
+        """Test that session_pl starts at 0 at the beginning of the session."""
+        from pathlib import Path
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        csv_path = Path.home() / "Desktop" / "2YearsData" / "full_day" / "CBOT_MINI_YM1_2026-05-12.csv"
+        
+        if not csv_path.exists():
+            pytest.skip(f"Test data not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        
+        day_start = pd.Timestamp("2026-05-12 09:30", tz=_EST)
+        day_end = pd.Timestamp("2026-05-12 17:00", tz=_EST)
+        df = df[(df.index >= day_start) & (df.index <= day_end)]
+        
+        config = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=50.0,
+        )
+        
+        result = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config)
+        
+        # First bar should have session_pl = 0
+        assert result.iloc[0]['session_pl'] == 0.0, f"Expected session_pl to start at 0, got {result.iloc[0]['session_pl']}"
+
+    def test_pl_calculation_consistency(self):
+        """Test that P/L calculation is consistent across multiple runs."""
+        from pathlib import Path
+        from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
+        
+        csv_path = Path.home() / "Desktop" / "2YearsData" / "full_day" / "CBOT_MINI_YM1_2026-05-12.csv"
+        
+        if not csv_path.exists():
+            pytest.skip(f"Test data not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
+        
+        day_start = pd.Timestamp("2026-05-12 09:30", tz=_EST)
+        day_end = pd.Timestamp("2026-05-12 17:00", tz=_EST)
+        df = df[(df.index >= day_start) & (df.index <= day_end)]
+        
+        config = AlgoConfig(
+            warmup_minutes=5,
+            steep_angle_threshold=65.0,
+            proximity_points=8.0,
+            min_reversal_minutes=0,
+            min_entry_angle=15.0,
+            partial_tp_pts=50.0,
+        )
+        
+        # Run twice with same config
+        result1 = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config)
+        result2 = run_trading_algo_fast(df, target_date="2026-05-12", start_time="09:30", end_time="17:00", config=config)
+        
+        # P/L should be identical
+        pl1 = result1.iloc[-1]['session_pl']
+        pl2 = result2.iloc[-1]['session_pl']
+        
+        assert abs(pl1 - pl2) < 0.01, f"P/L should be consistent across runs: {pl1} vs {pl2}"
+        
+        # All session_pl values should match
+        assert (result1['session_pl'] == result2['session_pl']).all(), "session_pl values should be identical across runs"
