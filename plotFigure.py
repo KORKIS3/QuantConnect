@@ -454,10 +454,10 @@ class ChartPlotter:
         min_time      = pd.Timestamp(row["rolling_min_low_time"]).strftime("%H:%M")
         n_buy         = int(row["rolling_buy_count"])
         n_sell        = int(row["rolling_sell_count"])
-        pl            = float(row.get("pl", 0.0))
+        session_pl    = float(row.get("session_pl", 0.0))
         position      = str(row.get("position", "flat"))
-        pl_sign       = "+" if pl >= 0 else ""
-        pl_color_tag  = "▲" if pl > 0 else ("▼" if pl < 0 else "–")
+        pl_sign       = "+" if session_pl >= 0 else ""
+        pl_color_tag  = "▲" if session_pl > 0 else ("▼" if session_pl < 0 else "–")
 
         stats_text  = f"Bar: {len(current_data)}/{len(self.data)}\n"
         stats_text += f"Time: {times[-1].strftime('%H:%M')}\n"
@@ -471,7 +471,7 @@ class ChartPlotter:
         stats_text += f"Range: {price_range:.0f} pts\n"
         stats_text += "─" * 18 + "\n"
         stats_text += f"Pos:   {position}\n"
-        stats_text += f"P/L:   {pl_sign}{pl:.0f} {pl_color_tag}\n"
+        stats_text += f"P/L:   {pl_sign}{session_pl:.0f} {pl_color_tag}\n"
         stats_text += "─" * 18 + "\n"
         stats_text += f"Sigs:  {n_buy}B  {n_sell}S"
 

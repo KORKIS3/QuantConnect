@@ -56,6 +56,7 @@ class AlgoConfig:
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
     steep_line_threshold: float = 50.0    # pts above/below primary line to spawn steeper line
     steep_line_proximity: float = 0.0     # suppress steep line reversal if close is within N pts of original primary ray
+    steep_line_exit_only: bool = False    # if True, steep line cross exits to flat instead of reversing
     steep_line_reentry: bool = False      # allow steep line cross to trigger fresh entry when flat (after first trade)
     disable_trailing_stop: bool = False   # set True to test steep lines without trailing stop v4
     reanchor_blue_purple: bool = True     # re-anchor blue/purple from next swing point when invalidated mid-session
@@ -807,7 +808,7 @@ def _has_wm_shield_nb(values, shield_dist, min_touches=4):
 # ---------------------------------------------------------------------------
 # Position encoding: 0=flat, 1=long, 2=short
 
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=False)  # cache=False to force recompile after bug fix
 def _run_signals_nb(
     n, cutoff_idx,
     closes_arr, highs_arr, lows_arr, times_num,
@@ -830,6 +831,7 @@ def _run_signals_nb(
     spike_profit_bars,
     disable_trailing_stop,
     steep_line_proximity,
+    steep_line_exit_only,
     steep_line_reentry,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
@@ -838,6 +840,7 @@ def _run_signals_nb(
     sig_liq   = np.zeros(n, dtype=np.bool_)
     partial_tp_arr  = np.zeros(n, dtype=np.bool_)
     session_pl_arr  = np.zeros(n, dtype=np.float64)  # cumulative 2-contract P/L per bar
+    pos_debug = np.zeros(n, dtype=np.int8)  # DEBUG: track position at each bar
 
     pos = 0  # 0=flat, 1=long, 2=short
     entry_price = 0.0
@@ -979,7 +982,7 @@ def _run_signals_nb(
         # Only fire if held position for at least 2 bars
         if not liquidated and pos != 0 and (i - entry_time_idx) >= 2:
             if pos == 2:
-                # Short: steep purple above us, cross above = reverse to long
+                # Short: steep purple above us, cross above = reverse to long (or exit if steep_line_exit_only)
                 # Suppress if close is within steep_line_proximity pts of original purple ray
                 curr_purple = purple_vals[i]
                 for li in range(purple_steep_vals.shape[0]):
@@ -991,15 +994,26 @@ def _run_signals_nb(
                         if steep_line_proximity > 0.0 and not np.isnan(curr_purple) and abs(closes_arr[i] - curr_purple) <= steep_line_proximity:
                             break  # too close to original purple — hold short
                         session_pl += entry_price - closes_arr[i]
-                        sig_type[i] = 1; sig_price[i] = closes_arr[i]; sig_liq[i] = False
-                        pos = 1; entry_price = closes_arr[i]; entry_time_num = times_num[i]
-                        entry_time_idx = i; first_trade_done = True
-                        partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                        orange_breakout = False; yellow_breakout = False
+                        sig_type[i] = 1 if not steep_line_exit_only else 0  # BUY or EXIT
+                        sig_price[i] = closes_arr[i]
+                        sig_liq[i] = False
+                        if steep_line_exit_only:
+                            pos = 0  # exit to flat
+                        else:
+                            pos = 1  # reverse to long
+                            entry_price = closes_arr[i]
+                            entry_time_num = times_num[i]
+                            entry_time_idx = i
+                            partial_taken = False
+                            trail_anchor_p = -1e30
+                            trail_anchor_t = 0.0
+                            orange_breakout = False
+                            yellow_breakout = False
+                        first_trade_done = True
                         liquidated = True
                         break
             elif pos == 1:
-                # Long: steep blue below us, cross below = reverse to short
+                # Long: steep blue below us, cross below = reverse to short (or exit if steep_line_exit_only)
                 # Suppress if close is within steep_line_proximity pts of original blue ray
                 curr_blue = blue_vals[i]
                 for li in range(blue_steep_vals.shape[0]):
@@ -1011,11 +1025,22 @@ def _run_signals_nb(
                         if steep_line_proximity > 0.0 and not np.isnan(curr_blue) and abs(closes_arr[i] - curr_blue) <= steep_line_proximity:
                             break  # too close to original blue — hold long
                         session_pl += closes_arr[i] - entry_price
-                        sig_type[i] = 2; sig_price[i] = closes_arr[i]; sig_liq[i] = False
-                        pos = 2; entry_price = closes_arr[i]; entry_time_num = times_num[i]
-                        entry_time_idx = i; first_trade_done = True
-                        partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                        orange_breakout = False; yellow_breakout = False
+                        sig_type[i] = 2 if not steep_line_exit_only else 0  # SELL or EXIT
+                        sig_price[i] = closes_arr[i]
+                        sig_liq[i] = False
+                        if steep_line_exit_only:
+                            pos = 0  # exit to flat
+                        else:
+                            pos = 2  # reverse to short
+                            entry_price = closes_arr[i]
+                            entry_time_num = times_num[i]
+                            entry_time_idx = i
+                            partial_taken = False
+                            trail_anchor_p = -1e30
+                            trail_anchor_t = 0.0
+                            orange_breakout = False
+                            yellow_breakout = False
+                        first_trade_done = True
                         liquidated = True
                         break
 
@@ -1115,6 +1140,7 @@ def _run_signals_nb(
                             pass  # Already LONG - ignore duplicate BUY signal
                         else:
                             if pos == 2: session_pl += entry_price - close
+                            sig_type[i] = 1; sig_price[i] = close  # Record BUY signal
                             if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                             else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
                             orange_breakout = False; yellow_breakout = False
@@ -1189,10 +1215,12 @@ def _run_signals_nb(
                     if sell_triggered:
                         # BUG FIX: Defensive check to prevent duplicate SELL when already SHORT
                         if pos == 2:
+                            # DEBUG: Log when we skip duplicate SELL
+                            # print(f"SKIPPED duplicate SELL at bar {i}, already short")
                             pass  # Already SHORT - ignore duplicate SELL signal
                         else:
                             if pos == 1: session_pl += close - entry_price
-                            sig_type[i] = 2; sig_price[i] = close
+                            sig_type[i] = 2; sig_price[i] = close  # Only record signal when actually acting
                             if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                             else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
                             orange_breakout = False; yellow_breakout = False
@@ -1204,8 +1232,10 @@ def _run_signals_nb(
             session_pl_arr[i] = session_pl + (closes_arr[i] - entry_price)
         else:
             session_pl_arr[i] = session_pl + (entry_price - closes_arr[i])
+        
+        pos_debug[i] = pos  # DEBUG: track position at end of each bar
 
-    return sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr
+    return sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr, pos_debug
 
 
 def run_trading_algo_fast(
@@ -1298,7 +1328,7 @@ def run_trading_algo_fast(
     pts_per_bar_visual = _y_range / 75.0
 
     # --- Signal detection — Numba compiled ---
-    sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr = _run_signals_nb(
+    sig_type, sig_price, sig_liq, partial_tp_arr, session_pl_arr, pos_debug = _run_signals_nb(
         n, cutoff_idx,
         closes_arr, highs_arr, lows_arr, times_num,
         orange_vals, yellow_vals, purple_vals, blue_vals,
@@ -1320,6 +1350,7 @@ def run_trading_algo_fast(
         cfg.spike_profit_bars,
         1 if cfg.disable_trailing_stop else 0,
         cfg.steep_line_proximity,
+        1 if cfg.steep_line_exit_only else 0,
         1 if cfg.steep_line_reentry else 0,
     )
 
@@ -1339,6 +1370,7 @@ def run_trading_algo_fast(
     trading_halted = False; halt_time = None
     result = _build_signals_frame(full_data, buy_signals, sell_signals, trading_halted, halt_time, liquidation_timestamps)
     result["session_pl"] = session_pl_arr  # cumulative 2-contract P/L, bar by bar
+    result["pos_debug"] = pos_debug  # DEBUG: position at each bar (0=flat, 1=long, 2=short)
 
 
     result["orange_ray"] = orange_vals
