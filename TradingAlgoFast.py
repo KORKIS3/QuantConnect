@@ -55,7 +55,7 @@ class AlgoConfig:
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
     steep_line_threshold: float = 50.0    # pts above/below primary line to spawn steeper line
-    steep_line_proximity: float = 0.0     # suppress steep line reversal if close is within N pts of original primary ray
+    steep_line_proximity: float = 5.0     # suppress steep line reversal if close is within N pts of original primary ray
     steep_line_exit_only: bool = False    # if True, steep line cross exits to flat instead of reversing
     steep_line_reentry: bool = False      # allow steep line cross to trigger fresh entry when flat (after first trade)
     disable_trailing_stop: bool = False   # set True to test steep lines without trailing stop v4

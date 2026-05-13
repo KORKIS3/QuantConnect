@@ -72,7 +72,7 @@ def _calc_pl_from_engine(algo_df, start_ts, end_ts):
     return [pl] if pl != 0.0 else None
 
 
-def _process_day(fname, quick=False):
+def _process_day(fname, quick=False, steep_line_proximity=5.0, steep_line_exit_only=False):
     """Process a single day — runs in a worker process."""
     target_date = fname.replace("CBOT_MINI_YM1_", "").replace(".csv", "")
     fpath = os.path.join(_DATA_ROOT, fname)
@@ -88,6 +88,8 @@ def _process_day(fname, quick=False):
         spike_profit_bars=9,
         wm_shield_distance=0.0,
         steep_line_reentry=False,
+        steep_line_proximity=steep_line_proximity,  # USE THE PARAMETER
+        steep_line_exit_only=steep_line_exit_only,  # USE THE PARAMETER
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}
@@ -117,13 +119,18 @@ def _process_day(fname, quick=False):
     return target_date, result
 
 
-def run_backtest(max_days=0, quick=False):
+def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_exit_only=False):
     csv_files = sorted([f for f in os.listdir(_DATA_ROOT)
                         if f.startswith("CBOT_MINI_YM1_") and f.endswith(".csv")])
     if max_days > 0: csv_files = csv_files[-max_days:]
     total = len(csv_files)
     t_start = time.time()
     mode = "quick 9:30-10:30 only" if quick else "full day 9:30-17:00"
+    
+    print(f"\n{'='*80}")
+    print(f"CONFIG: steep_line_exit_only = {steep_line_exit_only}")
+    print(f"{'='*80}\n")
+    
     print(f"\nRunning backtest on {total} days ({mode}) ...\n")
 
     all_end_times = DAY_END_TIMES
@@ -139,7 +146,7 @@ def run_backtest(max_days=0, quick=False):
         done += 1
         print(f"  [{done}/{total}] {int(done/total*100)}%", end="\r")
         try:
-            _, result = _process_day(fname, quick)
+            _, result = _process_day(fname, quick, steep_line_proximity, steep_line_exit_only)
         except Exception:
             continue
         for et, tpls in result.items():
@@ -172,6 +179,8 @@ if __name__ == "__main__":
     p.add_argument("--skip-download", action="store_true", dest="skip_download")
     p.add_argument("--max-days", type=int, default=0, dest="max_days")
     p.add_argument("--quick", action="store_true", help="Only run 9:30-10:30 day session (fast mode)")
+    p.add_argument("--steep-line-proximity", type=float, default=0.0, dest="steep_line_proximity", help="Suppress steep line reversal if within N pts of original ray")
+    p.add_argument("--steep-line-exit-only", action="store_true", dest="steep_line_exit_only", help="Steep line cross exits to flat instead of reversing")
     args = p.parse_args()
     if not args.skip_download: download_all(args.port)
-    run_backtest(max_days=args.max_days, quick=args.quick)
+    run_backtest(max_days=args.max_days, quick=args.quick, steep_line_proximity=args.steep_line_proximity, steep_line_exit_only=args.steep_line_exit_only)
