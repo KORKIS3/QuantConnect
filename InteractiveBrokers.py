@@ -470,6 +470,14 @@ class IBDataBridge:
                 self._ib_position = new_pos
                 self._pending_order = False  # fill confirmed — safe to place next order
                 log.info("[PositionSync] _pending_order cleared")
+                
+                # IMMEDIATE CSV WRITE after fill confirmation
+                # This ensures mirror accounts see the position change as soon as possible
+                try:
+                    self._save_tracking_csv()
+                    log.info("[PositionSync] Tracking CSV updated immediately after fill")
+                except Exception as exc:
+                    log.error("[PositionSync] Immediate CSV write failed: %s", exc)
 
     def disconnect(self) -> None:
         self._ib.disconnect()

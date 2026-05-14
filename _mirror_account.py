@@ -4,13 +4,19 @@ Account 1 (DUO158495) generates signals from market data.
 Account 2 (DUQ921172) reads Account 1's tracking CSV and mirrors positions.
 
 This avoids paying for duplicate market data subscriptions.
+
+CRITICAL FIXES (2026-05-14):
+- Only read CSV data from TODAY's session (validate timestamps)
+- Flatten any pre-existing positions at startup
+- Ignore stale data from previous sessions
+- Check file modification time to ensure fresh data
 """
 
 import asyncio
 import sys
 import time
 import os
-from datetime import datetime
+from datetime import datetime, date
 import pytz
 import pandas as pd
 
@@ -40,21 +46,86 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 log.info("=" * 70)
-log.info("Mirror Account Script Starting")
+log.info("Mirror Account Script Starting (FIXED VERSION)")
 log.info(f"Log file: {log_file}")
 log.info("=" * 70)
 
+_EST = pytz.timezone("US/Eastern")
+
 def get_latest_csv(account_id="DUO158495"):
-    """Find the most recent tracking CSV for Account 1."""
+    """Find the most recent tracking CSV for Account 1 from TODAY's session only."""
     tracking_root = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "tracking")
-    today = datetime.now(pytz.timezone("US/Eastern")).strftime("%Y-%m-%d")
+    today = datetime.now(_EST).strftime("%Y-%m-%d")
     pattern = f"YM_tracking_{account_id}_{today}_*.csv"
     
     import glob
     files = glob.glob(os.path.join(tracking_root, pattern))
-    if files:
-        return max(files, key=os.path.getmtime)
-    return None
+    if not files:
+        return None
+    
+    latest = max(files, key=os.path.getmtime)
+    
+    # Verify the file was modified recently (within last 5 minutes)
+    file_age = time.time() - os.path.getmtime(latest)
+    if file_age > 300:  # 5 minutes
+        log.warning(f"[CSV] File is stale (age: {file_age:.0f}s). Waiting for fresh data...")
+        return None
+    
+    return latest
+
+def validate_csv_timestamp(csv_path):
+    """Validate that the CSV contains data from today's session only.
+    
+    Returns True if valid, False if stale/old data detected.
+    """
+    try:
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        if df.empty:
+            return True  # Empty is OK, just starting
+        
+        # Check the most recent timestamp in the CSV
+        last_timestamp = pd.to_datetime(df.index[-1])
+        today = datetime.now(_EST).date()
+        csv_date = last_timestamp.date()
+        
+        if csv_date != today:
+            log.error(f"[CSV] STALE DATA DETECTED: CSV contains data from {csv_date}, but today is {today}")
+            return False
+        
+        # Check that the data is recent (within last 5 minutes)
+        now = datetime.now(_EST)
+        age_seconds = (now - last_timestamp.tz_localize(_EST)).total_seconds()
+        if age_seconds > 300:  # 5 minutes
+            log.warning(f"[CSV] Data is {age_seconds:.0f}s old - may be stale")
+        
+        return True
+    except Exception as e:
+        log.error(f"[CSV] Validation error: {e}")
+        return False
+
+def flatten_position(ib, contract, account_id):
+    """Flatten any pre-existing position at startup to ensure clean slate."""
+    try:
+        positions = ib.positions()
+        for pos in positions:
+            if pos.contract.symbol in ("MYM", "YM") and pos.account == account_id:
+                qty = int(pos.position)
+                if qty != 0:
+                    log.warning(f"[{account_id}] PRE-EXISTING POSITION DETECTED: {qty} contracts")
+                    log.warning(f"[{account_id}] FLATTENING position to start clean...")
+                    
+                    action = "SELL" if qty > 0 else "BUY"
+                    order = MarketOrder(action, abs(qty))
+                    order.tif = "DAY"
+                    trade = ib.placeOrder(contract, order)
+                    ib.sleep(2)  # Wait for fill
+                    
+                    log.info(f"[{account_id}] Position flattened: {action} {abs(qty)}")
+                    return
+        
+        log.info(f"[{account_id}] No pre-existing position - starting flat")
+    except Exception as e:
+        log.error(f"[{account_id}] Error flattening position: {e}")
 
 def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
     """Mirror trades from Account 1 to Account 2."""
@@ -70,7 +141,10 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
                      key=lambda c: c.lastTradeDateOrContractMonth)[0]
     log.info(f"[{account_id}] Trading contract: {contract.localSymbol}")
     
-    # Get current IB position
+    # Flatten any pre-existing position to start clean
+    flatten_position(ib, contract, account_id)
+    
+    # Get current IB position after flattening
     positions = ib.positions()
     ib_position = 0
     for pos in positions:
@@ -82,6 +156,8 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
     # Track what we think Account 1's position is
     account1_position = 0
     last_csv_row_count = 0
+    last_csv_mtime = 0
+    csv_validated = False
     
     log.info(f"[{account_id}] Monitoring Account 1 signals...")
     
@@ -89,8 +165,26 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
         while True:
             csv_path = get_latest_csv()
             if csv_path and os.path.exists(csv_path):
+                # Check if file has been modified since last read
+                current_mtime = os.path.getmtime(csv_path)
+                if current_mtime == last_csv_mtime:
+                    ib.sleep(0.1)  # No changes, check again soon
+                    continue
+                
+                last_csv_mtime = current_mtime
+                
+                # Validate CSV contains today's data only (only need to do this once per file)
+                if not csv_validated:
+                    if not validate_csv_timestamp(csv_path):
+                        log.error(f"[{account_id}] REFUSING to trade on stale CSV data - waiting for fresh data...")
+                        ib.sleep(5)  # Wait longer before checking again
+                        csv_validated = False
+                        continue
+                    csv_validated = True
+                    log.info(f"[{account_id}] CSV validated - contains today's data")
+                
                 try:
-                    df = pd.read_csv(csv_path)
+                    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
                     
                     # Only process if there are new rows
                     if len(df) > last_csv_row_count:
@@ -140,6 +234,9 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
                         
                 except Exception as e:
                     log.error(f"[{account_id}] Error reading CSV: {e}")
+            else:
+                # No CSV file found yet - wait for Account 1 to start
+                ib.sleep(1)
             
             ib.sleep(0.1)  # Check every 100ms for minimal delay
             
