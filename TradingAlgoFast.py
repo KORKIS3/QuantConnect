@@ -956,7 +956,7 @@ def _run_signals_nb(
                 and entry_price != 0.0):
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
             if unrealized >= partial_tp_pts:
-                session_pl += unrealized  # book 1 contract
+                session_pl += unrealized  # book 1 contract at close price
                 partial_taken = True
                 partial_tp_arr[i] = True  # flag this bar for order placement
 

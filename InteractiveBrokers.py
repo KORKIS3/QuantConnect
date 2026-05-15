@@ -261,11 +261,11 @@ class IBDataBridge:
         self.client_id = client_id
         self.account_id = account_id  # NEW: store account ID for file naming
         self.config = config or AlgoConfig(
-            warmup_minutes=8,
-            steep_angle_threshold=65.0,
-            proximity_points=8.0,
+            warmup_minutes=7,
+            steep_angle_threshold=90.0,
+            proximity_points=4.0,
             min_reversal_minutes=0,
-            min_entry_angle=15.0,
+            min_entry_angle=0.0,
             partial_tp_pts=50.0,
             spike_profit_pts=50.0,
             spike_profit_bars=9,
