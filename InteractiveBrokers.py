@@ -39,6 +39,7 @@ if sys.version_info >= (3, 10):
 import argparse
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -260,7 +261,7 @@ class IBDataBridge:
         self.client_id = client_id
         self.account_id = account_id  # NEW: store account ID for file naming
         self.config = config or AlgoConfig(
-            warmup_minutes=5,
+            warmup_minutes=8,
             steep_angle_threshold=65.0,
             proximity_points=8.0,
             min_reversal_minutes=0,
@@ -301,6 +302,8 @@ class IBDataBridge:
         self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
         self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
         self._pending_order: bool = False  # True while an order is placed but not yet confirmed
+        self._pending_order_time: Optional[float] = None  # timestamp when pending order was set
+        self._last_position_check: Optional[float] = None  # last time we validated position size
         
         # NEW: Create account-specific logger if account_id is provided
         if self.account_id:
@@ -469,6 +472,7 @@ class IBDataBridge:
                          self._ib_position, new_pos)
                 self._ib_position = new_pos
                 self._pending_order = False  # fill confirmed — safe to place next order
+                self._pending_order_time = None
                 log.info("[PositionSync] _pending_order cleared")
                 
                 # IMMEDIATE CSV WRITE after fill confirmation
@@ -668,6 +672,8 @@ class IBDataBridge:
         self._last_signal_ts = None
         self._last_partial_tp_ts = None
         self._pending_order = False
+        self._pending_order_time = None
+        self._last_position_check = None
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample accumulated 5-second bars to OHLCV bars.
@@ -979,6 +985,37 @@ class IBDataBridge:
         if self._last_signal_ts is not None:
             new_rows = new_rows[new_rows.index > self._last_signal_ts]
 
+        # Check pending order timeout (30 seconds)
+        import time
+        if self._pending_order and self._pending_order_time is not None:
+            elapsed = time.time() - self._pending_order_time
+            if elapsed > 30.0:
+                log.warning("[PositionSync] Pending order timeout after %.1fs — clearing flag", elapsed)
+                self._pending_order = False
+                self._pending_order_time = None
+
+        # Emergency position validation (every 60 seconds)
+        if self._last_position_check is None or (time.time() - self._last_position_check) > 60.0:
+            self._last_position_check = time.time()
+            max_allowed = self.config.num_contracts
+            if abs(self._ib_position) > max_allowed:
+                log.error("[EMERGENCY] Position %d exceeds max %d — FLATTENING", self._ib_position, max_allowed)
+                try:
+                    if self._ib_position > 0:
+                        excess = self._ib_position - max_allowed
+                        order = MarketOrder("SELL", excess)
+                        order.tif = "DAY"
+                        self._ib.placeOrder(self._contract, order)
+                        log.info("[EMERGENCY] Placed SELL %d to reduce position", excess)
+                    elif self._ib_position < 0:
+                        excess = abs(self._ib_position) - max_allowed
+                        order = MarketOrder("BUY", excess)
+                        order.tif = "DAY"
+                        self._ib.placeOrder(self._contract, order)
+                        log.info("[EMERGENCY] Placed BUY %d to reduce position", excess)
+                except Exception as exc:
+                    log.error("[EMERGENCY] Failed to flatten excess position: %s", exc)
+
         for ts, last in new_rows.iterrows():
             signal = str(last.get("signal", ""))
             is_liq = bool(last.get("is_liquidation", False))
@@ -1000,7 +1037,7 @@ class IBDataBridge:
                         self._last_signal_ts = ts
                         continue
                     log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("BUY")
+                    self._place_order("BUY", algo_target_position=pos)
             elif signal == "SELL":
                 if is_liq:
                     log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
@@ -1015,7 +1052,7 @@ class IBDataBridge:
                         self._last_signal_ts = ts
                         continue
                     log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("SELL")
+                    self._place_order("SELL", algo_target_position=pos)
             self._last_signal_ts = ts
 
         # --- Scan ALL new partial TPs since last call ---
@@ -1036,20 +1073,22 @@ class IBDataBridge:
 
     # -- order execution ------------------------------------------------------
 
-    def _place_order(self, action: str, liquidate: bool = False, partial_tp: bool = False) -> None:
+    def _place_order(self, action: str, liquidate: bool = False, partial_tp: bool = False, algo_target_position: str = "flat") -> None:
         """Submit a market order for MYM contracts.
 
         - Entry (flat → long/short): 2 contracts
         - Partial TP: 1 contract (close half)
         - Liquidate (exit only): 2 contracts
         - Reversal (long → short or short → long): 4 contracts (close 2 + open 2)
+        
+        algo_target_position: The algo's intended position AFTER this order executes ("long", "short", or "flat")
         """
         tag = "LIQUIDATE" if liquidate else ("PARTIAL_TP" if partial_tp else action)
         if self.dry_run:
             log.info("[ORDER dry_run] %-10s  contract=%s", tag, self._contract.localSymbol)
             return
 
-        # Determine current position size
+        # Determine current position size from algo's last known state (not IB's stale position)
         current_pos = 0
         if self._last_result is not None and not self._last_result.empty:
             pos = str(self._last_result["position"].iloc[-1])
@@ -1072,7 +1111,7 @@ class IBDataBridge:
         except Exception as exc:
             log.warning("[PositionSync] Could not refresh position before order: %s", exc)
 
-        # Calculate quantity — driven by config.num_contracts (change once to scale up)
+        # Calculate quantity — USE ALGO'S TARGET POSITION, NOT IB'S STALE POSITION
         nc = self.config.num_contracts
         if partial_tp:
             # Close the larger half: (position // 2) + 1 for odd numbers
@@ -1083,17 +1122,38 @@ class IBDataBridge:
         elif liquidate:
             qty = abs(self._ib_position) if self._ib_position != 0 else nc
         else:
-            if action == "BUY":
-                qty = nc + max(0, -self._ib_position)   # cover shorts + go long
+            # NEW LOGIC: Calculate qty based on algo's target position, not IB's current position
+            # This prevents doubling orders when IB's position() API returns stale data
+            if algo_target_position == "long":
+                # Algo wants to be long nc contracts
+                if current_pos == 0:
+                    qty = nc  # flat → long
+                elif current_pos < 0:
+                    qty = nc + abs(current_pos)  # short → long (cover + reverse)
+                else:
+                    qty = 0  # already long, skip (shouldn't happen due to duplicate check)
+            elif algo_target_position == "short":
+                # Algo wants to be short nc contracts
+                if current_pos == 0:
+                    qty = nc  # flat → short
+                elif current_pos > 0:
+                    qty = nc + current_pos  # long → short (cover + reverse)
+                else:
+                    qty = 0  # already short, skip (shouldn't happen due to duplicate check)
             else:
-                qty = nc + max(0, self._ib_position)     # cover longs + go short
+                # algo_target_position == "flat" (liquidation)
+                qty = abs(current_pos) if current_pos != 0 else 0
 
         qty = max(1, qty)  # always at least 1
+        log.info("[ORDER calc]    current_pos=%d  target=%s  action=%s  qty=%d", 
+                 current_pos, algo_target_position, action, qty)
+        
         order = MarketOrder(action, totalQuantity=qty)
         order.tif = "DAY"
         exec_contract = self._order_contract or self._contract
         trade = self._ib.placeOrder(exec_contract, order)
         self._pending_order = True  # cleared by _on_portfolio_update on fill confirmation
+        self._pending_order_time = time.time()  # track when order was placed
         log.info("[ORDER placed]  %-10s  qty=%d  contract=%s  orderId=%s",
                  tag, qty, exec_contract.localSymbol, trade.order.orderId)
 

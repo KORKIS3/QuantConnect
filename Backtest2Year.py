@@ -78,7 +78,7 @@ def _process_day(fname, quick=False, steep_line_proximity=5.0, steep_line_exit_o
     fpath = os.path.join(_DATA_ROOT, fname)
     # Identical config to live IBDataBridge — single source of truth
     config = AlgoConfig(
-        warmup_minutes=5,
+        warmup_minutes=8,
         steep_angle_threshold=65.0,
         proximity_points=8.0,
         min_reversal_minutes=0,
@@ -104,6 +104,15 @@ def _process_day(fname, quick=False, steep_line_proximity=5.0, steep_line_exit_o
         day_data  = df[(df.index >= day_start) & (df.index <= day_end)]
         end_str   = "10:30" if quick else "17:00"
         end_times = ["10:30"] if quick else DAY_END_TIMES
+        # Guard: skip days with zero or negative prices (causes Numba heap corruption)
+        if (day_data[["Open","High","Low","Close"]] <= 0).any().any():
+            return target_date, result
+        # Guard: skip days with no price movement (flat data = bad download)
+        if day_data["High"].max() == day_data["Low"].min():
+            return target_date, result
+        # Guard: skip days with near-zero volume (garbage data causes Numba crash)
+        if day_data["Volume"].sum() < 100:
+            return target_date, result
         if len(day_data) >= 15:
             try:
                 day_algo = run_trading_algo_fast(day_data, target_date, "09:30", end_str, config=config)

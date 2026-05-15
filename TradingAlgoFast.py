@@ -596,20 +596,36 @@ def _compute_rays_nb(
         if b_valid == 1 and lows_arr[i] > b_line_i:
             ref_val = b_line_i
             if bs_count > 0:
-                lv = bs_count - 1
+                # Find the highest VALID steep line to use as reference
+                for lv in range(bs_count - 1, -1, -1):
+                    if bs_valid[lv] == 1:
+                        ref_val = bs_p1_price[lv] + bs_slope[lv] * (t_i - times_num[bs_p1_idx[lv]])
+                        break
+            
+            # Count active (valid) steep lines
+            active_count = 0
+            for lv in range(bs_count):
                 if bs_valid[lv] == 1:
-                    ref_val = bs_p1_price[lv] + bs_slope[lv] * (t_i - times_num[bs_p1_idx[lv]])
-            if lows_arr[i] - ref_val >= STEEP_THRESHOLD and bs_count < MAX_STEEP:
+                    active_count += 1
+            
+            if lows_arr[i] - ref_val >= STEEP_THRESHOLD and active_count < MAX_STEEP:
                 if b_last_touch_idx >= 0 and b_last_touch_idx < i:
                     dt = t_i - times_num[b_last_touch_idx]
                     if dt != 0.0:
                         ns = (lows_arr[i] - b_last_touch_price) / dt
                         if ns > 0.0:
-                            li = bs_count
-                            bs_p1_idx[li] = b_last_touch_idx; bs_p1_price[li] = b_last_touch_price
-                            bs_p2_idx[li] = i;                bs_p2_price[li] = lows_arr[i]
-                            bs_slope[li]  = ns;               bs_valid[li]    = 1
-                            bs_count += 1
+                            # Find first available slot (reuse invalidated slots)
+                            li = -1
+                            for slot in range(MAX_STEEP):
+                                if slot >= bs_count or bs_valid[slot] == 0:
+                                    li = slot
+                                    break
+                            if li >= 0:
+                                bs_p1_idx[li] = b_last_touch_idx; bs_p1_price[li] = b_last_touch_price
+                                bs_p2_idx[li] = i;                bs_p2_price[li] = lows_arr[i]
+                                bs_slope[li]  = ns;               bs_valid[li]    = 1
+                                if li >= bs_count:
+                                    bs_count = li + 1
 
         # Update existing steeper blue lines
         for li in range(bs_count):
@@ -620,8 +636,13 @@ def _compute_rays_nb(
             # Check if steep line is nearly horizontal (angle < 10 degrees)
             # For nearly horizontal lines, invalidate if low drops below
             # For steeper lines, allow slope adjustment
-            angle_deg = abs(np.rad2deg(np.arctan(bs_slope[li] * (times_num[-1] - times_num[0]) / (highs_arr[0] - lows_arr[0]))))
-            is_nearly_horizontal = angle_deg < 10.0
+            price_range = highs_arr[0] - lows_arr[0]
+            if price_range > 0.0:
+                angle_deg = abs(np.rad2deg(np.arctan(bs_slope[li] * (times_num[-1] - times_num[0]) / price_range)))
+                is_nearly_horizontal = angle_deg < 10.0
+            else:
+                # Zero price range - treat as horizontal
+                is_nearly_horizontal = True
             
             if lows_arr[i] < lv:
                 if is_nearly_horizontal:
@@ -651,33 +672,57 @@ def _compute_rays_nb(
         if p_valid == 1 and p_last_touch_idx >= 0 and p_slope != 0.0:
             # Check distance from last touch point
             dist = p_last_touch_price - highs_arr[i]
-            if ps_count < MAX_STEEP and dist >= STEEP_THRESHOLD:
+            
+            # Count active (valid) steep lines
+            active_count = 0
+            for lv in range(ps_count):
+                if ps_valid[lv] == 1:
+                    active_count += 1
+            
+            if active_count < MAX_STEEP and dist >= STEEP_THRESHOLD:
                 already = False
                 for lx in range(ps_count):
-                    if ps_p1_idx[lx] == p_last_touch_idx:
+                    if ps_p1_idx[lx] == p_last_touch_idx and ps_valid[lx] == 1:
                         already = True
                 if not already:
-                    # Anchor at purple touch point (e.g., 10:00)
-                    li = ps_count
-                    ps_p1_idx[li] = p_last_touch_idx
-                    ps_p1_price[li] = p_last_touch_price
+                    # Find first available slot (reuse invalidated slots)
+                    li = -1
+                    for slot in range(MAX_STEEP):
+                        if slot >= ps_count or ps_valid[slot] == 0:
+                            li = slot
+                            break
                     
-                    # Find the LEAST STEEP slope (most negative) from touch point through any subsequent high
-                    # This is the slope that stays closest to the highs without going below them
-                    least_steep_slope = -1e30  # Start with very negative (very steep)
-                    target_idx = i
-                    
-                    for j in range(p_last_touch_idx + 1, i + 1):
-                        dt = times_num[j] - times_num[p_last_touch_idx]
-                        if dt > 0.0:
-                            slope_to_j = (highs_arr[j] - p_last_touch_price) / dt
-                            # We want the LEAST STEEP (most negative, closest to 0)
-                            if slope_to_j > least_steep_slope:
-                                least_steep_slope = slope_to_j
-                                target_idx = j
-                    
-                    # Use the least steep slope found
-                    if least_steep_slope > -1e30:
+                    if li >= 0:
+                        # Anchor at purple touch point (e.g., 10:00)
+                        ps_p1_idx[li] = p_last_touch_idx
+                        ps_p1_price[li] = p_last_touch_price
+                        
+                        # Find the LEAST STEEP slope (most negative) from touch point through any subsequent high
+                        # This is the slope that stays closest to the highs without going below them
+                        least_steep_slope = -1e30  # Start with very negative (very steep)
+                        target_idx = i
+                        
+                        for j in range(p_last_touch_idx + 1, i + 1):
+                            dt = times_num[j] - times_num[p_last_touch_idx]
+                            if dt > 0.0:
+                                slope_to_j = (highs_arr[j] - p_last_touch_price) / dt
+                                # We want the LEAST STEEP (most negative, closest to 0)
+                                if slope_to_j > least_steep_slope:
+                                    least_steep_slope = slope_to_j
+                                    target_idx = j
+                        
+                        # Use the least steep slope found
+                        if least_steep_slope > -1e30:
+                            ns = least_steep_slope
+                        else:
+                            ns = p_slope * STEEP_FACTOR
+                        
+                        ps_p2_idx[li] = target_idx
+                        ps_p2_price[li] = highs_arr[target_idx]
+                        ps_slope[li] = ns
+                        ps_valid[li] = 1
+                        if li >= ps_count:
+                            ps_count = li + 1
                         ns = least_steep_slope
                     else:
                         ns = p_slope * STEEP_FACTOR
@@ -724,8 +769,13 @@ def _compute_rays_nb(
                 
                 # Check if steep line is nearly horizontal (angle < 10 degrees)
                 # For nearly horizontal lines, invalidate if high goes above
-                angle_deg = abs(np.rad2deg(np.arctan(ps_slope[li] * (times_num[-1] - times_num[0]) / (highs_arr[0] - lows_arr[0]))))
-                is_nearly_horizontal = angle_deg < 10.0
+                price_range = highs_arr[0] - lows_arr[0]
+                if price_range > 0.0:
+                    angle_deg = abs(np.rad2deg(np.arctan(ps_slope[li] * (times_num[-1] - times_num[0]) / price_range)))
+                    is_nearly_horizontal = angle_deg < 10.0
+                else:
+                    # Zero price range - treat as horizontal
+                    is_nearly_horizontal = True
                 
                 if highs_arr[i] > lv and is_nearly_horizontal:
                     # Nearly horizontal line - invalidate immediately
@@ -856,6 +906,7 @@ def _run_signals_nb(
     steep_line_proximity,
     steep_line_exit_only,
     steep_line_reentry,
+    num_contracts,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -915,13 +966,15 @@ def _run_signals_nb(
                 and (i - entry_time_idx) > 0):
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
             if unrealized >= spike_profit_pts:
-                session_pl += unrealized
+                contracts_remaining = 1 if partial_taken else num_contracts
+                session_pl += unrealized * contracts_remaining
                 sig_type[i] = 2 if pos == 1 else 1
                 sig_price[i] = close
                 sig_liq[i] = True
                 pos = 0; entry_price = 0.0; entry_time_num = 0.0
                 trail_anchor_p = -1e30; trail_anchor_t = 0.0
                 entry_time_idx = 0; liquidated = True
+                partial_taken = False
 
         # --- Trailing stop v4 ---
         # threshold=50pts, angles=50/60/70, anchor locked once set
@@ -979,11 +1032,13 @@ def _run_signals_nb(
                                 if steep_line_proximity > 0.0 and not np.isnan(_bl) and abs(close - _bl) <= steep_line_proximity:
                                     pass  # near original blue — hold long
                                 else:
-                                    session_pl += close - entry_price
+                                    contracts_remaining = 1 if partial_taken else num_contracts
+                                    session_pl += (close - entry_price) * contracts_remaining
                                     sig_type[i] = 2; sig_price[i] = close; sig_liq[i] = True
                                     pos = 0; entry_price = 0.0; entry_time_num = 0.0
                                     trail_anchor_p = -1e30; trail_anchor_t = 0.0
                                     entry_time_idx = 0; liquidated = True
+                                    partial_taken = False
                         else:
                             if close > trail_anchor_p - trailing_slope * t_diff:
                                 # Suppress if close is within steep_line_proximity of original purple ray
@@ -991,11 +1046,13 @@ def _run_signals_nb(
                                 if steep_line_proximity > 0.0 and not np.isnan(_pu) and abs(close - _pu) <= steep_line_proximity:
                                     pass  # near original purple — hold short
                                 else:
-                                    session_pl += entry_price - close
+                                    contracts_remaining = 1 if partial_taken else num_contracts
+                                    session_pl += (entry_price - close) * contracts_remaining
                                     sig_type[i] = 1; sig_price[i] = close; sig_liq[i] = True
                                     pos = 0; entry_price = 0.0; entry_time_num = 0.0
                                     trail_anchor_p = -1e30; trail_anchor_t = 0.0
                                     entry_time_idx = 0; liquidated = True
+                                    partial_taken = False
 
         # --- Steeper line reversal ---
         # Steep purple = descending resistance above price (relevant when SHORT)
@@ -1016,7 +1073,8 @@ def _run_signals_nb(
                     if closes_arr[i - 1] <= pv_prev and closes_arr[i] > pv_curr:
                         if steep_line_proximity > 0.0 and not np.isnan(curr_purple) and abs(closes_arr[i] - curr_purple) <= steep_line_proximity:
                             break  # too close to original purple — hold short
-                        session_pl += entry_price - closes_arr[i]
+                        contracts_remaining = 1 if partial_taken else num_contracts
+                        session_pl += (entry_price - closes_arr[i]) * contracts_remaining
                         sig_type[i] = 1 if not steep_line_exit_only else 0  # BUY or EXIT
                         sig_price[i] = closes_arr[i]
                         sig_liq[i] = False
@@ -1027,11 +1085,11 @@ def _run_signals_nb(
                             entry_price = closes_arr[i]
                             entry_time_num = times_num[i]
                             entry_time_idx = i
-                            partial_taken = False
                             trail_anchor_p = -1e30
                             trail_anchor_t = 0.0
                             orange_breakout = False
                             yellow_breakout = False
+                        partial_taken = False
                         first_trade_done = True
                         liquidated = True
                         break
@@ -1047,7 +1105,8 @@ def _run_signals_nb(
                     if closes_arr[i - 1] >= bv_prev and closes_arr[i] < bv_curr:
                         if steep_line_proximity > 0.0 and not np.isnan(curr_blue) and abs(closes_arr[i] - curr_blue) <= steep_line_proximity:
                             break  # too close to original blue — hold long
-                        session_pl += closes_arr[i] - entry_price
+                        contracts_remaining = 1 if partial_taken else num_contracts
+                        session_pl += (closes_arr[i] - entry_price) * contracts_remaining
                         sig_type[i] = 2 if not steep_line_exit_only else 0  # SELL or EXIT
                         sig_price[i] = closes_arr[i]
                         sig_liq[i] = False
@@ -1058,11 +1117,11 @@ def _run_signals_nb(
                             entry_price = closes_arr[i]
                             entry_time_num = times_num[i]
                             entry_time_idx = i
-                            partial_taken = False
                             trail_anchor_p = -1e30
                             trail_anchor_t = 0.0
                             orange_breakout = False
                             yellow_breakout = False
+                        partial_taken = False
                         first_trade_done = True
                         liquidated = True
                         break
@@ -1162,7 +1221,9 @@ def _run_signals_nb(
                         if pos == 1:
                             pass  # Already LONG - ignore duplicate BUY signal
                         else:
-                            if pos == 2: session_pl += entry_price - close
+                            if pos == 2:
+                                contracts_remaining = 1 if partial_taken else num_contracts
+                                session_pl += (entry_price - close) * contracts_remaining
                             sig_type[i] = 1; sig_price[i] = close  # Record BUY signal
                             if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                             else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
@@ -1242,7 +1303,9 @@ def _run_signals_nb(
                             # print(f"SKIPPED duplicate SELL at bar {i}, already short")
                             pass  # Already SHORT - ignore duplicate SELL signal
                         else:
-                            if pos == 1: session_pl += close - entry_price
+                            if pos == 1:
+                                contracts_remaining = 1 if partial_taken else num_contracts
+                                session_pl += (close - entry_price) * contracts_remaining
                             sig_type[i] = 2; sig_price[i] = close  # Only record signal when actually acting
                             if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                             else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; trail_anchor_p = -1e30; trail_anchor_t = 0.0
@@ -1288,18 +1351,15 @@ def run_trading_algo_fast(
     cfg = config or AlgoConfig()
     n = len(full_data)
 
-    # Hard cutoff times — no trading before these absolute times regardless of
-    # when the first bar arrives or how many warmup minutes are configured.
-    # Day session:   starts 9:30, no trades before 9:42 ET
-    # Night session: starts 3:00 AM, no trades before 3:12 AM ET (next calendar day)
+    # Hard cutoff times — no trading before start_time + warmup_minutes.
+    # Day session:   starts 9:30, default warmup 12 min → first signal at 9:42 ET
+    # Night session: starts 3:00 AM, default warmup 12 min → first signal at 3:12 AM ET
     _is_night = start_time >= "18:00" or start_time <= "09:00"
+    _warmup = cfg.warmup_minutes if cfg.warmup_minutes is not None else 12
     if _is_night:
-        # Night session: data starts at 3:00 AM on the date passed in as target_date
-        # Hard cutoff is 3:12 AM same date
-        cutoff_time = pd.Timestamp(f"{target_date} 03:12:00", tz=est)
+        cutoff_time = pd.Timestamp(f"{target_date} {start_time}:00", tz=est) + pd.Timedelta(minutes=_warmup)
     else:
-        # Day session — always 9:42 ET
-        cutoff_time = pd.Timestamp(f"{target_date} 09:42:00", tz=est)
+        cutoff_time = pd.Timestamp(f"{target_date} {start_time}:00", tz=est) + pd.Timedelta(minutes=_warmup)
 
     # --- Extract numpy arrays ONCE ---
     highs_arr  = full_data["High"].values.astype(np.float64)
@@ -1375,6 +1435,7 @@ def run_trading_algo_fast(
         cfg.steep_line_proximity,
         1 if cfg.steep_line_exit_only else 0,
         1 if cfg.steep_line_reentry else 0,
+        cfg.num_contracts,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
