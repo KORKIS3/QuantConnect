@@ -962,7 +962,8 @@ def _run_signals_nb(
 
         # --- Spike profit exit: if unrealized >= spike_profit_pts within spike_profit_bars ---
         if (spike_profit_pts > 0.0 and pos != 0 and entry_price != 0.0
-                and not liquidated and (i - entry_time_idx) <= spike_profit_bars
+                and not liquidated
+                and (i - entry_time_idx) <= spike_profit_bars
                 and (i - entry_time_idx) > 0):
             unrealized = (close - entry_price) if pos == 1 else (entry_price - close)
             if unrealized >= spike_profit_pts:
