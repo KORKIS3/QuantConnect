@@ -168,11 +168,14 @@ class BeliefEngine:
         # 3. Failed expansion detection
         # Only count if: (a) resolve is ESTABLISHED or STRONG, (b) price exceeds prior extreme,
         # (c) close fails by more than 10 pts below/above that extreme
+        # Reset count on healthy continuation (no failed expansion this bar)
         min_fail_pts = 10.0
+        failed_this_bar = False
         if self.resolve_state in ("ESTABLISHED", "STRONG"):
             if len(self.recent_highs) >= 2:
                 prev_high = max(self.recent_highs[-3:]) if len(self.recent_highs) >= 3 else self.recent_highs[-1]
                 if high > prev_high and close < prev_high - min_fail_pts:
+                    failed_this_bar = True
                     self.failed_expansions += 1
                     bar_evidence.append(Evidence(bar_idx, bar["time"], "FAILED_EXPANSION_UP", "BEARISH", "MEDIUM",
                                                  f"High {high:.0f} > prev high {prev_high:.0f} but close {close:.0f} failed by {prev_high - close:.0f} pts"))
@@ -180,9 +183,18 @@ class BeliefEngine:
             if len(self.recent_lows) >= 2:
                 prev_low = min(self.recent_lows[-3:]) if len(self.recent_lows) >= 3 else self.recent_lows[-1]
                 if low < prev_low and close > prev_low + min_fail_pts:
+                    failed_this_bar = True
                     self.failed_expansions += 1
                     bar_evidence.append(Evidence(bar_idx, bar["time"], "FAILED_EXPANSION_DOWN", "BULLISH", "MEDIUM",
                                                  f"Low {low:.0f} < prev low {prev_low:.0f} but close {close:.0f} recovered by {close - prev_low:.0f} pts"))
+
+        # Reset failed expansion count on healthy continuation
+        if not failed_this_bar and self.position != 0:
+            # Check if price is making progress in our direction (healthy continuation)
+            if self.position == 1 and high > self.last_extreme_price and len(self.recent_highs) >= 2:
+                self.failed_expansions = 0  # new high = reset
+            elif self.position == -1 and low < self.last_extreme_price and len(self.recent_lows) >= 2:
+                self.failed_expansions = 0  # new low = reset
 
         # 4. Structure reclaim (thesis invalidation)
         if self.position == -1 and not np.isnan(prev_purple):
@@ -327,19 +339,20 @@ class BeliefEngine:
         # Bars since last new extreme
         bars_since_extreme = bar_idx - self.last_extreme_bar
 
-        # Determine resolve level
+        # --- Upgrade/downgrade resolve ---
+        # WEAKENING: 2+ consecutive failed expansions override everything
+        if self.failed_expansions >= 2:
+            self.resolve_state = "WEAKENING"
+            return
+
+        # Determine resolve level based on behavioral indicators
         if bars_in_trade < 3:
             self.resolve_state = "NO_RESOLVE"
-        elif self.failed_expansions >= 2:
-            self.resolve_state = "WEAKENING"
-        elif bars_since_extreme <= self.cfg.resolve_new_extreme_window and making_new_extremes:
-            if bars_in_trade >= 15 and self.confidence >= 5.0:
-                self.resolve_state = "STRONG"
-            else:
-                self.resolve_state = "ESTABLISHED"
-        elif bars_since_extreme <= 10 and self.confidence >= 2.0:
+        elif making_new_extremes and bars_in_trade >= 15 and self.confidence >= 5.0:
+            self.resolve_state = "STRONG"
+        elif making_new_extremes or (bars_since_extreme <= self.cfg.resolve_new_extreme_window and self.confidence >= 2.0):
             self.resolve_state = "ESTABLISHED"
-        elif self.confidence >= 1.0:
+        elif bars_in_trade >= 5 and self.confidence >= 1.0:
             self.resolve_state = "EMERGING"
         else:
             self.resolve_state = "NO_RESOLVE"
