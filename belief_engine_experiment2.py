@@ -28,10 +28,11 @@ class BeliefConfig2:
     spike_profit_pts: float = 100.0
     spike_profit_bars: int = 9
     warmup_bars: int = 12                    # CHANGED: 7 → 12
-    min_reversal_minutes: float = 5.0        # NEW: cooldown between reversals
-    session_end_time: str = "10:30"          # NEW: hard session end
-    one_and_done: bool = True                # NEW: no re-entry after first exit
-    first_entry_trend_filter: bool = True    # NEW: first entry must match slope
+    min_reversal_minutes: float = 3.0        # CHANGED: 5 → 3 (reduce over-blocking)
+    session_end_time: str = "10:30"          # hard session end
+    one_and_done: bool = True                # no re-entry after first exit
+    first_entry_trend_filter: bool = True    # first entry must match slope
+    profit_run_threshold: float = 50.0       # NEW: allow trades >50pts profit to run past session end
     # Resolve thresholds
     resolve_new_extreme_window: int = 5
     resolve_bounce_shrink_ratio: float = 0.6
@@ -131,16 +132,30 @@ class BeliefEngineV2:
             bar_hm = bar_time.strftime("%H:%M")
             session_end_reached = bar_hm >= self.cfg.session_end_time
 
-        # Force exit at session end
+        # Session end logic: force exit UNLESS trade is profitable > threshold
         if session_end_reached and self.position != 0:
-            action = "SESSION_EXIT"
-            self._execute_action(action, bar_idx, bar)
-            self.session_done = True
-            self._log_bar(bar_idx, bar, [], action)
-            return
+            unrealized = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
+            if unrealized > self.cfg.profit_run_threshold:
+                # Allow profitable trade to continue with normal exit rules
+                self.blocked_signals.append({
+                    "time": bar_time, "action": "SESSION_EXIT_SKIPPED",
+                    "reason": f"PROFIT_RUN ({unrealized:.0f}pts > {self.cfg.profit_run_threshold:.0f})",
+                    "evidence": "session_end", "unrealized_pl": unrealized
+                })
+                # Don't exit — fall through to normal processing below
+            else:
+                action = "SESSION_EXIT"
+                self._execute_action(action, bar_idx, bar)
+                self.session_done = True
+                self._log_bar(bar_idx, bar, [], action)
+                return
 
-        # If session is done (one-and-done), just log and return
-        if self.session_done:
+        # Block new entries after session end (even if current trade is running)
+        if session_end_reached and self.position == 0:
+            self.session_done = True
+
+        # If session is done (one-and-done) and flat, just log and return
+        if self.session_done and self.position == 0:
             self._log_bar(bar_idx, bar, [], "SESSION_DONE")
             return
 
@@ -333,6 +348,11 @@ class BeliefEngineV2:
                 if mins_since < self.cfg.min_reversal_minutes:
                     reversal_allowed = False
 
+        # Current unrealized P/L for logging
+        _unreal = 0.0
+        if self.position != 0 and self.entry_price != 0.0:
+            _unreal = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
+
         # --- Thesis invalidation (immediate, ignores cooldown) ---
         for ev in bar_evidence:
             if ev.event_type == "STRUCTURE_RECLAIM":
@@ -340,20 +360,23 @@ class BeliefEngineV2:
                     return "REVERSE"
                 else:
                     self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
-                                                  "reason": "COOLDOWN", "evidence": ev.event_type})
+                                                  "reason": "COOLDOWN", "evidence": ev.event_type,
+                                                  "unrealized_pl": _unreal})
             if ev.event_type in ("ORANGE_CROSS_ABOVE", "YELLOW_CROSS_BELOW"):
                 if self.position == -1 and ev.direction == "BULLISH":
                     if reversal_allowed:
                         return "REVERSE"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
-                                                      "reason": "COOLDOWN", "evidence": ev.event_type})
+                                                      "reason": "COOLDOWN", "evidence": ev.event_type,
+                                                      "unrealized_pl": _unreal})
                 if self.position == 1 and ev.direction == "BEARISH":
                     if reversal_allowed:
                         return "REVERSE"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
-                                                      "reason": "COOLDOWN", "evidence": ev.event_type})
+                                                      "reason": "COOLDOWN", "evidence": ev.event_type,
+                                                      "unrealized_pl": _unreal})
 
         # --- Flat: enter on line cross with trend filter ---
         if self.position == 0:
@@ -363,13 +386,15 @@ class BeliefEngineV2:
                         return "BUY"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "BUY",
-                                                      "reason": "TREND_FILTER", "evidence": ev.event_type})
+                                                      "reason": "TREND_FILTER", "evidence": ev.event_type,
+                                                      "unrealized_pl": 0.0})
                 if ev.event_type in ("BLUE_CROSS_BELOW", "YELLOW_CROSS_BELOW"):
                     if self._trend_filter_allows("SELL"):
                         return "SELL"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "SELL",
-                                                      "reason": "TREND_FILTER", "evidence": ev.event_type})
+                                                      "reason": "TREND_FILTER", "evidence": ev.event_type,
+                                                      "unrealized_pl": 0.0})
             return "HOLD"
 
         # --- In position: reversal logic with cooldown ---
@@ -382,7 +407,8 @@ class BeliefEngineV2:
         if has_opposing_cross:
             if not reversal_allowed:
                 self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
-                                              "reason": "COOLDOWN", "evidence": "opposing_cross"})
+                                              "reason": "COOLDOWN", "evidence": "opposing_cross",
+                                              "unrealized_pl": _unreal})
                 return "HOLD"
 
             if self.resolve_state in ("NO_RESOLVE", "EMERGING", "WEAKENING"):
