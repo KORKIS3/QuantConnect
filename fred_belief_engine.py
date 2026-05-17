@@ -168,14 +168,11 @@ class BeliefEngine:
         # 3. Failed expansion detection
         # Only count if: (a) resolve is ESTABLISHED or STRONG, (b) price exceeds prior extreme,
         # (c) close fails by more than 10 pts below/above that extreme
-        # Reset count on healthy continuation (no failed expansion this bar)
         min_fail_pts = 10.0
-        failed_this_bar = False
         if self.resolve_state in ("ESTABLISHED", "STRONG"):
             if len(self.recent_highs) >= 2:
                 prev_high = max(self.recent_highs[-3:]) if len(self.recent_highs) >= 3 else self.recent_highs[-1]
                 if high > prev_high and close < prev_high - min_fail_pts:
-                    failed_this_bar = True
                     self.failed_expansions += 1
                     bar_evidence.append(Evidence(bar_idx, bar["time"], "FAILED_EXPANSION_UP", "BEARISH", "MEDIUM",
                                                  f"High {high:.0f} > prev high {prev_high:.0f} but close {close:.0f} failed by {prev_high - close:.0f} pts"))
@@ -183,18 +180,9 @@ class BeliefEngine:
             if len(self.recent_lows) >= 2:
                 prev_low = min(self.recent_lows[-3:]) if len(self.recent_lows) >= 3 else self.recent_lows[-1]
                 if low < prev_low and close > prev_low + min_fail_pts:
-                    failed_this_bar = True
                     self.failed_expansions += 1
                     bar_evidence.append(Evidence(bar_idx, bar["time"], "FAILED_EXPANSION_DOWN", "BULLISH", "MEDIUM",
                                                  f"Low {low:.0f} < prev low {prev_low:.0f} but close {close:.0f} recovered by {close - prev_low:.0f} pts"))
-
-        # Reset failed expansion count on healthy continuation
-        if not failed_this_bar and self.position != 0:
-            # Check if price is making progress in our direction (healthy continuation)
-            if self.position == 1 and high > self.last_extreme_price and len(self.recent_highs) >= 2:
-                self.failed_expansions = 0  # new high = reset
-            elif self.position == -1 and low < self.last_extreme_price and len(self.recent_lows) >= 2:
-                self.failed_expansions = 0  # new low = reset
 
         # 4. Structure reclaim (thesis invalidation)
         if self.position == -1 and not np.isnan(prev_purple):
@@ -339,20 +327,19 @@ class BeliefEngine:
         # Bars since last new extreme
         bars_since_extreme = bar_idx - self.last_extreme_bar
 
-        # --- Upgrade/downgrade resolve ---
-        # WEAKENING: 2+ consecutive failed expansions override everything
-        if self.failed_expansions >= 2:
-            self.resolve_state = "WEAKENING"
-            return
-
-        # Determine resolve level based on behavioral indicators
+        # Determine resolve level
         if bars_in_trade < 3:
             self.resolve_state = "NO_RESOLVE"
-        elif making_new_extremes and bars_in_trade >= 15 and self.confidence >= 5.0:
-            self.resolve_state = "STRONG"
-        elif making_new_extremes or (bars_since_extreme <= self.cfg.resolve_new_extreme_window and self.confidence >= 2.0):
+        elif self.failed_expansions >= 2:
+            self.resolve_state = "WEAKENING"
+        elif bars_since_extreme <= self.cfg.resolve_new_extreme_window and making_new_extremes:
+            if bars_in_trade >= 15 and self.confidence >= 5.0:
+                self.resolve_state = "STRONG"
+            else:
+                self.resolve_state = "ESTABLISHED"
+        elif bars_since_extreme <= 10 and self.confidence >= 2.0:
             self.resolve_state = "ESTABLISHED"
-        elif bars_in_trade >= 5 and self.confidence >= 1.0:
+        elif self.confidence >= 1.0:
             self.resolve_state = "EMERGING"
         else:
             self.resolve_state = "NO_RESOLVE"
@@ -362,20 +349,22 @@ class BeliefEngine:
     # -------------------------------------------------------------------
 
     def _decide_action(self, bar_idx: int, bar: dict, bar_evidence: List[Evidence], mech_signal: str = "") -> str:
-        """Decide action based on mechanical signal + confidence + resolve."""
+        """Decide action based on confidence, resolve, and evidence."""
         close = bar["Close"]
+        high = bar["High"]
+        low = bar["Low"]
 
         # --- Warmup: no trading ---
         if bar_idx < self.cfg.warmup_bars:
             return "WAIT"
 
-        # --- Partial TP check (always fires mechanically) ---
+        # --- Partial TP check ---
         if self.position != 0 and not self.partial_taken and self.entry_price != 0.0:
             unrealized = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
             if unrealized >= self.cfg.partial_tp_pts:
                 return "PARTIAL_TP"
 
-        # --- Spike exit check (always fires mechanically) ---
+        # --- Spike exit check ---
         if self.position != 0 and self.entry_price != 0.0:
             bars_held = bar_idx - self.entry_bar_idx
             if bars_held <= self.cfg.spike_profit_bars and bars_held > 0:
@@ -383,64 +372,55 @@ class BeliefEngine:
                 if unrealized >= self.cfg.spike_profit_pts:
                     return "SPIKE_EXIT"
 
-        # --- No mechanical signal this bar → hold ---
-        if mech_signal not in ("BUY", "SELL"):
-            return "HOLD"
+        # --- Check for thesis invalidation (HIGH weight, immediate action) ---
+        for ev in bar_evidence:
+            if ev.event_type == "STRUCTURE_RECLAIM":
+                return "REVERSE"
+            if ev.event_type in ("ORANGE_CROSS_ABOVE", "YELLOW_CROSS_BELOW"):
+                # Major structure break against position
+                if self.position == -1 and ev.direction == "BULLISH":
+                    return "REVERSE"
+                if self.position == 1 and ev.direction == "BEARISH":
+                    return "REVERSE"
 
-        # --- Mechanical signal detected — apply belief filter ---
-
-        # If flat, always enter (System A: first entry)
-        if self.position == 0:
-            return mech_signal  # "BUY" or "SELL"
-
-        # If signal is in SAME direction as position, ignore (already positioned)
-        if mech_signal == "BUY" and self.position == 1:
-            return "HOLD"
-        if mech_signal == "SELL" and self.position == -1:
-            return "HOLD"
-
-        # --- Signal is OPPOSING current position — reversal decision ---
-        # Check for thesis invalidation (HIGH weight evidence this bar)
-        thesis_invalidated = any(
-            ev.event_type in ("STRUCTURE_RECLAIM", "ORANGE_CROSS_ABOVE", "YELLOW_CROSS_BELOW",
-                              "ORANGE_BREAKOUT_CONFIRM")
-            and ((ev.direction == "BULLISH" and self.position == -1) or
-                 (ev.direction == "BEARISH" and self.position == 1))
+        # --- Resolve-dependent reversal logic ---
+        has_opposing_cross = any(
+            (ev.event_type in ("PURPLE_CROSS_ABOVE", "STEEP_PURPLE_CROSS_ABOVE", "ORANGE_CROSS_ABOVE") and self.position == -1) or
+            (ev.event_type in ("BLUE_CROSS_BELOW", "STEEP_BLUE_CROSS_BELOW", "YELLOW_CROSS_BELOW") and self.position == 1)
             for ev in bar_evidence
         )
 
-        # Apply resolve-based filtering
-        if self.resolve_state == "NO_RESOLVE":
-            # Chop mode: reverse on every opposing signal
-            return "REVERSE"
-
-        elif self.resolve_state == "EMERGING":
-            # Low resolve: reverse on opposing signal
-            return "REVERSE"
-
-        elif self.resolve_state == "ESTABLISHED":
-            # Moderate resolve: require decay OR invalidation
-            if thesis_invalidated:
-                return "REVERSE"
-            if self.failed_expansions >= 2:
-                return "REVERSE"
-            if self.confidence <= 0:
-                return "REVERSE"
-            # Discount single break — hold through it
+        if self.position == 0:
+            # Flat — enter on any line cross
+            for ev in bar_evidence:
+                if ev.event_type in ("PURPLE_CROSS_ABOVE", "STEEP_PURPLE_CROSS_ABOVE", "ORANGE_CROSS_ABOVE"):
+                    return "BUY"
+                if ev.event_type in ("BLUE_CROSS_BELOW", "STEEP_BLUE_CROSS_BELOW", "YELLOW_CROSS_BELOW"):
+                    return "SELL"
             return "HOLD"
 
-        elif self.resolve_state == "STRONG":
-            # Strong resolve: only reverse on invalidation or deep negative confidence
-            if thesis_invalidated:
+        # In position — reversal decision depends on resolve
+        if has_opposing_cross:
+            if self.resolve_state == "NO_RESOLVE":
                 return "REVERSE"
-            if self.confidence <= -3.0:
+            elif self.resolve_state == "EMERGING":
                 return "REVERSE"
-            # Protect strong resolve
-            return "HOLD"
-
-        elif self.resolve_state == "WEAKENING":
-            # Decay detected: reverse on any opposing signal
-            return "REVERSE"
+            elif self.resolve_state == "ESTABLISHED":
+                # Require failed expansion + break OR confidence negative
+                if self.failed_expansions >= 2:
+                    return "REVERSE"
+                elif self.confidence <= 0:
+                    return "REVERSE"
+                else:
+                    return "HOLD"  # Discount single break in established resolve
+            elif self.resolve_state == "STRONG":
+                # Only reverse on major structure or confidence deeply negative
+                if self.confidence <= -3.0:
+                    return "REVERSE"
+                else:
+                    return "HOLD"  # Protect strong resolve
+            elif self.resolve_state == "WEAKENING":
+                return "REVERSE"
 
         return "HOLD"
 
