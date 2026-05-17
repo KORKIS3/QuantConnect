@@ -150,14 +150,18 @@ def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_e
     for et in NIGHT_END_TIMES:
         if et in totals: totals[et]["session"] = "NIGHT"
 
-    done = 0
-    for fname in csv_files:
-        done += 1
-        print(f"  [{done}/{total}] {int(done/total*100)}%", end="\r")
+    for i, fname in enumerate(csv_files):
+        t0 = time.time()
         try:
             _, result = _process_day(fname, quick, steep_line_proximity, steep_line_exit_only)
+            status = 'OK'
         except Exception:
+            status = 'SKIP'
+            elapsed = time.time() - t0
+            print(f'Processing [{i+1}/{total}] {fname} -> {status} ({elapsed:.1f}s)')
             continue
+        elapsed = time.time() - t0
+        print(f'Processing [{i+1}/{total}] {fname} -> {status} ({elapsed:.1f}s)')
         for et, tpls in result.items():
             if tpls:
                 day_pl = sum(tpls)
@@ -167,7 +171,7 @@ def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_e
                 totals[et]["losers"]    += 1 if day_pl <= 0 else 0
                 totals[et]["daily_pls"].append(day_pl)
 
-    print(f"\nDays processed: {done}  ({time.time()-t_start:.1f}s)")
+    print(f"\nDays processed: {total}  ({time.time()-t_start:.1f}s)")
     print(f"Contracts:      {_CONTRACTS} x ${_MULTIPLIER}/pt")
     print(f"Strategy:       engine handles all logic (spike exit, WM shield, partial TP, trailing stop v4)\n")
 
