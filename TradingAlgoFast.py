@@ -55,6 +55,10 @@ class AlgoConfig:
     first_entry_steep_only: bool = False  # first trade must be purple/blue cross, not orange/yellow
     min_entry_angle: float = 0.0          # wait until purple or blue exceeds this angle before first entry
     swing_anchor_threshold: float = 25.0  # min pts to qualify as swing high/low for ray re-anchoring
+    # --- Experimental session discipline (v2) ---
+    session_end_minutes: float = 0.0      # minutes after session start to hard-stop (0=disabled, e.g. 60 for 10:30)
+    one_and_done: bool = False            # if True, no re-entry after first exit to flat
+    first_entry_trend_filter: bool = False # if True, first entry must match purple/blue slope direction
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +465,10 @@ def _run_signals_nb(
     wm_lookback,
     spike_profit_pts,
     spike_profit_bars,
+    session_end_minutes,
+    one_and_done,
+    first_entry_trend_filter,
+    session_start_time_num,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -484,6 +492,8 @@ def _run_signals_nb(
     trail_anchor_p = -1e30   # locked trailing stop anchor price (v4)
     trail_anchor_t = 0.0     # locked trailing stop anchor time (v4)
     entry_time_idx = 0        # bar index of current entry
+    first_trade_exited = False  # for one-and-done mode
+    last_reversal_time_num = -1.0  # timestamp of last reversal/entry (for cooldown)
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -499,6 +509,34 @@ def _run_signals_nb(
         prev_blue_slope   = blue_slopes[i - 1]
         liquidated = False
         is_last = (i == n - 1)
+
+        # --- Session end: force exit and block new entries ---
+        session_ended = False
+        if session_end_minutes > 0.0 and session_start_time_num > 0.0:
+            mins_elapsed = (times_num[i] - session_start_time_num) / min_per_unit
+            if mins_elapsed >= session_end_minutes:
+                session_ended = True
+                # Force close any open position
+                if pos != 0 and entry_price != 0.0:
+                    if pos == 1:
+                        session_pl += (close - entry_price) * contracts_remaining
+                    else:
+                        session_pl += (entry_price - close) * contracts_remaining
+                    sig_type[i] = 2 if pos == 1 else 1
+                    sig_price[i] = close
+                    sig_liq[i] = True
+                    pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                    trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                    entry_time_idx = 0; liquidated = True
+                    partial_taken = False; contracts_remaining = 2
+                    first_trade_exited = True
+
+        # --- One-and-done: block all entries after first exit ---
+        entries_blocked = False
+        if one_and_done and first_trade_exited:
+            entries_blocked = True
+        if session_ended:
+            entries_blocked = True
 
         # --- Partial take-profit (1 of 2 contracts at partial_tp_pts) ---
         if (partial_tp_pts > 0.0 and pos != 0 and not partial_taken
@@ -584,6 +622,8 @@ def _run_signals_nb(
                                 trail_anchor_p = -1e30; trail_anchor_t = 0.0
                                 entry_time_idx = 0; liquidated = True
                                 partial_taken = False; contracts_remaining = 2
+                                first_trade_exited = True
+                                last_reversal_time_num = times_num[i]
                         else:
                             if close > trail_anchor_p - trailing_slope * t_diff:
                                 session_pl += (entry_price - close) * contracts_remaining
@@ -592,9 +632,12 @@ def _run_signals_nb(
                                 trail_anchor_p = -1e30; trail_anchor_t = 0.0
                                 entry_time_idx = 0; liquidated = True
                                 partial_taken = False; contracts_remaining = 2
+                                first_trade_exited = True
+                                last_reversal_time_num = times_num[i]
 
-        # Reversal guard
-        mins_since = (times_num[i] - entry_time_num) / min_per_unit if entry_time_num > 0.0 else 9999.0
+        # Reversal guard — use last_reversal_time_num for cooldown (more accurate than entry_time)
+        cooldown_ref = last_reversal_time_num if last_reversal_time_num > 0.0 else entry_time_num
+        mins_since = (times_num[i] - cooldown_ref) / min_per_unit if cooldown_ref > 0.0 else 9999.0
         orange_cross_buy  = prev_close <= prev_orange and close > prev_orange
         yellow_cross_sell = prev_close >= prev_yellow and close < prev_yellow
         safety_override   = (pos == 2 and orange_cross_buy) or (pos == 1 and yellow_cross_sell)
@@ -609,7 +652,7 @@ def _run_signals_nb(
             angle_ready = True
 
         # --- BUY signals ---
-        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready:
+        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
             if pos == 2 and reversal_blocked:
                 pending_buy = False
             else:
@@ -661,13 +704,20 @@ def _run_signals_nb(
                                 if abs(close - curr_orange) > proximity_points:
                                     buy_triggered = True
                     if buy_triggered:
+                        # First-entry trend filter: block BUY if purple slope is negative (downtrend)
+                        if first_entry_trend_filter and not first_trade_done:
+                            if prev_purple_slope < 0.0 and prev_blue_slope < 0.0:
+                                buy_triggered = False
+                    if buy_triggered:
                         if pos == 2: session_pl += (entry_price - close) * contracts_remaining
                         sig_type[i] = 1; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        else:
+                            pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            last_reversal_time_num = times_num[i]
 
         # --- SELL signals ---
-        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready:
+        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
             else:
@@ -719,10 +769,17 @@ def _run_signals_nb(
                                 if abs(close - curr_yellow) > proximity_points:
                                     sell_triggered = True
                     if sell_triggered:
+                        # First-entry trend filter: block SELL if purple slope is positive (uptrend)
+                        if first_entry_trend_filter and not first_trade_done:
+                            if prev_purple_slope > 0.0 and prev_blue_slope > 0.0:
+                                sell_triggered = False
+                    if sell_triggered:
                         if pos == 1: session_pl += (close - entry_price) * contracts_remaining
                         sig_type[i] = 2; sig_price[i] = close
                         if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                        else: pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                        else:
+                            pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            last_reversal_time_num = times_num[i]
 
         # Track cumulative 2-contract P/L (realized + unrealized on remaining contracts)
         if pos == 0 or entry_price == 0.0:
@@ -826,6 +883,10 @@ def run_trading_algo_fast(
         cfg.wm_lookback,
         cfg.spike_profit_pts,
         cfg.spike_profit_bars,
+        cfg.session_end_minutes,
+        1 if cfg.one_and_done else 0,
+        1 if cfg.first_entry_trend_filter else 0,
+        times_num[0],  # session_start_time_num
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
