@@ -36,13 +36,9 @@ def _get_algo_config():
         proximity_points=4.0,
         min_reversal_minutes=0,
         min_entry_angle=0.0,
-        partial_tp_pts=0.0,
-        spike_profit_pts=50.0,
-        spike_profit_bars=9,
+        partial_tp_pts=50.0,
         wm_shield_distance=0.0,
-        steep_line_reentry=False,
-        steep_line_proximity=0.0,
-        steep_line_exit_only=False,
+        swing_anchor_threshold=10.0,
     )
 
 

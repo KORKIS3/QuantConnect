@@ -244,9 +244,9 @@ class BeliefEngine:
         if self.position == 0 or self.entry_price == 0.0:
             display_pl = self.session_pl
         elif self.position == 1:
-            display_pl = self.session_pl + (close - self.entry_price)
+            display_pl = self.session_pl + (close - self.entry_price) * self.contracts
         else:
-            display_pl = self.session_pl + (self.entry_price - close)
+            display_pl = self.session_pl + (self.entry_price - close) * self.contracts
 
         # --- Log ---
         self.bar_logs.append({

@@ -72,24 +72,20 @@ def _calc_pl_from_engine(algo_df, start_ts, end_ts):
     return [pl] if pl != 0.0 else None
 
 
-def _process_day(fname, quick=False, steep_line_proximity=5.0, steep_line_exit_only=False):
+def _process_day(fname, quick=False):
     """Process a single day — runs in a worker process."""
     target_date = fname.replace("CBOT_MINI_YM1_", "").replace(".csv", "")
     fpath = os.path.join(_DATA_ROOT, fname)
-    # Identical config to live IBDataBridge — single source of truth
+    # Proven config from commit 0b05133 — single source of truth
     config = AlgoConfig(
         warmup_minutes=7,
         steep_angle_threshold=90.0,
         proximity_points=4.0,
         min_reversal_minutes=0,
         min_entry_angle=0.0,
-        partial_tp_pts=0.0,
-        spike_profit_pts=50.0,
-        spike_profit_bars=9,
+        partial_tp_pts=50.0,
         wm_shield_distance=0.0,
-        steep_line_reentry=False,
-        steep_line_proximity=steep_line_proximity,  # USE THE PARAMETER
-        steep_line_exit_only=steep_line_exit_only,  # USE THE PARAMETER
+        swing_anchor_threshold=10.0,
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}
@@ -128,7 +124,7 @@ def _process_day(fname, quick=False, steep_line_proximity=5.0, steep_line_exit_o
     return target_date, result
 
 
-def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_exit_only=False):
+def run_backtest(max_days=0, quick=False):
     csv_files = sorted([f for f in os.listdir(_DATA_ROOT)
                         if f.startswith("CBOT_MINI_YM1_") and f.endswith(".csv")])
     if max_days > 0: csv_files = csv_files[-max_days:]
@@ -137,7 +133,7 @@ def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_e
     mode = "quick 9:30-10:30 only" if quick else "full day 9:30-17:00"
     
     print(f"\n{'='*80}")
-    print(f"CONFIG: steep_line_exit_only = {steep_line_exit_only}")
+    print(f"CONFIG: proven baseline (warmup=7, steep_angle=90, proximity=4, partial_tp=50)")
     print(f"{'='*80}\n")
     
     print(f"\nRunning backtest on {total} days ({mode}) ...\n")
@@ -153,7 +149,7 @@ def run_backtest(max_days=0, quick=False, steep_line_proximity=5.0, steep_line_e
     for i, fname in enumerate(csv_files):
         t0 = time.time()
         try:
-            _, result = _process_day(fname, quick, steep_line_proximity, steep_line_exit_only)
+            _, result = _process_day(fname, quick)
             status = 'OK'
         except Exception:
             status = 'SKIP'
@@ -192,8 +188,6 @@ if __name__ == "__main__":
     p.add_argument("--skip-download", action="store_true", dest="skip_download")
     p.add_argument("--max-days", type=int, default=0, dest="max_days")
     p.add_argument("--quick", action="store_true", help="Only run 9:30-10:30 day session (fast mode)")
-    p.add_argument("--steep-line-proximity", type=float, default=0.0, dest="steep_line_proximity", help="Suppress steep line reversal if within N pts of original ray")
-    p.add_argument("--steep-line-exit-only", action="store_true", dest="steep_line_exit_only", help="Steep line cross exits to flat instead of reversing")
     args = p.parse_args()
     if not args.skip_download: download_all(args.port)
-    run_backtest(max_days=args.max_days, quick=args.quick, steep_line_proximity=args.steep_line_proximity, steep_line_exit_only=args.steep_line_exit_only)
+    run_backtest(max_days=args.max_days, quick=args.quick)
