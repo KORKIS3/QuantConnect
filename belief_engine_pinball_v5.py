@@ -247,18 +247,31 @@ class PinballEngine:
                 self._log(bar_idx, bar, exit_type)
                 return
 
-        # --- V5: Observation Trailing Stop (Rule B) ---
+        # --- V5.1: Observation Trailing Stop (subordinate to protected components) ---
         if self.position != 0 and self.entry_price != 0.0:
             bars_in_trade = bar_idx - self.entry_bar_idx
-            # Update peak unrealized
+            # Always track peak unrealized
             if _unreal > self.obs_trail_peak:
                 self.obs_trail_peak = _unreal
-            # Activation: if +20 within first 3 bars
-            if (not self.obs_trail_active and
-                bars_in_trade <= self.cfg.obs_trail_activation_bars and
-                _unreal >= self.cfg.obs_trail_activation_pts):
-                self.obs_trail_active = True
-                self._log_trade_note(bar, "OBS_TRAIL_ON", _unreal)
+
+            # Arm condition: trade reached +20 within first 3 bars
+            obs_trail_armed = (self.obs_trail_peak >= self.cfg.obs_trail_activation_pts and
+                               bars_in_trade >= 1)
+
+            # Activation gate: ONLY activate if protected components have ALREADY FIRED
+            # Trail is SUBORDINATE — only protects profit AFTER TP has been taken
+            protected_resolved = self.partial_taken  # ONLY after partial/CHOP TP has fired
+
+            if obs_trail_armed and not self.obs_trail_active:
+                if protected_resolved:
+                    self.obs_trail_active = True
+                    self._log_trade_note(bar, "OBS_TRAIL_ARMED", _unreal)
+                else:
+                    # Log that trail would activate but is blocked
+                    if not hasattr(self, '_trail_blocked_logged'):
+                        self._trail_blocked_logged = True
+                        self._log_trade_note(bar, "OBS_TRAIL_BLOCKED", _unreal)
+
             # Exit: if trailing stop active and giveback exceeds threshold
             if self.obs_trail_active and self.obs_trail_peak > 0:
                 giveback = self.obs_trail_peak - _unreal
@@ -475,6 +488,7 @@ class PinballEngine:
             self.last_trade_bar = bar_idx; self.trade_count += 1
             self.failed_expansions = 0; self.confidence = 1.5
             self.obs_trail_active = False; self.obs_trail_peak = 0.0
+            self._trail_blocked_logged = False
             self._log_trade(bar_time, "CHOP_BUY" if self.mode == "CHOP" else "TREND_LONG",
                            close, "long", 2, 0.0, 0)
 
@@ -488,6 +502,7 @@ class PinballEngine:
             self.last_trade_bar = bar_idx; self.trade_count += 1
             self.failed_expansions = 0; self.confidence = 1.5
             self.obs_trail_active = False; self.obs_trail_peak = 0.0
+            self._trail_blocked_logged = False
             self._log_trade(bar_time, "CHOP_SELL" if self.mode == "CHOP" else "TREND_SHORT",
                            close, "short", 2, 0.0, 0)
 
