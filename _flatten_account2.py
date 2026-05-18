@@ -7,7 +7,7 @@ import time
 util.logToConsole()
 
 ib = IB()
-ib.connect("127.0.0.1", 4002, clientId=98, timeout=30)
+ib.connect("127.0.0.1", 4003, clientId=98, timeout=30)
 
 print("\n=== ACCOUNT 2 (DUQ921172) FLATTEN ===")
 positions = ib.positions()
