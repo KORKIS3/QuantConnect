@@ -31,17 +31,22 @@ class PinballConfig:
     first_entry_trend_filter: bool = True
     # CHOP parameters
     chop_tp_pts: float = 30.0              # fixed TP for CHOP bounces
-    chop_stop_pts: float = 40.0            # stop loss for CHOP trades
+    chop_stop_pts: float = 60.0            # WIDENED: stop loss (was 40, now 60 to avoid noise)
+    chop_stop_breach_pts: float = 10.0     # NEW: price must breach line by >X pts to trigger stop
     chop_proximity_pts: float = 15.0       # how close to line to trigger entry
     chop_cooldown_bars: int = 2            # bars between CHOP trades
     chop_max_trades: int = 6              # max trades per CHOP session
     chop_rejection_bars: int = 1           # bars of rejection confirmation
+    chop_disable_reversal: bool = True     # NEW: disable reversals on CHOP days (only exit to flat)
     # TREND parameters
     partial_tp_pts: float = 50.0
     spike_profit_pts_trend: float = 200.0
     spike_profit_bars: int = 9
     profit_run_threshold: float = 50.0
     first_trade_min_hold: int = 10
+    # Reversal control
+    reverse_min_confidence: float = -2.0   # NEW: only reverse if confidence <= this
+    reverse_min_evidence: int = 2          # NEW: require 2+ opposing evidences for TREND reversal
     # Trend detection (relaxed)
     trend_bar_threshold: int = 10
     trend_slope_threshold: float = 0.1
@@ -249,8 +254,8 @@ class PinballEngine:
             # Fixed TP
             if unrealized >= self.cfg.chop_tp_pts:
                 return "CHOP_TP"
-            # Fixed stop
-            if unrealized <= -self.cfg.chop_stop_pts:
+            # Fixed stop — only if loss exceeds threshold AND not in profit-run
+            if unrealized <= -self.cfg.chop_stop_pts and unrealized < -self.cfg.profit_run_threshold:
                 return "CHOP_STOP"
             # Midpoint exit
             if self.session_high > self.session_low:
@@ -259,17 +264,24 @@ class PinballEngine:
                     return "CHOP_TP"
                 if self.position == -1 and close <= midpoint and unrealized > 10:
                     return "CHOP_TP"
-            # Line cross against position (reversal)
-            if self.position == 1 and not np.isnan(self.blue_val) and close < self.blue_val:
-                if first_trade_protected:
-                    self._block("REVERSE", bar_time, "FIRST_TRADE_HOLD", "blue_cross_below", _unreal)
-                    return "HOLD"
-                return "CHOP_STOP"
-            if self.position == -1 and not np.isnan(self.purple_val) and close > self.purple_val:
-                if first_trade_protected:
-                    self._block("REVERSE", bar_time, "FIRST_TRADE_HOLD", "purple_cross_above", _unreal)
-                    return "HOLD"
-                return "CHOP_STOP"
+            # Line breach against position — require breach by >X pts
+            if self.position == 1 and not np.isnan(self.blue_val):
+                breach = self.blue_val - close  # positive = price below blue
+                if breach > self.cfg.chop_stop_breach_pts:
+                    if first_trade_protected:
+                        self._block("CHOP_STOP", bar_time, "FIRST_TRADE_HOLD", "blue_breach", _unreal)
+                        return "HOLD"
+                    return "CHOP_STOP"
+            if self.position == -1 and not np.isnan(self.purple_val):
+                breach = close - self.purple_val  # positive = price above purple
+                if breach > self.cfg.chop_stop_breach_pts:
+                    if first_trade_protected:
+                        self._block("CHOP_STOP", bar_time, "FIRST_TRADE_HOLD", "purple_breach", _unreal)
+                        return "HOLD"
+                    # On CHOP days: exit to flat, do NOT reverse
+                    if self.cfg.chop_disable_reversal:
+                        return "CHOP_STOP"
+                    return "CHOP_STOP"
 
         # --- Cooldown ---
         if bar_idx - self.last_trade_bar < self.cfg.chop_cooldown_bars:
@@ -330,16 +342,19 @@ class PinballEngine:
                     else:
                         return "SPIKE_EXIT"
 
-        # Line cross detection
-        buy_cross = False; sell_cross = False
+        # Line cross detection — count opposing evidences
+        buy_crosses = 0; sell_crosses = 0
         if not np.isnan(self.prev_purple) and self.recent_closes[-2] <= self.prev_purple and close > self.purple_val:
-            buy_cross = True
+            buy_crosses += 1
         if not np.isnan(self.prev_orange) and self.recent_closes[-2] <= self.prev_orange and close > self.orange_val:
-            buy_cross = True
+            buy_crosses += 1
         if not np.isnan(self.prev_blue) and self.recent_closes[-2] >= self.prev_blue and close < self.blue_val:
-            sell_cross = True
+            sell_crosses += 1
         if not np.isnan(self.prev_yellow) and self.recent_closes[-2] >= self.prev_yellow and close < self.yellow_val:
-            sell_cross = True
+            sell_crosses += 1
+
+        buy_cross = buy_crosses > 0
+        sell_cross = sell_crosses > 0
 
         # Flat: enter
         if self.position == 0:
@@ -349,13 +364,28 @@ class PinballEngine:
                 return "SELL"
             return "HOLD"
 
-        # In position: reversal
+        # In position: reversal — require stronger evidence
         opposing = (buy_cross and self.position == -1) or (sell_cross and self.position == 1)
         if opposing:
             if first_trade_protected:
                 self._block("REVERSE", bar_time, "FIRST_TRADE_HOLD", "trend_cross", _unreal)
                 return "HOLD"
-            return "REVERSE"
+            # Always allow reversal if losing significantly (emergency exit)
+            if _unreal <= -self.cfg.chop_stop_pts:
+                return "REVERSE"
+            # Count opposing evidence strength
+            opposing_count = buy_crosses if self.position == -1 else sell_crosses
+            # Only reverse if: enough evidence OR confidence deeply negative
+            if opposing_count >= self.cfg.reverse_min_evidence:
+                return "REVERSE"
+            elif self.confidence <= self.cfg.reverse_min_confidence:
+                return "REVERSE"
+            elif self.failed_expansions >= 2:
+                return "REVERSE"
+            else:
+                self._block("REVERSE", bar_time, "WEAK_EVIDENCE",
+                           f"crosses={opposing_count}<{self.cfg.reverse_min_evidence}", _unreal)
+                return "HOLD"
 
         return "HOLD"
 
