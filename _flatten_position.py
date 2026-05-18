@@ -10,9 +10,9 @@ ib = IB()
 ib.connect("127.0.0.1", 4002, clientId=99, timeout=30)  # paper port
 
 positions = ib.positions()
-print("\nCurrent positions (ALL accounts):")
+print("\nCurrent positions:")
 for p in positions:
-    print(f"  Account={p.account} {p.contract.symbol} {p.contract.localSymbol}  pos={p.position}  avgCost={p.avgCost:.2f}")
+    print(f"  {p.contract.symbol} {p.contract.localSymbol}  pos={p.position}  avgCost={p.avgCost:.2f}")
 
 for p in positions:
     sym = p.contract.symbol
@@ -23,11 +23,10 @@ for p in positions:
         continue
     action = "BUY" if pos < 0 else "SELL"
     qty = int(abs(pos))
-    print(f"\nFlattening {p.account} {sym}: {action} {qty} contracts...")
+    print(f"\nFlattening {sym}: {action} {qty} contracts...")
     p.contract.exchange = "CBOT"
     order = MarketOrder(action, qty)
     order.tif = "DAY"
-    order.account = p.account  # target specific account
     trade = ib.placeOrder(p.contract, order)
     ib.sleep(3)
     print(f"  Status: {trade.orderStatus.status}  filled={trade.orderStatus.filled}  avgFill={trade.orderStatus.avgFillPrice}")

@@ -204,32 +204,6 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
                         if ib_position != account1_position:
                             qty_diff = account1_position - ib_position
                             
-                            # SAFETY: cap at 2 contracts max in either direction
-                            if abs(account1_position) > 2:
-                                log.error(f"[{account_id}] SAFETY: Account1 position {account1_position} exceeds max 2 — ignoring")
-                                continue
-                            if abs(qty_diff) > 4:
-                                log.error(f"[{account_id}] SAFETY: qty_diff {qty_diff} too large — ignoring")
-                                continue
-                            
-                            # SAFETY: verify actual IB position before placing order
-                            positions = ib.positions()
-                            actual_ib_pos = 0
-                            for pos in positions:
-                                if pos.contract.symbol in ("MYM", "YM") and pos.account == account_id:
-                                    actual_ib_pos = int(pos.position)
-                                    break
-                            if actual_ib_pos != ib_position:
-                                log.warning(f"[{account_id}] Position drift: tracked={ib_position} actual={actual_ib_pos} — correcting")
-                                ib_position = actual_ib_pos
-                                qty_diff = account1_position - ib_position
-                            
-                            # SAFETY: final check — resulting position must not exceed ±2
-                            resulting_position = ib_position + qty_diff
-                            if abs(resulting_position) > 2:
-                                log.error(f"[{account_id}] SAFETY: order would result in {resulting_position} contracts (>2) — BLOCKING")
-                                continue
-                            
                             if qty_diff > 0:
                                 action = "BUY"
                                 qty = abs(qty_diff)
@@ -243,7 +217,6 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
                             # Place order to sync
                             order = MarketOrder(action, qty)
                             order.tif = "DAY"
-                            order.account = account_id  # ensure order goes to correct account
                             trade = ib.placeOrder(contract, order)
                             
                             # Wait for fill
@@ -264,15 +237,6 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
             else:
                 # No CSV file found yet - wait for Account 1 to start
                 ib.sleep(1)
-            
-            # SAFETY: if CSV hasn't updated in 10 minutes and we have a position, flatten
-            if ib_position != 0 and last_csv_mtime > 0:
-                stale_seconds = time.time() - last_csv_mtime
-                if stale_seconds > 600:  # 10 minutes
-                    log.warning(f"[{account_id}] CSV stale for {stale_seconds:.0f}s — FLATTENING (session likely ended)")
-                    flatten_position(ib, contract, account_id)
-                    ib_position = 0
-                    last_csv_mtime = time.time()  # reset to avoid repeated flattens
             
             ib.sleep(0.1)  # Check every 100ms for minimal delay
             
