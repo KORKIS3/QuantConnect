@@ -222,6 +222,12 @@ class PinballEngine:
         if self.position != 0 and self.entry_price != 0.0:
             _unreal = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
 
+        # --- Hard stop override: exit even during first-trade hold if loss > stop threshold ---
+        if self.position != 0 and _unreal <= -self.cfg.chop_stop_pts:
+            self._execute("EXIT_FLAT", bar_idx, bar)
+            self._log(bar_idx, bar, "EXIT_FLAT")
+            return
+
         first_trade_protected = False
         if self.position != 0 and self.cfg.first_trade_min_hold > 0:
             bars_held = bar_idx - self.entry_bar_idx
@@ -364,26 +370,30 @@ class PinballEngine:
                 return "SELL"
             return "HOLD"
 
-        # In position: reversal — require stronger evidence
+        # In position: opposing signal — EXIT TO FLAT (no reversal)
+        # Reversals were the #1 loss source (-24k over 84 trades at -286 avg).
+        # Strategy: close position and wait for next clean entry instead of flipping.
         opposing = (buy_cross and self.position == -1) or (sell_cross and self.position == 1)
         if opposing:
             if first_trade_protected:
-                self._block("REVERSE", bar_time, "FIRST_TRADE_HOLD", "trend_cross", _unreal)
+                self._block("EXIT_FLAT", bar_time, "FIRST_TRADE_HOLD", "trend_cross", _unreal)
                 return "HOLD"
-            # Always allow reversal if losing significantly (emergency exit)
+            # Emergency exit if losing significantly
             if _unreal <= -self.cfg.chop_stop_pts:
-                return "REVERSE"
-            # Count opposing evidence strength
+                return "EXIT_FLAT"
+            # Exit to flat if: enough evidence OR confidence deeply negative OR failed expansions
             opposing_count = buy_crosses if self.position == -1 else sell_crosses
-            # Only reverse if: enough evidence OR confidence deeply negative
             if opposing_count >= self.cfg.reverse_min_evidence:
-                return "REVERSE"
+                return "EXIT_FLAT"
             elif self.confidence <= self.cfg.reverse_min_confidence:
-                return "REVERSE"
+                return "EXIT_FLAT"
             elif self.failed_expansions >= 2:
-                return "REVERSE"
+                return "EXIT_FLAT"
             else:
-                self._block("REVERSE", bar_time, "WEAK_EVIDENCE",
+                # Weak evidence but losing: exit if loss > 30 pts
+                if _unreal <= -30.0:
+                    return "EXIT_FLAT"
+                self._block("EXIT_FLAT", bar_time, "WEAK_EVIDENCE",
                            f"crosses={opposing_count}<{self.cfg.reverse_min_evidence}", _unreal)
                 return "HOLD"
 
@@ -460,6 +470,22 @@ class PinballEngine:
             self.last_trade_bar = bar_idx; self.trade_count += 1
             self._log_trade(bar_time, "REVERSE", close,
                            "long" if self.position == 1 else "short", 2, pl, bars_held)
+
+        elif action == "EXIT_FLAT":
+            pl = 0.0
+            if self.position == 1:
+                c = 1 if self.partial_taken else 2
+                pl = (close - self.entry_price) * c
+                self.session_pl += pl
+            elif self.position == -1:
+                c = 1 if self.partial_taken else 2
+                pl = (self.entry_price - close) * c
+                self.session_pl += pl
+            bars_held = bar_idx - self.entry_bar_idx
+            direction = "long" if self.position == 1 else "short"
+            self.position = 0; self.contracts = 0; self.entry_price = 0.0
+            self.partial_taken = False; self.last_trade_bar = bar_idx
+            self._log_trade(bar_time, "EXIT_FLAT", close, direction, 0, pl, bars_held)
 
         elif action == "PARTIAL_TP":
             unrealized = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
