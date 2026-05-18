@@ -30,6 +30,9 @@ class BeliefConfig2:
     one_and_done: bool = True
     first_entry_trend_filter: bool = True
     profit_run_threshold: float = 50.0       # allow profitable trades to run past session end
+    # First-trade protection
+    first_trade_min_hold: int = 10           # NEW: min bars before first trade can be reversed
+    first_trade_profit_buffer: bool = True   # NEW: if unrealized>0, block reversal during min_hold
     # Dynamic params (adjusted by day_type)
     spike_profit_pts_trend: float = 200.0
     spike_profit_pts_chop: float = 100.0
@@ -326,10 +329,29 @@ class BeliefEngineV2:
         if self.position != 0 and self.entry_price != 0.0:
             _unreal = (close - self.entry_price) if self.position == 1 else (self.entry_price - close)
 
+        # --- First-trade protection: min hold period ---
+        # Block reversals during first N bars of the FIRST trade unless multiple failed expansions
+        first_trade_protected = False
+        if self.position != 0 and self.cfg.first_trade_min_hold > 0:
+            bars_held = bar_idx - self.entry_bar_idx
+            is_first_trade = (self.last_reversal_time is None or self.last_reversal_time == self.entry_time)
+            if is_first_trade and bars_held < self.cfg.first_trade_min_hold:
+                # Only allow reversal if 2+ failed expansions accumulated (strong evidence)
+                if self.failed_expansions < 2:
+                    # Profit buffer: if profitable, definitely block
+                    if self.cfg.first_trade_profit_buffer and _unreal > 0:
+                        first_trade_protected = True
+                    else:
+                        first_trade_protected = True
+
         # --- Thesis invalidation ---
         for ev in bar_evidence:
             if ev.event_type == "STRUCTURE_RECLAIM":
-                if reversal_allowed:
+                if first_trade_protected:
+                    self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
+                                                  "reason": "FIRST_TRADE_HOLD", "evidence": ev.event_type,
+                                                  "unrealized_pl": _unreal, "day_type": self.day_type})
+                elif reversal_allowed:
                     return "REVERSE"
                 else:
                     self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
@@ -337,14 +359,22 @@ class BeliefEngineV2:
                                                   "unrealized_pl": _unreal, "day_type": self.day_type})
             if ev.event_type in ("ORANGE_CROSS_ABOVE", "YELLOW_CROSS_BELOW"):
                 if self.position == -1 and ev.direction == "BULLISH":
-                    if reversal_allowed:
+                    if first_trade_protected:
+                        self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
+                                                      "reason": "FIRST_TRADE_HOLD", "evidence": ev.event_type,
+                                                      "unrealized_pl": _unreal, "day_type": self.day_type})
+                    elif reversal_allowed:
                         return "REVERSE"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
                                                       "reason": "COOLDOWN", "evidence": ev.event_type,
                                                       "unrealized_pl": _unreal, "day_type": self.day_type})
                 if self.position == 1 and ev.direction == "BEARISH":
-                    if reversal_allowed:
+                    if first_trade_protected:
+                        self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
+                                                      "reason": "FIRST_TRADE_HOLD", "evidence": ev.event_type,
+                                                      "unrealized_pl": _unreal, "day_type": self.day_type})
+                    elif reversal_allowed:
                         return "REVERSE"
                     else:
                         self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
@@ -377,6 +407,11 @@ class BeliefEngineV2:
             for ev in bar_evidence
         )
         if has_opposing:
+            if first_trade_protected:
+                self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
+                                              "reason": "FIRST_TRADE_HOLD", "evidence": "opposing_cross",
+                                              "unrealized_pl": _unreal, "day_type": self.day_type})
+                return "HOLD"
             if not reversal_allowed:
                 self.blocked_signals.append({"time": bar_time, "action": "REVERSE",
                                               "reason": "COOLDOWN", "evidence": "opposing_cross",
