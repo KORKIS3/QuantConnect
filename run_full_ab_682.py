@@ -12,7 +12,7 @@ import pandas as pd
 import pytz
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
 from fred_belief_engine import BeliefEngine, BeliefConfig
-from belief_engine_experiment2 import BeliefEngineV2, BeliefConfig2
+from belief_engine_experiment import BeliefEngineExperiment, BeliefConfig as ExperimentConfig
 
 _EST = pytz.timezone("US/Eastern")
 _DATA_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")
@@ -78,7 +78,7 @@ def _run_day(fname):
 
     # Run experiment v2
     try:
-        experiment = BeliefEngineV2(BeliefConfig2())
+        experiment = BeliefEngineExperiment(ExperimentConfig())
         experiment.run_session(algo_df)
         experiment_pl = experiment.session_pl
         experiment_trades = sum(1 for l in experiment.bar_logs if l['action'] in ('BUY', 'SELL', 'REVERSE'))
