@@ -52,6 +52,7 @@ from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
 from openpyxl import Workbook
 
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
+from belief_engine_pinball import PinballEngine, PinballConfig
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
 from Emailer import send_session_summary, send_trade_alert, send_connection_failure_alert
@@ -304,6 +305,8 @@ class IBDataBridge:
         self._pending_order: bool = False  # True while an order is placed but not yet confirmed
         self._pending_order_time: Optional[float] = None  # timestamp when pending order was set
         self._last_position_check: Optional[float] = None  # last time we validated position size
+        self._pinball: PinballEngine = PinballEngine(PinballConfig())  # Pinball overlay
+        self._pinball_last_action: str = "HOLD"  # last Pinball decision
         
         # NEW: Create account-specific logger if account_id is provided
         if self.account_id:
@@ -943,7 +946,7 @@ class IBDataBridge:
     # -- algo delegation ------------------------------------------------------
 
     def _run_algo(self) -> None:
-        """Build the growing session DataFrame and hand it to TradingAlgo."""
+        """Build the growing session DataFrame, run TradingAlgo + Pinball overlay."""
         if not self._session_bars:
             return
 
@@ -980,12 +983,26 @@ class IBDataBridge:
         except Exception as exc:
             log.error("[PositionSync] Pre-trade reconcile failed: %s", exc)
 
-        # --- Scan ALL new signals since last call, not just the last bar ---
-        new_rows = result[result["signal"].isin(["BUY", "SELL"])]
-        if self._last_signal_ts is not None:
-            new_rows = new_rows[new_rows.index > self._last_signal_ts]
+        # --- Run Pinball engine on the full algo output ---
+        # Reset and re-run Pinball on the entire session so far (stateless per call)
+        pinball = PinballEngine(PinballConfig())
+        pinball.run_session(result)
 
-        # Check pending order timeout (30 seconds)
+        # Get the latest Pinball action (last bar's decision)
+        if not pinball.bar_logs:
+            return
+
+        latest_pinball = pinball.bar_logs[-1]
+        pinball_action = latest_pinball.get("action", "HOLD")
+        pinball_pl = latest_pinball.get("session_pl", 0.0)
+        pinball_pos = latest_pinball.get("position", 0)
+        pinball_mode = latest_pinball.get("mode", "CHOP")
+
+        # Only act if Pinball's position differs from what we already have in IB
+        # Convert Pinball position (1=long, -1=short, 0=flat) to contract count
+        target_contracts = pinball_pos * 2  # +2, -2, or 0
+
+        # Check pending order timeout
         import time
         if self._pending_order and self._pending_order_time is not None:
             elapsed = time.time() - self._pending_order_time
@@ -1006,70 +1023,52 @@ class IBDataBridge:
                         order = MarketOrder("SELL", excess)
                         order.tif = "DAY"
                         self._ib.placeOrder(self._contract, order)
-                        log.info("[EMERGENCY] Placed SELL %d to reduce position", excess)
                     elif self._ib_position < 0:
                         excess = abs(self._ib_position) - max_allowed
                         order = MarketOrder("BUY", excess)
                         order.tif = "DAY"
                         self._ib.placeOrder(self._contract, order)
-                        log.info("[EMERGENCY] Placed BUY %d to reduce position", excess)
                 except Exception as exc:
                     log.error("[EMERGENCY] Failed to flatten excess position: %s", exc)
 
-        for ts, last in new_rows.iterrows():
-            signal = str(last.get("signal", ""))
-            is_liq = bool(last.get("is_liquidation", False))
-            pl     = float(last.get("pl", 0.0))
-            price  = float(minute_df["Close"].iloc[-1])
-            pos    = str(last.get("position", "flat"))
+        # Skip if pending order
+        if self._pending_order:
+            return
 
-            if signal == "BUY":
-                if is_liq:
-                    log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("BUY", liquidate=True)
-                else:
-                    if self._pending_order:
-                        log.info("[TradingAlgo] BUY skipped — pending order not yet filled")
-                        self._last_signal_ts = ts
-                        continue
-                    if self._ib_position > 0:
-                        log.info("[TradingAlgo] BUY skipped — already long (ib_pos=%d)", self._ib_position)
-                        self._last_signal_ts = ts
-                        continue
-                    log.info("[TradingAlgo] BUY          price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("BUY", algo_target_position=pos)
-            elif signal == "SELL":
-                if is_liq:
-                    log.info("[TradingAlgo] LIQUIDATION  price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("SELL", liquidate=True)
-                else:
-                    if self._pending_order:
-                        log.info("[TradingAlgo] SELL skipped — pending order not yet filled")
-                        self._last_signal_ts = ts
-                        continue
-                    if self._ib_position < 0:
-                        log.info("[TradingAlgo] SELL skipped — already short (ib_pos=%d)", self._ib_position)
-                        self._last_signal_ts = ts
-                        continue
-                    log.info("[TradingAlgo] SELL         price=%.2f  pl=%.1f", price, pl)
-                    self._place_order("SELL", algo_target_position=pos)
-            self._last_signal_ts = ts
+        # --- Sync IB position to match Pinball's target ---
+        # Pinball position: +1=long, -1=short, 0=flat
+        # Pinball contracts: 2=full, 1=after partial TP, 0=flat
+        pinball_contracts = latest_pinball.get("contracts", 0)
+        if pinball_pos == 1:
+            target_contracts = pinball_contracts   # +1 or +2
+        elif pinball_pos == -1:
+            target_contracts = -pinball_contracts  # -1 or -2
+        else:
+            target_contracts = 0
 
-        # --- Scan ALL new partial TPs since last call ---
-        new_tp_rows = result[result["partial_tp"] == True]
-        if self._last_partial_tp_ts is not None:
-            new_tp_rows = new_tp_rows[new_tp_rows.index > self._last_partial_tp_ts]
+        if target_contracts != self._ib_position:
+            qty_diff = target_contracts - self._ib_position
 
-        for ts, last in new_tp_rows.iterrows():
-            pl  = float(last.get("pl", 0.0))
-            pos = str(last.get("position", "flat"))
+            # Determine action
+            if qty_diff > 0:
+                action = "BUY"
+                qty = qty_diff
+            else:
+                action = "SELL"
+                qty = abs(qty_diff)
+
+            # Safety: never exceed 2 contracts
+            if abs(target_contracts) > 2:
+                log.error("[Pinball] SAFETY: target %d exceeds max 2 — BLOCKING", target_contracts)
+                return
+
             price = float(minute_df["Close"].iloc[-1])
-            log.info("[TradingAlgo] PARTIAL TP   price=%.2f  pl=%.1f  (1 contract)", price, pl)
-            if pos == "long":
-                self._place_order("SELL", partial_tp=True)
-            elif pos == "short":
-                self._place_order("BUY", partial_tp=True)
-            self._last_partial_tp_ts = ts
+            is_liquidation = (target_contracts == 0)
+            is_partial = (abs(target_contracts) == 1 and abs(self._ib_position) == 2)
+
+            log.info("[Pinball] %s  mode=%s  action=%s  target=%d  ib_pos=%d  qty=%d  price=%.2f  pl=%.1f",
+                     pinball_action, pinball_mode, action, target_contracts, self._ib_position, qty, price, pinball_pl)
+            self._place_order(action, liquidate=is_liquidation, partial_tp=is_partial)
 
     # -- order execution ------------------------------------------------------
 
