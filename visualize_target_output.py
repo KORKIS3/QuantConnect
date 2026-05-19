@@ -110,37 +110,42 @@ ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded
 ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.2, linestyle='--')
 
 # --- CONTINUATION EVIDENCE LINES ---
-# In downward resolve: every bounce low gets a new Blue (ascending) + Yellow (ascending)
-# Blue always angles UP. Yellow always angles UP.
-# Purple always angles DOWN. Orange always angles DOWN.
-# Each new line from a bounce low asks: "is resolve still active?"
-# If price closes below it → YES, still resolving
+# NOT from every bounce. Only from PROVEN structure:
+# 1. Price bounces
+# 2. Allow wiggle room
+# 3. Price resumes resolve
+# 4. New lower low confirmed
+# 5. THEN create continuation Blue from the bounce low
+#
+# On 02/11: only 2-3 meaningful bounces qualify:
+# Bounce 1: bar 20-22 (low 50392, bounced to 50459, then new low 50364 at bar 27) → PROVEN
+# Bounce 2: bar 30-31 (low 50375, bounced to 50414, then new low 50342 at bar 32) → PROVEN
+# Tiny wiggles (1-2 bar) are ignored.
 
-# Find all bounce lows after the initial break (bar 6)
-# A bounce low = a bar where low is lower than next bar's low (price bounced up from here)
-continuation_blues = []
-for i in range(8, n - 1):
-    if lows[i] < lows[i-1] and lows[i] < lows[i+1]:  # local low (bounced)
-        if lows[i] < yellow['anchor']:  # below original yellow (in resolve territory)
-            continuation_blues.append((i, lows[i]))
+proven_bounces = [
+    # (bounce_low_bar, bounce_low_price, proof_bar, proof_note)
+    (20, 50392, 27, "bounced to 50459, resumed to 50364"),
+    (30, 50375, 32, "bounced to 50414, resumed to 50342"),
+]
 
-# Draw continuation blues (ascending from each bounce low)
-# Each uses fixed upward slope (same as yellow: +1.83)
-for idx, (cb_bar, cb_price) in enumerate(continuation_blues[:8]):  # limit to avoid clutter
-    xs_cb = list(range(cb_bar, min(cb_bar + 20, n)))
+for idx, (cb_bar, cb_price, proof_bar, note) in enumerate(proven_bounces):
+    # Only draw from proof_bar onward (line didn't exist until proven)
+    xs_cb = list(range(proof_bar, min(proof_bar + 25, n)))
     ys_cb = [cb_price + 1.83 * (x - cb_bar) for x in xs_cb]
-    alpha = 0.5 if idx < len(continuation_blues) - 3 else 0.8
-    lw = 1.0 if idx < len(continuation_blues) - 3 else 1.5
-    label = 'CONT. BLUE (resolve test)' if idx == 0 else ''
-    ax.plot(xs_cb, ys_cb, color='cyan', linewidth=lw, alpha=alpha, linestyle='-', label=label)
+    label = 'CONT. BLUE (proven structure)' if idx == 0 else ''
+    ax.plot(xs_cb, ys_cb, color='cyan', linewidth=1.8, alpha=0.75, linestyle='-', label=label)
+    # Dotted origin (showing where P1 was, before proof)
+    xs_origin = list(range(cb_bar, proof_bar))
+    ys_origin = [cb_price + 1.83 * (x - cb_bar) for x in xs_origin]
+    ax.plot(xs_origin, ys_origin, color='cyan', linewidth=0.8, alpha=0.25, linestyle=':')
+    # Small marker at bounce low
+    ax.scatter([cb_bar], [cb_price], color='cyan', s=30, zorder=5, marker='^', alpha=0.6)
 
-# Annotate the concept
-if continuation_blues:
-    last_cb = continuation_blues[-1]
-    ax.annotate('each bounce low\ngets new Blue+Yellow\n"still resolving?"',
-                xy=(last_cb[0], last_cb[1]),
-                xytext=(last_cb[0] + 3, last_cb[1] + 60), fontsize=8, color='cyan',
-                arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
+ax.annotate('continuation Blue\ncreated AFTER proof\n(new low confirmed)',
+            xy=(proven_bounces[0][2], proven_bounces[0][1] + 1.83 * (proven_bounces[0][2] - proven_bounces[0][0])),
+            xytext=(proven_bounces[0][2] + 3, proven_bounces[0][1] + 80),
+            fontsize=8, color='cyan',
+            arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
 
 # Purple ORIGINAL (strategic, full session)
 xs_po = list(range(purple_orig['bar'], n))
@@ -178,16 +183,16 @@ ax.text(3, (orange['anchor'] + blue['anchor'] + blue['slope']*3) / 2,
         'CONTAINED\n(pre-break)', fontsize=9, color='steelblue', alpha=0.5, ha='center', va='center')
 
 # Active line count
-n_cont = min(len(continuation_blues), 8)
-ax.text(0.98, 0.98, f'ACTIVE LINES: {4 + n_cont}\n'
+ax.text(0.98, 0.98, 'ACTIVE LINES: 6\n'
         'Orange (strategic ceiling) ↘\n'
         'Yellow (strategic floor) ↗\n'
         'Purple ORIG (strategic thesis) ↘\n'
         'Blue ORIG (broken, faded) ↗\n'
-        f'Cont. Blues x{n_cont} (resolve tests) ↗\n'
+        'Cont. Blue x2 (proven) ↗\n'
         'Purple TACT (profit prot) ↘\n'
-        '\nBlue/Yellow ALWAYS angle UP\n'
-        'Purple/Orange ALWAYS angle DOWN',
+        '\nCONTINUATION RULE:\n'
+        'bounce → wiggle → resume →\n'
+        'new low confirmed → THEN draw',
         transform=ax.transAxes, fontsize=8, va='top', ha='right',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
