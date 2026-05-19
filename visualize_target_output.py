@@ -77,24 +77,16 @@ for i in range(n):
                      facecolor=color, edgecolor='#333', linewidth=0.4)
     ax.add_patch(rect)
 
-# --- Draw ZONES (shaded regions) ---
+# --- Draw ZONES (only meaningful structural regions) ---
 
-# Zone 1: Above Orange = "Breakout zone" (empty on this day)
-# Zone 2: Between Orange and Blue/Purple = "Compression zone" (early session)
-# Zone 3: Below Yellow = "Resolve zone" (where price goes on this day)
-
-# Compression zone (between orange and blue, bars 0-6)
+# Compression zone: between Orange and Blue BEFORE break (bars 0-6)
+# This represents: "price is contained between strategic boundaries"
+# Scott concept: price living inside the quadrant
 for i in range(0, 7):
     o_val = orange['anchor'] + orange['slope'] * (i - orange['bar'])
     b_val = blue['anchor'] + blue['slope'] * (i - blue['bar'])
     ax.fill_between([i-0.5, i+0.5], [b_val, b_val], [o_val, o_val],
-                    color='lightblue', alpha=0.08)
-
-# Resolve zone (below yellow, bars 14+)
-for i in range(14, n):
-    y_val = yellow['anchor'] + yellow['slope'] * (i - yellow['bar'])
-    ax.fill_between([i-0.5, i+0.5], [y_val - 200, y_val - 200], [y_val, y_val],
-                    color='#ffcdd2', alpha=0.08)
+                    color='lightblue', alpha=0.06)
 
 # --- Draw ACTIVE LINES ---
 
@@ -112,10 +104,43 @@ ax.plot(xs, ys, color='#FFD700', linewidth=3, alpha=0.9, label=yellow['label'])
 xs_active = list(range(blue['bar'], blue['break_bar'] + 1))
 ys_active = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_active]
 ax.plot(xs_active, ys_active, color='deepskyblue', linewidth=2.5, alpha=0.9, label=blue['label'])
-# After break: faded extension
+# After break: faded extension (line persists in memory, authority decayed)
 xs_faded = list(range(blue['break_bar'], min(n, blue['break_bar'] + 15)))
 ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded]
-ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.25, linestyle='--')
+ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.2, linestyle='--')
+
+# --- CONTINUATION EVIDENCE LINES ---
+# In downward resolve: every bounce low gets a new Blue (ascending) + Yellow (ascending)
+# Blue always angles UP. Yellow always angles UP.
+# Purple always angles DOWN. Orange always angles DOWN.
+# Each new line from a bounce low asks: "is resolve still active?"
+# If price closes below it → YES, still resolving
+
+# Find all bounce lows after the initial break (bar 6)
+# A bounce low = a bar where low is lower than next bar's low (price bounced up from here)
+continuation_blues = []
+for i in range(8, n - 1):
+    if lows[i] < lows[i-1] and lows[i] < lows[i+1]:  # local low (bounced)
+        if lows[i] < yellow['anchor']:  # below original yellow (in resolve territory)
+            continuation_blues.append((i, lows[i]))
+
+# Draw continuation blues (ascending from each bounce low)
+# Each uses fixed upward slope (same as yellow: +1.83)
+for idx, (cb_bar, cb_price) in enumerate(continuation_blues[:8]):  # limit to avoid clutter
+    xs_cb = list(range(cb_bar, min(cb_bar + 20, n)))
+    ys_cb = [cb_price + 1.83 * (x - cb_bar) for x in xs_cb]
+    alpha = 0.5 if idx < len(continuation_blues) - 3 else 0.8
+    lw = 1.0 if idx < len(continuation_blues) - 3 else 1.5
+    label = 'CONT. BLUE (resolve test)' if idx == 0 else ''
+    ax.plot(xs_cb, ys_cb, color='cyan', linewidth=lw, alpha=alpha, linestyle='-', label=label)
+
+# Annotate the concept
+if continuation_blues:
+    last_cb = continuation_blues[-1]
+    ax.annotate('each bounce low\ngets new Blue+Yellow\n"still resolving?"',
+                xy=(last_cb[0], last_cb[1]),
+                xytext=(last_cb[0] + 3, last_cb[1] + 60), fontsize=8, color='cyan',
+                arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
 
 # Purple ORIGINAL (strategic, full session)
 xs_po = list(range(purple_orig['bar'], n))
@@ -148,21 +173,22 @@ ax.annotate('TACTICAL PURPLE\ncreated here\n(structure proven)', xy=(32, ys_pp[0
             xytext=(35, ys_pp[0] + 60), fontsize=8, color='magenta',
             arrowprops=dict(arrowstyle='->', color='magenta'))
 
-# Zone labels
-ax.text(3, orange['anchor'] + 20, 'CEILING ZONE', fontsize=9, color='orange', alpha=0.7, ha='center')
+# Zone label (only the one that corresponds to a real concept)
 ax.text(3, (orange['anchor'] + blue['anchor'] + blue['slope']*3) / 2,
-        'COMPRESSION\nZONE', fontsize=10, color='steelblue', alpha=0.6, ha='center', va='center')
-ax.text(40, yellow['anchor'] + yellow['slope'] * 40 - 80,
-        'RESOLVE ZONE\n(bearish)', fontsize=10, color='red', alpha=0.5, ha='center')
+        'CONTAINED\n(pre-break)', fontsize=9, color='steelblue', alpha=0.5, ha='center', va='center')
 
 # Active line count
-ax.text(0.98, 0.98, 'ACTIVE LINES: 5\n'
-        'Orange (strategic ceiling)\n'
-        'Yellow (strategic floor)\n'
-        'Purple ORIG (strategic thesis)\n'
-        'Blue (broken, faded)\n'
-        'Purple TACT (profit prot, bar 32+)',
-        transform=ax.transAxes, fontsize=9, va='top', ha='right',
+n_cont = min(len(continuation_blues), 8)
+ax.text(0.98, 0.98, f'ACTIVE LINES: {4 + n_cont}\n'
+        'Orange (strategic ceiling) ↘\n'
+        'Yellow (strategic floor) ↗\n'
+        'Purple ORIG (strategic thesis) ↘\n'
+        'Blue ORIG (broken, faded) ↗\n'
+        f'Cont. Blues x{n_cont} (resolve tests) ↗\n'
+        'Purple TACT (profit prot) ↘\n'
+        '\nBlue/Yellow ALWAYS angle UP\n'
+        'Purple/Orange ALWAYS angle DOWN',
+        transform=ax.transAxes, fontsize=8, va='top', ha='right',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
 # --- AXIS ---
