@@ -8,6 +8,71 @@ This document defines architecture only. No implementation code until approved.
 
 ---
 
+## APPROVED ARCHITECTURE DECISIONS (Scott-approved 2026-05-19)
+
+### Decision 1: P2 Confirmation Logic — APPROVED (D modified)
+
+P2 confirmation requires ALL of:
+- One-bar swing confirmation (high[j] > high[j-1] AND high[j] > high[j+1])
+- Minimum 10-point threshold from neighbors
+- P2 must remain OUTSIDE all CLOSED bars
+
+Purpose: Prevent tiny noise pivots from becoming structure. P2 must represent meaningful structure. Fast enough to react, filtered enough to avoid noise.
+
+### Decision 2: Wick Adjustment Logic — APPROVED (C modified)
+
+When wick pierces line and candle CLOSE remains inside:
+- Adjust line AFTER CLOSE only
+- Find the MINIMUM slope adjustment required so line again encompasses ALL CLOSED bars
+- Preserve original geometry as much as possible
+- DO NOT recalculate best fit
+- DO NOT flatten excessively
+
+Goal: Smallest legal adjustment. Not a new regression fit.
+
+### Decision 3: Orange/Yellow Retirement — APPROVED (Modified B)
+
+When new session high forms:
+- Create new Orange line from new high
+- Retire previous Orange (active=False)
+- BUT preserve historical structure (do NOT overwrite)
+
+When new session low forms:
+- Create new Yellow line from new low
+- Retire previous Yellow (active=False)
+- BUT preserve historical structure
+
+Reason: Previous Orange/Yellow structure may matter later for touch count, authority, break significance, historical context.
+
+### Decision 4: Touch Proximity — APPROVED (D modified)
+
+Touch threshold is DYNAMIC:
+```
+proximity_threshold = max(10, 0.5 * average_bar_range_over_lookback)
+```
+
+Reason: Fixed thresholds distort touch counts. Quiet days use 10 pts minimum. Volatile days expand naturally. Touch counting reflects market conditions.
+
+### Decision 5: Rescue Line Creation — APPROVED (B)
+
+Create rescue line ONLY IF:
+- Parent touch_count >= 3
+- AND confirmed structural shift exists (swing in resolve direction)
+- AND price resolved away from parent structure
+
+Rescue anchor: second touch point of parent line.
+
+Additional rule: Parent line ALWAYS retains higher authority. Rescue lines never exceed parent authority.
+
+### CRITICAL IMPLEMENTATION RULE
+
+Do not silently simplify architecture.
+Do not replace frozen rays with rolling regression.
+Do not infer missing behavior.
+If implementation requires additional assumptions: STOP AND ASK FIRST.
+
+---
+
 ## 1. Data Model — Line Object
 
 Every active line is represented as:
@@ -212,11 +277,14 @@ ON each new CLOSED bar:
 
 ```
 Definition of a TOUCH:
-    Price approaches line within proximity_threshold (e.g., 5 pts)
+    Price approaches line within proximity_threshold
     AND
     Price then moves AWAY from line (next bar's close is further from line)
     AND
     No confirmed close beyond line occurred
+
+    proximity_threshold = max(10, 0.5 * average_bar_range_over_lookback)
+    # Dynamic: adapts to volatility. Minimum 10 pts.
 
 ON each CLOSED bar:
     distance = abs(relevant_price - line_value)
@@ -463,10 +531,9 @@ The new engine PASSES if and only if:
 
 ## Approval Required
 
-This blueprint must be reviewed and approved before implementation begins.
-Questions for Scott:
-1. Is the P2 confirmation logic correct? (swing high/low confirmed 1 bar later)
-2. Is the wick adjustment rule correct? (adjust slope to encompass, not invalidate)
-3. Should orange/yellow lines also retire, or are they permanent for the session?
-4. What is the proximity threshold for touch counting? (proposed: 5 pts)
-5. Should rescue lines be created automatically or only on specific conditions?
+All 5 architecture questions have been APPROVED by Scott (2026-05-19).
+See "APPROVED ARCHITECTURE DECISIONS" section at top of document.
+No further approval needed for implementation to begin.
+
+Remaining open items (ask if encountered during implementation):
+- None currently. All decisions are locked.
