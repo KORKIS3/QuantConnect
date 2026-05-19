@@ -31,42 +31,29 @@ opens = data['Open'].values
 
 # --- SIMULATE FROZEN RAY ENGINE ---
 
-# Orange: from session high, fixed -2.5 degree slope
-# Yellow: from session low, fixed +2.5 degree slope
-# Blue: P1=session low, P2=first confirmed higher swing low
-# Purple: P1=session high, P2=first confirmed lower swing high
+# CORRECTED: Each Orange/Yellow is FROZEN and NEVER moves.
+# New session extremes create NEW independent rays. Old ones are preserved.
 
-# Track session extremes
-session_high = highs[0]
-session_high_bar = 0
-session_low = lows[0]
-session_low_bar = 0
-
-# Find session high
-for i in range(n):
-    if highs[i] > session_high:
-        session_high = highs[i]
-        session_high_bar = i
-
-# Orange/Yellow: fixed slope from extremes
-# Convert 2.5 degrees to pts/bar (approximate: 1 degree ~ 0.73 pts/bar for YM at this scale)
 pts_per_degree = 0.73
-orange_slope = -2.5 * pts_per_degree  # descending
-yellow_slope = +2.5 * pts_per_degree  # ascending
+orange_slope = -2.5 * pts_per_degree
+yellow_slope = +2.5 * pts_per_degree
 
-# Compute orange/yellow values
-orange_vals = np.zeros(n)
-yellow_vals = np.zeros(n)
+# Track ALL oranges and yellows (each from a session extreme)
+oranges = []  # list of (p1_price, p1_bar)
+yellows = []  # list of (p1_price, p1_bar)
+
 curr_high = highs[0]; curr_high_bar = 0
 curr_low = lows[0]; curr_low_bar = 0
+oranges.append((highs[0], 0))
+yellows.append((lows[0], 0))
 
-for i in range(n):
+for i in range(1, n):
     if highs[i] > curr_high:
         curr_high = highs[i]; curr_high_bar = i
+        oranges.append((highs[i], i))
     if lows[i] < curr_low:
         curr_low = lows[i]; curr_low_bar = i
-    orange_vals[i] = curr_high + orange_slope * (i - curr_high_bar)
-    yellow_vals[i] = curr_low + yellow_slope * (i - curr_low_bar)
+        yellows.append((lows[i], i))
 
 # Blue: P1 = session low (bar 0 low = 50459), find P2 = first confirmed higher swing low
 blue_p1 = lows[0]; blue_p1_bar = 0
@@ -95,11 +82,11 @@ if blue_slope is not None:
         blue_vals[i] = blue_p1 + blue_slope * (i - blue_p1_bar)
 
 # Purple: P1 = session high, find P2 = first confirmed lower swing high
-purple_p1 = session_high; purple_p1_bar = session_high_bar
+purple_p1 = curr_high; purple_p1_bar = curr_high_bar
 purple_p2 = None; purple_p2_bar = None; purple_slope = None
 purple_vals = np.full(n, np.nan)
 
-for i in range(session_high_bar + 2, n):
+for i in range(curr_high_bar + 2, n):
     if purple_p2 is not None:
         break
     j = i - 1
@@ -129,10 +116,12 @@ if blue_slope is not None:
             signals.append({'bar': i, 'type': 'SELL', 'reason': 'BLUE_BREAK', 'price': closes[i]})
             break
 
-# Yellow break: first bar where close < yellow line
+# Yellow #1 break: first bar where close < yellow #1 line
+y1_price, y1_bar = yellows[0]
 for i in range(1, n):
-    if closes[i] < yellow_vals[i]:
-        signals.append({'bar': i, 'type': 'SELL_CONFIRM', 'reason': 'YELLOW_BREAK', 'price': closes[i]})
+    y1_val = y1_price + yellow_slope * (i - y1_bar)
+    if closes[i] < y1_val:
+        signals.append({'bar': i, 'type': 'SELL_CONFIRM', 'reason': 'YELLOW#1_BREAK', 'price': closes[i]})
         break
 
 # --- PLOT ---
@@ -151,11 +140,25 @@ for i in range(n):
                      facecolor=color, edgecolor='black', linewidth=0.5)
     ax.add_patch(rect)
 
-# Orange line
-ax.plot(range(n), orange_vals, color='orange', linewidth=2, label='Orange (rank 1)', linestyle='-')
+# Orange lines (each frozen from its session high)
+for idx, (p1, bar) in enumerate(oranges):
+    x_vals = list(range(bar, n))
+    y_vals = [p1 + orange_slope * (x - bar) for x in x_vals]
+    is_latest = (idx == len(oranges) - 1)
+    style = '-' if is_latest else '--'
+    alpha = 1.0 if is_latest else 0.4
+    ax.plot(x_vals, y_vals, color='orange', linewidth=2 if is_latest else 1, 
+            linestyle=style, alpha=alpha, label=f'Orange #{idx+1}' if idx == 0 else '')
 
-# Yellow line
-ax.plot(range(n), yellow_vals, color='gold', linewidth=2, label='Yellow (rank 1)', linestyle='-')
+# Yellow lines (each frozen from its session low)
+for idx, (p1, bar) in enumerate(yellows):
+    x_vals = list(range(bar, n))
+    y_vals = [p1 + yellow_slope * (x - bar) for x in x_vals]
+    is_latest = (idx == len(yellows) - 1)
+    style = '-' if is_latest else '--'
+    alpha = 1.0 if is_latest else 0.4
+    ax.plot(x_vals, y_vals, color='gold', linewidth=2 if is_latest else 1,
+            linestyle=style, alpha=alpha, label=f'Yellow #{idx+1}' if idx == 0 else '')
 
 # Blue line
 if blue_slope is not None:
@@ -169,7 +172,7 @@ if purple_slope is not None:
     ax.scatter([purple_p1_bar], [purple_p1], color='purple', s=100, zorder=5, marker='v')
     ax.scatter([purple_p2_bar], [purple_p2], color='purple', s=100, zorder=5, marker='v')
 else:
-    ax.text(n * 0.7, session_high - 20, 'PURPLE: PROVISIONAL\n(no valid P2 found)', 
+    ax.text(n * 0.7, curr_high - 20, 'PURPLE: PROVISIONAL\n(no valid P2 found)', 
             color='purple', fontsize=10, ha='center')
 
 # Signal markers
@@ -195,15 +198,17 @@ ax.grid(True, alpha=0.3)
 ax.set_xlim(-1, n + 1)
 
 # Add text box with line state
-info = f"SESSION HIGH: {session_high:.0f} (bar {session_high_bar})\n"
-info += f"SESSION LOW: {curr_low:.0f} (bar {curr_low_bar})\n"
+info = f"FROZEN RAY MODEL (corrected)\n"
+info += f"Oranges: {len(oranges)} (from successive highs)\n"
+info += f"Yellows: {len(yellows)} (from successive lows)\n"
 if blue_slope:
     p2_str = f"{blue_p2:.0f}" if blue_p2 else "NONE"
     info += f"BLUE: P1={blue_p1:.0f} P2={p2_str} slope={blue_slope:.1f}/bar\n"
 else:
     info += "BLUE: PROVISIONAL\n"
 info += f"PURPLE: {'FROZEN' if purple_slope else 'PROVISIONAL (no valid P2)'}\n"
-info += f"SIGNALS: {len(signals)}"
+info += f"SIGNALS: {len(signals)}\n"
+info += f"Lines are CONTINUATION EVIDENCE\nnot support/resistance"
 ax.text(0.02, 0.02, info, transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
