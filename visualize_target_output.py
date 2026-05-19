@@ -46,11 +46,19 @@ yellow = {'anchor': 50459, 'bar': 0, 'slope': +1.8, 'label': 'YELLOW (strategic 
 blue = {'anchor': 50459, 'bar': 0, 'slope': +9.0, 'label': 'BLUE (original support)',
         'break_bar': 6, 'break_note': 'BROKEN: close 50489 < blue 50513'}
 
-# PURPLE (profit protection): Created LATE (bar ~32) after bounces proved structure
-# From first failed bounce peak (bar 16, high 50544)
-# Containment slope: -8.8 pts/bar (stays above all highs)
-purple_pp = {'anchor': 50544, 'bar': 16, 'slope': -8.8,
-             'label': 'PURPLE (profit protection)', 'visible_from': 32}
+# PURPLE ORIGINAL (strategic): From session high, containment slope
+# P1 = 50585 (bar 2, session high)
+# Min legal slope = -2.93 (binding: bar 16 high 50544)
+# Answers: "Am I still right?" (thesis line)
+purple_orig = {'anchor': 50585, 'bar': 2, 'slope': -2.93,
+               'label': 'PURPLE ORIGINAL (strategic thesis)'}
+
+# PURPLE TACTICAL (profit protection): From first failed bounce
+# P1 = 50544 (bar 16, bounce peak)
+# Min legal slope = -8.80 (binding: bar 31 high 50412)
+# Answers: "How much profit do I protect?"
+purple_pp = {'anchor': 50544, 'bar': 16, 'slope': -8.80,
+             'label': 'PURPLE TACTICAL (profit protection)', 'visible_from': 32}
 
 # ============================================================
 # ZONES — Regions between active lines
@@ -109,14 +117,19 @@ xs_faded = list(range(blue['break_bar'], min(n, blue['break_bar'] + 15)))
 ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded]
 ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.25, linestyle='--')
 
-# Purple profit protection (only visible from bar 32)
+# Purple ORIGINAL (strategic, full session)
+xs_po = list(range(purple_orig['bar'], n))
+ys_po = [purple_orig['anchor'] + purple_orig['slope'] * (x - purple_orig['bar']) for x in xs_po]
+ax.plot(xs_po, ys_po, color='purple', linewidth=2.5, alpha=0.85, label=purple_orig['label'])
+
+# Purple TACTICAL (profit protection, only visible from bar 32)
 xs_pp = list(range(purple_pp['visible_from'], n))
 ys_pp = [purple_pp['anchor'] + purple_pp['slope'] * (x - purple_pp['bar']) for x in xs_pp]
-ax.plot(xs_pp, ys_pp, color='purple', linewidth=2, alpha=0.85, label=purple_pp['label'])
+ax.plot(xs_pp, ys_pp, color='magenta', linewidth=2, alpha=0.8, linestyle='-', label=purple_pp['label'])
 # Dotted extension showing where it came from
 xs_origin = list(range(purple_pp['bar'], purple_pp['visible_from']))
 ys_origin = [purple_pp['anchor'] + purple_pp['slope'] * (x - purple_pp['bar']) for x in xs_origin]
-ax.plot(xs_origin, ys_origin, color='purple', linewidth=1, alpha=0.2, linestyle=':')
+ax.plot(xs_origin, ys_origin, color='magenta', linewidth=1, alpha=0.2, linestyle=':')
 
 # --- ANNOTATIONS ---
 
@@ -131,9 +144,9 @@ ax.annotate('YELLOW BREAK\n(max conviction)', xy=(14, closes[14]),
             arrowprops=dict(arrowstyle='->', color='#B8860B'))
 
 # Profit protection creation
-ax.annotate('PROFIT PROTECTION\ncreated here\n(structure proven)', xy=(32, ys_pp[0]),
-            xytext=(35, ys_pp[0] + 60), fontsize=8, color='purple',
-            arrowprops=dict(arrowstyle='->', color='purple'))
+ax.annotate('TACTICAL PURPLE\ncreated here\n(structure proven)', xy=(32, ys_pp[0]),
+            xytext=(35, ys_pp[0] + 60), fontsize=8, color='magenta',
+            arrowprops=dict(arrowstyle='->', color='magenta'))
 
 # Zone labels
 ax.text(3, orange['anchor'] + 20, 'CEILING ZONE', fontsize=9, color='orange', alpha=0.7, ha='center')
@@ -143,11 +156,12 @@ ax.text(40, yellow['anchor'] + yellow['slope'] * 40 - 80,
         'RESOLVE ZONE\n(bearish)', fontsize=10, color='red', alpha=0.5, ha='center')
 
 # Active line count
-ax.text(0.98, 0.98, 'ACTIVE LINES: 4\n'
-        'Orange (strategic)\n'
-        'Yellow (strategic)\n'
-        'Blue (broken → faded)\n'
-        'Purple PP (from bar 32)',
+ax.text(0.98, 0.98, 'ACTIVE LINES: 5\n'
+        'Orange (strategic ceiling)\n'
+        'Yellow (strategic floor)\n'
+        'Purple ORIG (strategic thesis)\n'
+        'Blue (broken, faded)\n'
+        'Purple TACT (profit prot, bar 32+)',
         transform=ax.transAxes, fontsize=9, va='top', ha='right',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
