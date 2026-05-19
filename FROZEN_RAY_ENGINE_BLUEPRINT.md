@@ -30,19 +30,37 @@ When wick pierces line and candle CLOSE remains inside:
 
 Goal: Smallest legal adjustment. Not a new regression fit.
 
-### Decision 3: Orange/Yellow Retirement — APPROVED (Modified B)
+### Decision 3: Orange/Yellow Retirement — APPROVED (Modified B, CLARIFIED)
 
-When new session high forms:
-- Create new Orange line from new high
-- Retire previous Orange (active=False)
-- BUT preserve historical structure (do NOT overwrite)
+**CRITICAL CLARIFICATION (2026-05-19, post-visual review):**
 
-When new session low forms:
-- Create new Yellow line from new low
-- Retire previous Yellow (active=False)
-- BUT preserve historical structure
+Orange/Yellow are NOT trailing support/resistance. They are CONTINUATION EVIDENCE.
 
-Reason: Previous Orange/Yellow structure may matter later for touch count, authority, break significance, historical context.
+Correct behavior:
+- Session low forms → Create ONE Yellow ray, fixed 2.5° angle, FREEZE
+- That ray NEVER moves. It is permanent structure.
+- Only create a NEW yellow ray if price later creates an entirely NEW session low
+- Old yellow: retire but PRESERVE in history (do not delete)
+- New yellow: starts from newest low, independent ray
+
+Purpose of Yellow:
+- Yellow is NOT support
+- Yellow is continuation evidence
+- Break below Yellow #1: possible resolve beginning
+- Break below newer Yellow #2: continuation strengthening
+- Failure to break newer Yellow: continuation weakening
+
+Same logic applies to Orange (from session highs):
+- Orange is NOT resistance
+- Orange is continuation evidence for bearish resolve
+- Break above Orange #1: possible bullish resolve
+- Break above newer Orange: bullish continuation strengthening
+
+Blue/Purple do NOT "move":
+- Original structure remains frozen permanently
+- When price resolves away: spawn rescue/secondary lines
+- Keep hierarchy intact
+- Do not mutate original structure
 
 ### Decision 4: Touch Proximity — APPROVED (D modified)
 
@@ -106,28 +124,35 @@ Line {
 ## 2. P1 Anchor Logic
 
 ### Orange Line
-- P1 = session high (highest high seen so far)
-- Updates if new session high is made
-- When P1 updates, line resets (new line from new high)
+- P1 = session high at time of creation
+- FROZEN immediately with fixed 2.5° slope. NEVER moves.
+- When new session high forms: create a NEW Orange from new high. Old Orange is RETIRED (preserved).
+- Orange is CONTINUATION EVIDENCE, not resistance.
+- Multiple retired Oranges may exist from successive session highs.
 
 ### Yellow Line
-- P1 = session low (lowest low seen so far)
-- Updates if new session low is made
-- When P1 updates, line resets (new line from new low)
+- P1 = session low at time of creation
+- FROZEN immediately with fixed 2.5° slope. NEVER moves.
+- When new session low forms: create a NEW Yellow from new low. Old Yellow is RETIRED (preserved).
+- Yellow is CONTINUATION EVIDENCE, not support.
+- Multiple retired Yellows may exist from successive session lows.
 
 ### Original Purple Line
-- P1 = session high (same as orange anchor)
+- P1 = session high (same bar as first Orange)
 - Created at session start
-- Does NOT move when new session high is made (that creates a NEW purple, old one may retire)
+- NEVER moves. Original structure is permanent.
+- When price resolves away: spawn secondary/rescue lines. Do NOT mutate original.
 
 ### Original Blue Line
-- P1 = session low (same as yellow anchor)
+- P1 = session low (same bar as first Yellow)
 - Created at session start
-- Does NOT move when new session low is made
+- NEVER moves. Original structure is permanent.
+- When price resolves away: spawn secondary/rescue lines. Do NOT mutate original.
 
 ### Secondary/Rescue Lines
 - P1 = second touch point of parent line
 - Created only after price resolves away from parent
+- Lower authority than parent. Parent structure preserved.
 
 ---
 
