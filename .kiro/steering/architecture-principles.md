@@ -30,6 +30,36 @@ description: "Final architecture principles: quadrant-first, 4-layer separation,
 A line does NOT have permanent fixed purpose.
 The same line changes role depending on market context.
 
+### FAILED ATTEMPTS ARE EVIDENCE FOR THE OTHER SIDE
+
+This is the most critical evidence rule:
+- If bears repeatedly attempt lower and CANNOT close below yellow → bullish evidence increases
+- If bulls repeatedly attempt higher and CANNOT maintain structure → bearish evidence increases
+
+Scott is not measuring line interactions. Scott is measuring WHICH SIDE WON THE ATTEMPT.
+
+Engine flow: Attempt → Outcome → Winner → Belief Shift
+
+A failed break is NOT neutral. It is evidence for the opposing thesis.
+Multiple failed attempts in the same direction = strong evidence for the other side.
+
+### Probe Trades
+
+Trades are not only for profit. Small probe trades gather information.
+Risk small + information large = valid trade.
+FRED should be capable of low-risk probes at structural boundaries to test thesis.
+
+### State Labels vs Argument Evaluation
+
+FRED currently labels states: "I am in BEARISH_CONVICTION"
+Scott evaluates arguments: "Which side is winning right now?"
+
+The engine must track:
+- Who is attempting (bulls or bears)
+- What they're attempting (break a line, hold structure, reclaim)
+- Whether they succeeded or failed
+- What that outcome means for the evolving argument
+
 Example — Continuation Blue during downward resolve:
 - Initial role: "Is bearish resolve still healthy?"
 - Price closes below → bearish conviction increases
