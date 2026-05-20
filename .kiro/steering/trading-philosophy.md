@@ -1,3 +1,8 @@
+---
+inclusion: auto
+description: "Trading philosophy from elite traders: risk management, conviction sizing, systematic thinking, trend following"
+---
+
 # Trading Philosophy — Principles from Elite Traders
 
 This document captures key principles from the world's best traders and how they apply

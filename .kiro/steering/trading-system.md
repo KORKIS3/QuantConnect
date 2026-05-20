@@ -1,3 +1,8 @@
+---
+inclusion: auto
+description: "YM Futures Trading System project context: goals, config, architecture, session log, data paths"
+---
+
 # YM Futures Trading System — Project Context
 
 ## Goal

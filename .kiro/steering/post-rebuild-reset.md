@@ -1,5 +1,6 @@
 ---
 inclusion: auto
+description: "Post-rebuild reset: all prior market classifications invalid after frozen-ray engine, recompute from zero"
 ---
 
 # POST-REBUILD RESET — Classification Studies Invalid

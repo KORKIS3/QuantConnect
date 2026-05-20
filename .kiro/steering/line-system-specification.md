@@ -1,5 +1,6 @@
 ---
 inclusion: auto
+description: "Frozen ray line system specification: containment rules, freeze behavior, hierarchy, touch counting"
 ---
 
 # FRED LINE SYSTEM SPECIFICATION

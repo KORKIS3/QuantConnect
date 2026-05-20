@@ -1,5 +1,6 @@
 ---
 inclusion: auto
+description: "Final architecture principles: quadrant-first, 4-layer separation, evidence accumulation, no line-cross signals"
 ---
 
 # FRED ARCHITECTURE PRINCIPLES — Final (Scott-approved 2026-05-19)

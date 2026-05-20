@@ -109,41 +109,59 @@ xs_faded = list(range(blue['break_bar'], min(n, blue['break_bar'] + 15)))
 ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded]
 ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.2, linestyle='--')
 
-# --- CONTINUATION EVIDENCE LINES ---
-# NOT from every bounce. Only from PROVEN structure:
-# 1. Price bounces
-# 2. Allow wiggle room
-# 3. Price resumes resolve
-# 4. New lower low confirmed
-# 5. THEN create continuation Blue from the bounce low
+# --- CONTINUATION EVIDENCE BLUES ---
+# Blue = support = BELOW price. Always ascending. Never through bars.
+# Created ONLY after structure proves continuation:
+#   bounce → wiggle → resume → new low confirmed → THEN visible
 #
-# On 02/11: only 2-3 meaningful bounces qualify:
-# Bounce 1: bar 20-22 (low 50392, bounced to 50459, then new low 50364 at bar 27) → PROVEN
-# Bounce 2: bar 30-31 (low 50375, bounced to 50414, then new low 50342 at bar 32) → PROVEN
-# Tiny wiggles (1-2 bar) are ignored.
+# Each line asks: "If price later closes beneath me, does that
+# strengthen conviction that downward resolve still exists?"
+#
+# P1 = low of the bounce point
+# Slope = ascending (+1.83, same as yellow)
+# Line must stay BELOW all closed-bar lows from P1 onward
+# Line becomes visible only AFTER new low beneath P1 is confirmed
 
-proven_bounces = [
-    # (bounce_low_bar, bounce_low_price, proof_bar, proof_note)
-    (20, 50392, 27, "bounced to 50459, resumed to 50364"),
-    (30, 50375, 32, "bounced to 50414, resumed to 50342"),
+# Scott's specified continuation points for 02/11:
+continuation_blues = [
+    # (p1_bar, p1_low, proof_bar, proof_description)
+    (21, 50386, 27, "bounced to 50430, then new low 50364 at bar 27"),
+    (27, 50364, 32, "bounced to 50400, then new low 50342 at bar 32"),
+    (44, 50140, 48, "bounced to 50176, then new low 50110 at bar 48"),
+    (51, 50078, 56, "bounced to ~50100, then new low 50028 at bar 56"),
 ]
 
-for idx, (cb_bar, cb_price, proof_bar, note) in enumerate(proven_bounces):
-    # Only draw from proof_bar onward (line didn't exist until proven)
-    xs_cb = list(range(proof_bar, min(proof_bar + 25, n)))
-    ys_cb = [cb_price + 1.83 * (x - cb_bar) for x in xs_cb]
-    label = 'CONT. BLUE (proven structure)' if idx == 0 else ''
-    ax.plot(xs_cb, ys_cb, color='cyan', linewidth=1.8, alpha=0.75, linestyle='-', label=label)
-    # Dotted origin (showing where P1 was, before proof)
-    xs_origin = list(range(cb_bar, proof_bar))
-    ys_origin = [cb_price + 1.83 * (x - cb_bar) for x in xs_origin]
-    ax.plot(xs_origin, ys_origin, color='cyan', linewidth=0.8, alpha=0.25, linestyle=':')
-    # Small marker at bounce low
-    ax.scatter([cb_bar], [cb_price], color='cyan', s=30, zorder=5, marker='^', alpha=0.6)
+for idx, (p1_bar, p1_low, proof_bar, note) in enumerate(continuation_blues):
+    # Line only visible from proof_bar onward
+    xs_visible = list(range(proof_bar, min(proof_bar + 20, n)))
+    # Ascending from P1 low — must stay BELOW all lows
+    # Compute max legal slope that stays below all lows from p1_bar onward
+    max_slope = 999.0
+    for i in range(p1_bar + 1, min(proof_bar + 20, n)):
+        if i >= n:
+            break
+        required = (lows[i] - p1_low) / (i - p1_bar)
+        if required < max_slope:
+            max_slope = required
+    # Must be positive (ascending)
+    slope = max(0.1, min(max_slope, 1.83))  # cap at yellow slope, floor at near-flat
 
-ax.annotate('continuation Blue\ncreated AFTER proof\n(new low confirmed)',
-            xy=(proven_bounces[0][2], proven_bounces[0][1] + 1.83 * (proven_bounces[0][2] - proven_bounces[0][0])),
-            xytext=(proven_bounces[0][2] + 3, proven_bounces[0][1] + 80),
+    ys_visible = [p1_low + slope * (x - p1_bar) for x in xs_visible]
+    label = 'CONT. BLUE (proven evidence)' if idx == 0 else ''
+    ax.plot(xs_visible, ys_visible, color='cyan', linewidth=1.8, alpha=0.75, linestyle='-', label=label)
+
+    # Dotted origin showing P1 location (before proof)
+    xs_origin = list(range(p1_bar, proof_bar))
+    ys_origin = [p1_low + slope * (x - p1_bar) for x in xs_origin]
+    ax.plot(xs_origin, ys_origin, color='cyan', linewidth=0.8, alpha=0.2, linestyle=':')
+
+    # P1 marker
+    ax.scatter([p1_bar], [p1_low], color='cyan', s=25, zorder=5, marker='^', alpha=0.6)
+
+# Annotation
+ax.annotate('continuation Blues:\nproven AFTER new low\nconfirms structure\n(always BELOW price)',
+            xy=(continuation_blues[1][2], continuation_blues[1][1] + 10),
+            xytext=(continuation_blues[1][2] + 4, continuation_blues[1][1] + 70),
             fontsize=8, color='cyan',
             arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
 
@@ -183,16 +201,17 @@ ax.text(3, (orange['anchor'] + blue['anchor'] + blue['slope']*3) / 2,
         'CONTAINED\n(pre-break)', fontsize=9, color='steelblue', alpha=0.5, ha='center', va='center')
 
 # Active line count
-ax.text(0.98, 0.98, 'ACTIVE LINES: 6\n'
+ax.text(0.98, 0.98, 'ACTIVE LINES: ~8\n'
         'Orange (strategic ceiling) ↘\n'
         'Yellow (strategic floor) ↗\n'
         'Purple ORIG (strategic thesis) ↘\n'
         'Blue ORIG (broken, faded) ↗\n'
-        'Cont. Blue x2 (proven) ↗\n'
+        'Cont. Blue x4 (proven evidence) ↗\n'
         'Purple TACT (profit prot) ↘\n'
-        '\nCONTINUATION RULE:\n'
-        'bounce → wiggle → resume →\n'
-        'new low confirmed → THEN draw',
+        '\nBLUE = support = BELOW price\n'
+        'PURPLE = resistance = ABOVE price\n'
+        'Lines record proven structure\n'
+        'NOT prediction',
         transform=ax.transAxes, fontsize=8, va='top', ha='right',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 

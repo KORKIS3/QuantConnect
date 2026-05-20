@@ -1,3 +1,8 @@
+---
+inclusion: auto
+description: "Data engineering principles: hypothesis testing, empirical evidence, no guessing, cold analytical approach"
+---
+
 # Data Engineering Principles
 
 ## Core Philosophy

@@ -1,5 +1,6 @@
 ---
 inclusion: auto
+description: "CHOP_TP and PARTIAL_TP are protected components — mandatory regression check on every experiment"
 ---
 
 # Pinball Protected Components
