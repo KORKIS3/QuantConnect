@@ -79,6 +79,9 @@ class EvidenceEngine:
         self.last_sig_high_bar = -99
         self.last_sig_high_price = -1e30
 
+        # Failed attempt tracking
+        self._failed_attempts: Dict[str, int] = {}
+
     def _belief_state(self) -> str:
         """Convert belief score to named state."""
         if self.belief_score >= 6:
@@ -287,6 +290,57 @@ class EvidenceEngine:
                     self._record_event(bar_idx, time_str, "REJECTION", line,
                                       "BULLISH", 1.0, +0.5,
                                       f"Bounced off {line.line_type} ({line_val:.0f})")
+
+        # --- FAILED ATTEMPT DETECTION ---
+        # Track repeated failures to break a line = evidence for OTHER side
+        # Bears failing at support = bullish. Bulls failing at resistance = bearish.
+        for line in self.structure.lines:
+            if line.status != "FROZEN":
+                continue
+            line_val = line.value_at(bar_idx)
+            threshold = self.structure._touch_threshold()
+
+            if line.direction == "SUPPORT":
+                # Bears attempting to break below support
+                # Failed attempt: low approached/pierced support but close held above
+                if low <= line_val + threshold and close > line_val:
+                    # Track consecutive failed attempts at this line
+                    key = f"bear_fail_{line.line_id}"
+                    self._failed_attempts[key] = self._failed_attempts.get(key, 0) + 1
+                    count = self._failed_attempts[key]
+
+                    # Graduated impact: 1=interesting, 2=trapped, 3+=argument shifting
+                    if count == 2:
+                        self._record_event(bar_idx, time_str, "FAILED_ATTEMPT", line,
+                                          "BULLISH", 1.5, +1.0,
+                                          f"Bears failed x{count} at {line.line_type} ({line_val:.0f}) — possible trapped bears")
+                    elif count >= 3:
+                        self._record_event(bar_idx, time_str, "FAILED_ATTEMPT", line,
+                                          "BULLISH", 2.0, +2.0,
+                                          f"Bears failed x{count} at {line.line_type} ({line_val:.0f}) — bulls winning argument")
+                elif close < line_val:
+                    # Bears succeeded — reset counter
+                    key = f"bear_fail_{line.line_id}"
+                    self._failed_attempts[key] = 0
+
+            elif line.direction == "RESISTANCE":
+                # Bulls attempting to break above resistance
+                if high >= line_val - threshold and close < line_val:
+                    key = f"bull_fail_{line.line_id}"
+                    self._failed_attempts[key] = self._failed_attempts.get(key, 0) + 1
+                    count = self._failed_attempts[key]
+
+                    if count == 2:
+                        self._record_event(bar_idx, time_str, "FAILED_ATTEMPT", line,
+                                          "BEARISH", 1.5, -1.0,
+                                          f"Bulls failed x{count} at {line.line_type} ({line_val:.0f}) — possible trapped bulls")
+                    elif count >= 3:
+                        self._record_event(bar_idx, time_str, "FAILED_ATTEMPT", line,
+                                          "BEARISH", 2.0, -2.0,
+                                          f"Bulls failed x{count} at {line.line_type} ({line_val:.0f}) — bears winning argument")
+                elif close > line_val:
+                    key = f"bull_fail_{line.line_id}"
+                    self._failed_attempts[key] = 0
 
         # --- Check for significant continuation structure ---
         self._check_continuation_structure(bar_idx, high, low, close, time_str)

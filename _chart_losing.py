@@ -1,4 +1,4 @@
-"""Interactive chart for 2026-03-31 (-1378 pts worst day)."""
+"""Interactive chart for 2026-03-31 with updated engine."""
 import pandas as pd, pytz, os
 import matplotlib
 matplotlib.use('TkAgg')
@@ -26,18 +26,18 @@ conviction = ConvictionEngine(persistence_bars=3)
 for bar, score, _ in evidence.belief_history:
     conviction.process_bar(bar, score)
 
-# Trades from audit: 5 trades, -1378 total
+# Trades from test
 trades = [
-    (4, 23, 'SHORT', -424, 'TRANSITION'),
-    (26, 74, 'LONG', -378, 'CONVICTION_LOST'),
-    (87, 109, 'SHORT', -624, 'CONVICTION_LOST'),
-    (194, 238, 'LONG', +38, 'CONVICTION_LOST'),
-    (372, 441, 'LONG', +10, 'CONVICTION_LOST'),
+    (15, 24, 'SHORT', -342, 'TRANSITION'),
+    (90, 109, 'SHORT', -484, 'CONVICTION_LOST'),
+    (195, 232, 'LONG', +238, 'CONVICTION_LOST'),
+    (250, 322, 'SHORT', -194, 'CONVICTION_LOST'),
+    (384, 402, 'LONG', +92, 'CONVICTION_LOST'),
 ]
 
 # Plot
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 11), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
-fig.suptitle('2026-03-31 — WORST DAY (-1,378 pts) | 5 trades, 3 losers', fontsize=12, fontweight='bold')
+fig.suptitle('2026-03-31 — Updated Engine (-690 pts) | 5 trades | Failed attempt detection active', fontsize=12, fontweight='bold')
 
 # Candles
 for i in range(n):
