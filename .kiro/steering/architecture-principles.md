@@ -46,6 +46,22 @@ Think: "evidence changed → belief changed"
 
 Lines are not static objects. They are participants in evolving conviction.
 
+### CRITICAL REFINEMENT: Belief Evolves Slowly
+
+Line meaning evolves. Belief evolves MORE SLOWLY.
+Do NOT fully reinterpret line meaning every bar.
+Scott does not change convictions on every candle.
+
+Evidence accumulates. Questions evolve GRADUALLY:
+- bearish continuation → weakening bearish thesis → transition → bullish support candidate → bullish confirmation
+
+The line may stay identical geometrically. Only its contextual meaning changes over time.
+
+Belief requires ACCUMULATED evidence. Not single-bar reactions.
+Otherwise we recreate chop behavior using smarter language.
+
+Conviction state transitions require MULTIPLE confirming bars, not one.
+
 ## CORE SEPARATION
 
 ### Strategic Lines (Original structure)
