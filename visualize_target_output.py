@@ -110,71 +110,59 @@ ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded
 ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.2, linestyle='--')
 
 # --- CONTINUATION EVIDENCE BLUES ---
-# Blue = support = BELOW price. Always ASCENDING rays (not flat shelves).
-# Anchor at P1 low and immediately angle upward from there.
+# Blue = ascending support ray. Tells the story of growing resolve.
+# Each successive Blue from a LOWER low with ASCENDING slope communicates:
+# "support is rising from here — if price breaks below, resolve continues"
 #
-# RETROACTIVE RECOGNITION:
-# P1 exists immediately (the low happened).
-# Line does NOT become visible immediately.
-# Wait: bounce → wiggle → resume → new low confirmed
-# ONLY after proof: activate line
-# BUT once activated: draw it beginning from ORIGINAL P1.
-# "That low turned out to matter."
+# RETROACTIVE RECOGNITION: drawn from P1 once proven.
+# MEANINGFUL SLOPE: not flat shelves. Ascending rays that communicate belief.
+# QUADRANT CREATION: each Blue defines a new region boundary.
 #
-# Each continuation Blue creates a NEW QUADRANT.
-# Question: "What region is price currently living inside?"
+# Fixed ascending slope: +1.83 pts/bar (same geometry as Yellow)
+# This is the NATURAL slope — support rising at 2.5 degrees.
+# Containment adjusts only if absolutely necessary.
 
-# Scott's specified continuation points for 02/11:
+# Scott's 5 continuation points for 02/11:
 continuation_blues = [
-    # (p1_bar, p1_low, proof_bar)
-    (21, 50386, 27),   # 09:51 low → proven when new low 50364 at bar 27
-    (27, 50364, 32),   # 09:57 low → proven when new low 50342 at bar 32
-    (44, 50140, 48),   # 10:14 low → proven when new low 50110 at bar 48
-    (51, 50078, 56),   # 10:21 low → proven when new low 50028 at bar 56
-    (56, 50028, 59),   # 10:26 low → proven when price continues lower
+    (21, 50386),   # 09:51 low
+    (27, 50364),   # 09:57 low
+    (44, 50140),   # 10:14 low
+    (51, 50078),   # 10:21 low
+    (56, 50028),   # 10:26 low (newest = strongest conviction)
 ]
 
-# Fixed ascending slope (same geometry as yellow: +1.83 pts/bar)
-blue_slope = +1.83
+blue_slope = +1.83  # meaningful ascending slope (2.5 degrees)
 
-for idx, (p1_bar, p1_low, proof_bar) in enumerate(continuation_blues):
-    if proof_bar >= n:
-        continue
-    # Once proven, draw the FULL ray from P1 onward (retroactive recognition)
-    xs_full = list(range(p1_bar, n))
-    ys_full = [p1_low + blue_slope * (x - p1_bar) for x in xs_full]
+for idx, (p1_bar, p1_low) in enumerate(continuation_blues):
+    # Draw full ascending ray from P1
+    xs = list(range(p1_bar, n))
+    ys = [p1_low + blue_slope * (x - p1_bar) for x in xs]
 
-    # Verify containment: line must stay BELOW all lows from P1 onward
-    # If any low is below the line, adjust slope down
-    actual_slope = blue_slope
-    for i in range(p1_bar + 1, n):
-        line_val = p1_low + actual_slope * (i - p1_bar)
-        if lows[i] < line_val:
-            # Need shallower slope to stay below this low
-            required = (lows[i] - p1_low) / (i - p1_bar)
-            if required < actual_slope:
-                actual_slope = required
+    # Newest line = boldest (freshest conviction)
+    is_newest = (idx == len(continuation_blues) - 1)
+    lw = 2.2 if is_newest else 1.4
+    alpha = 0.9 if is_newest else 0.55 + idx * 0.08
 
-    # Ensure still positive (ascending)
-    actual_slope = max(0.05, actual_slope)
+    label = 'CONT. BLUE (ascending evidence)' if idx == 0 else ''
+    ax.plot(xs, ys, color='cyan', linewidth=lw, alpha=alpha, linestyle='-', label=label)
+    ax.scatter([p1_bar], [p1_low], color='cyan', s=40 if is_newest else 25,
+              zorder=5, marker='^', alpha=0.9)
 
-    # Recompute with legal slope
-    ys_full = [p1_low + actual_slope * (x - p1_bar) for x in xs_full]
-
-    label = 'CONT. BLUE (evidence, ascending)' if idx == 0 else ''
-    ax.plot(xs_full, ys_full, color='cyan', linewidth=1.6, alpha=0.7, linestyle='-', label=label)
-
-    # P1 marker (where the low happened)
-    ax.scatter([p1_bar], [p1_low], color='cyan', s=35, zorder=5, marker='^', alpha=0.8)
+# Shade quadrant between newest Blue and tactical Purple (the active battlefield)
+if len(continuation_blues) > 0:
+    newest_bar, newest_low = continuation_blues[-1]
+    for i in range(newest_bar, n):
+        blue_val = newest_low + blue_slope * (i - newest_bar)
+        purple_val = purple_pp['anchor'] + purple_pp['slope'] * (i - purple_pp['bar'])
+        if purple_val > blue_val:  # only shade where purple is above blue
+            ax.fill_between([i - 0.5, i + 0.5], [blue_val, blue_val], [purple_val, purple_val],
+                            color='mediumpurple', alpha=0.04)
 
 # Annotation
-ax.annotate('continuation Blues:\nascending rays from proven lows\n'
-            'retroactive: drawn FROM P1\nonce structure confirmed\n'
-            'each creates new quadrant',
-            xy=(continuation_blues[2][0], continuation_blues[2][1]),
-            xytext=(continuation_blues[2][0] + 4, continuation_blues[2][1] + 100),
-            fontsize=8, color='cyan',
-            arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
+ax.annotate('NEWEST Blue (10:26)\n= freshest conviction\n"resolve STILL active"',
+            xy=(56, 50028), xytext=(58, 50120),
+            fontsize=8, color='cyan', fontweight='bold',
+            arrowprops=dict(arrowstyle='->', color='cyan', lw=1.0))
 
 # Purple ORIGINAL (strategic, full session)
 xs_po = list(range(purple_orig['bar'], n))

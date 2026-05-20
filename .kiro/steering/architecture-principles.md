@@ -12,6 +12,8 @@ description: "Final architecture principles: quadrant-first, 4-layer separation,
 - Treat steeper lines as predictive
 - Merge strategic and tactical purposes
 - React to every price movement with new structure
+- Assign permanent fixed meaning to a line
+- Treat a line as dead after one crossing
 
 ## ALWAYS DO THIS
 
@@ -20,6 +22,29 @@ description: "Final architecture principles: quadrant-first, 4-layer separation,
 - Separate strategic thesis from tactical management
 - Accumulate evidence before acting
 - Allow price to breathe inside structure
+- Recognize that line meaning EVOLVES with market context
+- Same line can shift role as conviction changes
+
+## CORE PRINCIPLE: Lines Are Evolving Evidence
+
+A line does NOT have permanent fixed purpose.
+The same line changes role depending on market context.
+
+Example — Continuation Blue during downward resolve:
+- Initial role: "Is bearish resolve still healthy?"
+- Price closes below → bearish conviction increases
+- Price cannot break below → bearish conviction weakens
+
+If market later reverses upward:
+- The SAME Blue changes role
+- Now asks: "Can price reclaim and live above me?"
+- If yes → old bearish evidence becomes bullish support evidence
+- Belief shifts: bearish thesis → weakening → neutral → bullish thesis
+
+Do not think: "line crossed → signal"
+Think: "evidence changed → belief changed"
+
+Lines are not static objects. They are participants in evolving conviction.
 
 ## CORE SEPARATION
 
