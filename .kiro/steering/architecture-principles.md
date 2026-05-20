@@ -38,10 +38,19 @@ This is the most critical evidence rule:
 
 Scott is not measuring line interactions. Scott is measuring WHICH SIDE WON THE ATTEMPT.
 
-Engine flow: Attempt → Outcome → Winner → Belief Shift
+**CRITICAL: Failed attempts accumulate gradually, not instantly.**
 
-A failed break is NOT neutral. It is evidence for the opposing thesis.
-Multiple failed attempts in the same direction = strong evidence for the other side.
+Engine flow: Attempt → Failure observed → Counter-evidence accumulates → Winner score changes → Belief evolves → Trade
+
+A single failed attempt is NOT a reversal signal. It is one data point.
+- 1 failed close below yellow: interesting (counter-evidence +0.5)
+- 2 failed closes: possible trapped bears (counter-evidence +1.0)
+- 3 failed closes + blue reclaim: bullish argument strengthening (counter-evidence +2.0)
+
+Failure alone is not reversal.
+Failure + accumulation + structure response = belief shift.
+
+Scott does not instantly flip sides. He gradually realizes one side is losing the argument.
 
 ### Probe Trades
 
