@@ -73,7 +73,13 @@ class ConvictionEngine:
         self.state_history: List[Tuple[int, str, float]] = []  # (bar, state, score)
 
     def _determine_raw_state(self, score: float) -> str:
-        """Determine what state the score WOULD map to (without hysteresis)."""
+        """Determine what state the score WOULD map to (without hysteresis).
+        
+        States include transitional/warning states:
+        - WARNING states: "still convicted but watching carefully"
+        - TRANSITION: actively shifting between directions
+        - THESIS_CHALLENGED: strong conviction being undermined
+        """
         if score >= 8:
             return "STRONG_BULLISH_RESOLVE"
         elif score >= 5:
@@ -89,6 +95,36 @@ class ConvictionEngine:
         else:
             return "OBSERVING"
 
+    def _determine_transitional_state(self, score: float) -> str:
+        """Determine if a WARNING or TRANSITION state applies.
+        
+        Warning states occur when:
+        - Was strongly convicted, now score is weakening toward threshold
+        - Still on the same side but conviction is eroding
+        
+        Transition occurs when:
+        - Score crosses zero from one side to the other
+        """
+        if not self.state_history:
+            return ""
+
+        # Check if we're in a warning zone (conviction eroding but same side)
+        was_strong_bearish = self.current_state in ("STRONG_BEARISH_RESOLVE", "BEARISH_CONVICTION")
+        was_strong_bullish = self.current_state in ("STRONG_BULLISH_RESOLVE", "BULLISH_CONVICTION")
+
+        if was_strong_bearish and -5 < score <= -2:
+            return "BEARISH_WARNING"
+        if was_strong_bullish and 2 <= score < 5:
+            return "BULLISH_WARNING"
+
+        # Check for transition (crossing zero from convicted state)
+        if was_strong_bearish and score > 0:
+            return "TRANSITION"
+        if was_strong_bullish and score < 0:
+            return "TRANSITION"
+
+        return ""
+
     def _should_exit_current(self, score: float) -> bool:
         """Check if score has moved far enough to EXIT current state (hysteresis)."""
         s = self.current_state
@@ -97,18 +133,22 @@ class ConvictionEngine:
             return score < 6  # must drop below 6 to leave (entered at 8)
         elif s == "BULLISH_CONVICTION":
             return score < 3 or score >= 8  # drop below 3 OR upgrade to strong
+        elif s == "BULLISH_WARNING":
+            return score >= 5 or score < 1  # recover to conviction OR drop further
         elif s == "LEANING_BULLISH":
             return score < 1 or score >= 5  # drop below 1 OR upgrade
         elif s == "OBSERVING":
             return abs(score) >= 2  # any direction exceeds threshold
         elif s == "LEANING_BEARISH":
             return score > -1 or score <= -5
+        elif s == "BEARISH_WARNING":
+            return score <= -5 or score > -1  # recover to conviction OR drop further
         elif s == "BEARISH_CONVICTION":
             return score > -3 or score <= -8
         elif s == "STRONG_BEARISH_RESOLVE":
             return score > -6
         elif s == "THESIS_CHALLENGED":
-            return abs(score) >= 2 or abs(score) < 0.5  # resolves to direction or neutral
+            return abs(score) >= 3 or abs(score) < 0.5  # resolves to direction or neutral
         elif s == "TRANSITION":
             return abs(score) >= 2 or abs(score) < 0.5
 
@@ -134,7 +174,8 @@ class ConvictionEngine:
 
         # Check for thesis challenge (special state)
         if self._detect_thesis_challenge(belief_score):
-            if self.current_state not in ("THESIS_CHALLENGED", "TRANSITION", "OBSERVING"):
+            if self.current_state not in ("THESIS_CHALLENGED", "TRANSITION", "OBSERVING",
+                                          "BEARISH_WARNING", "BULLISH_WARNING"):
                 self._pending_state = "THESIS_CHALLENGED"
                 self._pending_bars = self.persistence_bars  # instant for challenges
 
@@ -142,8 +183,12 @@ class ConvictionEngine:
         should_exit = self._should_exit_current(belief_score)
 
         if should_exit:
-            # Determine target state
-            target = self._determine_raw_state(belief_score)
+            # First check for transitional/warning states
+            transitional = self._determine_transitional_state(belief_score)
+            if transitional:
+                target = transitional
+            else:
+                target = self._determine_raw_state(belief_score)
 
             # Is this the same pending state we've been tracking?
             if target == self._pending_state:
@@ -153,8 +198,15 @@ class ConvictionEngine:
                 self._pending_state = target
                 self._pending_bars = 1
 
+            # Persistence requirement (warning/transition states need less persistence)
+            required_persistence = self.persistence_bars
+            if target in ("BEARISH_WARNING", "BULLISH_WARNING", "THESIS_CHALLENGED"):
+                required_persistence = 2  # warnings activate faster
+            elif target == "TRANSITION":
+                required_persistence = 2
+
             # Check persistence requirement
-            if self._pending_bars >= self.persistence_bars:
+            if self._pending_bars >= required_persistence:
                 # State change confirmed
                 self.previous_state = self.current_state
                 self.current_state = self._pending_state
