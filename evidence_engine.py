@@ -96,6 +96,29 @@ class EvidenceEngine:
         else:
             return "NEUTRAL"
 
+    def _apply_belief_decay(self, bar_idx: int):
+        """Belief drifts toward zero if no fresh evidence arrives.
+        
+        Half-life ~15 bars: decay_rate = 0.95 per bar (loses 5% per bar).
+        After 15 bars without evidence: conviction halved.
+        After 30 bars: quartered.
+        
+        This prevents permanent conviction from old information.
+        Belief must be continuously reinforced to persist.
+        """
+        # Find most recent evidence event
+        if not self.timeline:
+            return
+
+        last_event_bar = self.timeline[-1].bar
+        bars_since_evidence = bar_idx - last_event_bar
+
+        # Only decay if no evidence for 2+ bars (allow brief gaps)
+        if bars_since_evidence >= 2:
+            # Decay rate: 0.95 per bar of silence
+            decay = 0.95
+            self.belief_score *= decay
+
     def _get_question(self, line: FrozenRay) -> str:
         """Determine what question this line is currently asking based on context."""
         if line.line_type == "ORANGE":
@@ -267,6 +290,11 @@ class EvidenceEngine:
 
         # --- Check for significant continuation structure ---
         self._check_continuation_structure(bar_idx, high, low, close, time_str)
+
+        # --- Belief decay: drift toward zero if no fresh evidence ---
+        # Half-life of ~15 bars: conviction decays 5% per bar without reinforcement
+        # This prevents permanent conviction from old evidence
+        self._apply_belief_decay(bar_idx)
 
         # --- Record belief state ---
         self.belief_history.append((bar_idx, self.belief_score, self._belief_state()))
