@@ -123,21 +123,67 @@ class EvidenceEngine:
 
         return "Observing structure"
 
+    def _dynamic_weight(self, direction: str, base_impact: float) -> float:
+        """Adjust evidence weight based on whether it confirms or challenges current belief.
+        
+        Surprising evidence (challenges thesis) gets AMPLIFIED.
+        Expected evidence (confirms thesis) gets DAMPENED.
+        
+        Scott reacts strongly to what challenges beliefs, not repetitive confirmation.
+        """
+        # Determine if this evidence confirms or challenges current belief
+        is_bullish_evidence = (direction == "BULLISH")
+        current_is_bullish = (self.belief_score > 0)
+        current_is_bearish = (self.belief_score < 0)
+        current_is_neutral = (abs(self.belief_score) <= 1)
+
+        if current_is_neutral:
+            # Neutral: all evidence has normal weight (building initial thesis)
+            return base_impact
+
+        # How strong is current conviction? (0-1 scale)
+        conviction_strength = min(abs(self.belief_score) / 10.0, 1.0)
+
+        if current_is_bullish and is_bullish_evidence:
+            # Confirming bullish thesis — dampen (expected)
+            dampen = 1.0 - (conviction_strength * 0.6)  # at max conviction, only 40% weight
+            return base_impact * dampen
+
+        elif current_is_bearish and not is_bullish_evidence:
+            # Confirming bearish thesis — dampen (expected)
+            dampen = 1.0 - (conviction_strength * 0.6)
+            return base_impact * dampen
+
+        elif current_is_bullish and not is_bullish_evidence:
+            # CHALLENGING bullish thesis — amplify (surprising)
+            amplify = 1.0 + (conviction_strength * 0.8)  # at max conviction, 180% weight
+            return base_impact * amplify
+
+        elif current_is_bearish and is_bullish_evidence:
+            # CHALLENGING bearish thesis — amplify (surprising)
+            amplify = 1.0 + (conviction_strength * 0.8)
+            return base_impact * amplify
+
+        return base_impact
+
     def _record_event(self, bar: int, time_str: str, event_type: str,
                       line: FrozenRay, direction: str, strength: float,
                       belief_impact: float, description: str):
-        """Record an evidence event and update belief."""
+        """Record an evidence event and update belief with dynamic weighting."""
         question = self._get_question(line)
+
+        # Apply dynamic weighting: surprises amplified, confirmations dampened
+        weighted_impact = self._dynamic_weight(direction, belief_impact)
 
         event = EvidenceEvent(
             bar=bar, time=time_str, event_type=event_type,
             line_id=line.line_id, line_type=line.line_type,
             direction=direction, strength=strength,
-            question=question, belief_impact=belief_impact,
+            question=question, belief_impact=weighted_impact,
             description=description,
         )
         self.timeline.append(event)
-        self.belief_score += belief_impact
+        self.belief_score += weighted_impact
 
         # Update line evidence
         if line.line_id not in self.line_evidence:
