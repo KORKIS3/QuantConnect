@@ -52,11 +52,18 @@ Failure + accumulation + structure response = belief shift.
 
 Scott does not instantly flip sides. He gradually realizes one side is losing the argument.
 
-### Probe Trades
+### Position Sizing & Trade Management
 
-Trades are not only for profit. Small probe trades gather information.
-Risk small + information large = valid trade.
-FRED should be capable of low-risk probes at structural boundaries to test thesis.
+Scott's actual behavior:
+- Entry: fixed pre-determined size (2 contracts)
+- Management: take partial profit at meaningful structure
+- Hold: remaining position while resolve remains intact
+- Exit: resolve ends or thesis changes
+- Re-entry: allowed if structure and belief return
+
+Sizing consistency is important. The edge is in STRUCTURE RECOGNITION and TRADE MANAGEMENT, not dynamic position scaling.
+
+Do NOT redesign position sizing unless data proves it materially improves expectancy.
 
 ### State Labels vs Argument Evaluation
 
