@@ -110,58 +110,69 @@ ys_faded = [blue['anchor'] + blue['slope'] * (x - blue['bar']) for x in xs_faded
 ax.plot(xs_faded, ys_faded, color='deepskyblue', linewidth=1, alpha=0.2, linestyle='--')
 
 # --- CONTINUATION EVIDENCE BLUES ---
-# Blue = support = BELOW price. Always ascending. Never through bars.
-# Created ONLY after structure proves continuation:
-#   bounce → wiggle → resume → new low confirmed → THEN visible
+# Blue = support = BELOW price. Always ASCENDING rays (not flat shelves).
+# Anchor at P1 low and immediately angle upward from there.
 #
-# Each line asks: "If price later closes beneath me, does that
-# strengthen conviction that downward resolve still exists?"
+# RETROACTIVE RECOGNITION:
+# P1 exists immediately (the low happened).
+# Line does NOT become visible immediately.
+# Wait: bounce → wiggle → resume → new low confirmed
+# ONLY after proof: activate line
+# BUT once activated: draw it beginning from ORIGINAL P1.
+# "That low turned out to matter."
 #
-# P1 = low of the bounce point
-# Slope = ascending (+1.83, same as yellow)
-# Line must stay BELOW all closed-bar lows from P1 onward
-# Line becomes visible only AFTER new low beneath P1 is confirmed
+# Each continuation Blue creates a NEW QUADRANT.
+# Question: "What region is price currently living inside?"
 
 # Scott's specified continuation points for 02/11:
 continuation_blues = [
-    # (p1_bar, p1_low, proof_bar, proof_description)
-    (21, 50386, 27, "bounced to 50430, then new low 50364 at bar 27"),
-    (27, 50364, 32, "bounced to 50400, then new low 50342 at bar 32"),
-    (44, 50140, 48, "bounced to 50176, then new low 50110 at bar 48"),
-    (51, 50078, 56, "bounced to ~50100, then new low 50028 at bar 56"),
+    # (p1_bar, p1_low, proof_bar)
+    (21, 50386, 27),   # 09:51 low → proven when new low 50364 at bar 27
+    (27, 50364, 32),   # 09:57 low → proven when new low 50342 at bar 32
+    (44, 50140, 48),   # 10:14 low → proven when new low 50110 at bar 48
+    (51, 50078, 56),   # 10:21 low → proven when new low 50028 at bar 56
+    (56, 50028, 59),   # 10:26 low → proven when price continues lower
 ]
 
-for idx, (p1_bar, p1_low, proof_bar, note) in enumerate(continuation_blues):
-    # Line only visible from proof_bar onward
-    xs_visible = list(range(proof_bar, min(proof_bar + 20, n)))
-    # Ascending from P1 low — must stay BELOW all lows
-    # Compute max legal slope that stays below all lows from p1_bar onward
-    max_slope = 999.0
-    for i in range(p1_bar + 1, min(proof_bar + 20, n)):
-        if i >= n:
-            break
-        required = (lows[i] - p1_low) / (i - p1_bar)
-        if required < max_slope:
-            max_slope = required
-    # Must be positive (ascending)
-    slope = max(0.1, min(max_slope, 1.83))  # cap at yellow slope, floor at near-flat
+# Fixed ascending slope (same geometry as yellow: +1.83 pts/bar)
+blue_slope = +1.83
 
-    ys_visible = [p1_low + slope * (x - p1_bar) for x in xs_visible]
-    label = 'CONT. BLUE (proven evidence)' if idx == 0 else ''
-    ax.plot(xs_visible, ys_visible, color='cyan', linewidth=1.8, alpha=0.75, linestyle='-', label=label)
+for idx, (p1_bar, p1_low, proof_bar) in enumerate(continuation_blues):
+    if proof_bar >= n:
+        continue
+    # Once proven, draw the FULL ray from P1 onward (retroactive recognition)
+    xs_full = list(range(p1_bar, n))
+    ys_full = [p1_low + blue_slope * (x - p1_bar) for x in xs_full]
 
-    # Dotted origin showing P1 location (before proof)
-    xs_origin = list(range(p1_bar, proof_bar))
-    ys_origin = [p1_low + slope * (x - p1_bar) for x in xs_origin]
-    ax.plot(xs_origin, ys_origin, color='cyan', linewidth=0.8, alpha=0.2, linestyle=':')
+    # Verify containment: line must stay BELOW all lows from P1 onward
+    # If any low is below the line, adjust slope down
+    actual_slope = blue_slope
+    for i in range(p1_bar + 1, n):
+        line_val = p1_low + actual_slope * (i - p1_bar)
+        if lows[i] < line_val:
+            # Need shallower slope to stay below this low
+            required = (lows[i] - p1_low) / (i - p1_bar)
+            if required < actual_slope:
+                actual_slope = required
 
-    # P1 marker
-    ax.scatter([p1_bar], [p1_low], color='cyan', s=25, zorder=5, marker='^', alpha=0.6)
+    # Ensure still positive (ascending)
+    actual_slope = max(0.05, actual_slope)
+
+    # Recompute with legal slope
+    ys_full = [p1_low + actual_slope * (x - p1_bar) for x in xs_full]
+
+    label = 'CONT. BLUE (evidence, ascending)' if idx == 0 else ''
+    ax.plot(xs_full, ys_full, color='cyan', linewidth=1.6, alpha=0.7, linestyle='-', label=label)
+
+    # P1 marker (where the low happened)
+    ax.scatter([p1_bar], [p1_low], color='cyan', s=35, zorder=5, marker='^', alpha=0.8)
 
 # Annotation
-ax.annotate('continuation Blues:\nproven AFTER new low\nconfirms structure\n(always BELOW price)',
-            xy=(continuation_blues[1][2], continuation_blues[1][1] + 10),
-            xytext=(continuation_blues[1][2] + 4, continuation_blues[1][1] + 70),
+ax.annotate('continuation Blues:\nascending rays from proven lows\n'
+            'retroactive: drawn FROM P1\nonce structure confirmed\n'
+            'each creates new quadrant',
+            xy=(continuation_blues[2][0], continuation_blues[2][1]),
+            xytext=(continuation_blues[2][0] + 4, continuation_blues[2][1] + 100),
             fontsize=8, color='cyan',
             arrowprops=dict(arrowstyle='->', color='cyan', lw=0.8))
 
@@ -201,18 +212,21 @@ ax.text(3, (orange['anchor'] + blue['anchor'] + blue['slope']*3) / 2,
         'CONTAINED\n(pre-break)', fontsize=9, color='steelblue', alpha=0.5, ha='center', va='center')
 
 # Active line count
-ax.text(0.98, 0.98, 'ACTIVE LINES: ~8\n'
-        'Orange (strategic ceiling) ↘\n'
-        'Yellow (strategic floor) ↗\n'
-        'Purple ORIG (strategic thesis) ↘\n'
-        'Blue ORIG (broken, faded) ↗\n'
-        'Cont. Blue x4 (proven evidence) ↗\n'
+ax.text(0.98, 0.98, 'ACTIVE LINES: ~9\n'
+        'Orange (strategic) ↘\n'
+        'Yellow (strategic) ↗\n'
+        'Purple ORIG (thesis) ↘\n'
+        'Blue ORIG (broken) ↗\n'
+        'Cont. Blue x5 (evidence) ↗\n'
         'Purple TACT (profit prot) ↘\n'
-        '\nBLUE = support = BELOW price\n'
-        'PURPLE = resistance = ABOVE price\n'
-        'Lines record proven structure\n'
-        'NOT prediction',
-        transform=ax.transAxes, fontsize=8, va='top', ha='right',
+        '\nRULES:\n'
+        'Blue/Yellow = ascending rays\n'
+        'Purple/Orange = descending rays\n'
+        'Lines = proven structure\n'
+        'Each Blue = new quadrant\n'
+        'Retroactive recognition:\n'
+        '"that low turned out to matter"',
+        transform=ax.transAxes, fontsize=7.5, va='top', ha='right',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
 # --- AXIS ---
