@@ -45,6 +45,10 @@ class ExecutionEngine:
 
             # --- ENTRY ---
             if self.position == 0:
+                # Daily kill active — no more trading today
+                if hasattr(self, '_daily_killed') and self._daily_killed:
+                    continue
+
                 if state in ("BEARISH_CONVICTION", "STRONG_BEARISH_RESOLVE"):
                     self.position = -1
                     self.entry_price = close
@@ -56,10 +60,34 @@ class ExecutionEngine:
 
             # --- EXIT ---
             elif self.position != 0:
+                unrealized = (close - self.entry_price) * self.position * 2
+                bars_held = bar - self.entry_bar
+
                 should_exit = False
                 exit_reason = ""
 
-                if state in ("TRANSITION", "THESIS_CHALLENGED"):
+                # === CAPITAL PRESERVATION LAYER (independent of conviction) ===
+                # Parameters tuned via sensitivity sweep (plateau-based, not peak-fitted)
+
+                # Trade kill: maximum adverse excursion (250 pts = 125/contract)
+                if unrealized <= -250:
+                    should_exit = True
+                    exit_reason = "TRADE_KILL"
+
+                # Daily kill: hard daily stop — STOP TRADING for the day (300 pts)
+                elif self.session_pl + unrealized <= -300:
+                    should_exit = True
+                    exit_reason = "DAILY_KILL"
+                    self._daily_killed = True
+
+                # Thesis timeout: no progress after 50 bars → exit
+                elif bars_held >= 50 and unrealized <= 0:
+                    should_exit = True
+                    exit_reason = "THESIS_TIMEOUT"
+
+                # === CONVICTION-BASED EXITS ===
+
+                elif state in ("TRANSITION", "THESIS_CHALLENGED"):
                     should_exit = True
                     exit_reason = state
                 elif state == "OBSERVING" and self.position != 0:
