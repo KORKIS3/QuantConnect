@@ -101,11 +101,21 @@ class FrozenRayEngine:
             self.session_high = high
             self.session_high_bar = bar_idx
             self._create_orange(bar_idx, high)
+            # Re-anchor provisional purple at new session high
+            for line in self.lines:
+                if line.line_type == "PURPLE_ORIGINAL" and line.status == "PROVISIONAL":
+                    line.anchor_price = high
+                    line.anchor_bar = bar_idx
 
         if low < self.session_low:
             self.session_low = low
             self.session_low_bar = bar_idx
             self._create_yellow(bar_idx, low)
+            # Re-anchor provisional blue at new session low
+            for line in self.lines:
+                if line.line_type == "BLUE_ORIGINAL" and line.status == "PROVISIONAL":
+                    line.anchor_price = low
+                    line.anchor_bar = bar_idx
 
         # --- Blue P2 search (support, ascending) ---
         self._search_blue_p2(bar_idx)
