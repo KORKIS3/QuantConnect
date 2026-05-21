@@ -145,6 +145,17 @@ All February 2026 days complete. User to capture more examples.
 - `RunAllDays.py`, `RunFullDataSet.py` — replaced by Backtest2Year.py
 - All `debug_*.py` files
 
+## Protected Files — NEVER DELETE
+These files are essential infrastructure for Fred's interactive charting and data pipeline.
+Even if they appear unused during cleanup, they MUST be kept:
+
+- `plotFigure.py` — interactive chart renderer (ChartPlotter with nav buttons)
+- `Plotter.py` — thin wrapper around plotFigure for convenience
+- `data_extraction.py` — Yahoo Finance data retrieval for YM
+- `run_chart.py` — quick interactive chart launcher (`python run_chart.py 2025-04-07 09:30 17:00`)
+- `run_chart_fred_alive.py` — FRED Is Alive interactive chart (`python run_chart_fred_alive.py 2025-04-07`)
+- `visualize_replay.py` — bar-by-bar frozen ray replay with slider
+
 ## Data
 - Full day CSVs: `~/Desktop/2YearsData/full_day/CBOT_MINI_YM1_YYYY-MM-DD.csv` (664 days, Jul 2023–Apr 2026)
 - 9:30-10:30 CSVs: `~/Desktop/2YearsData/930_1000/`
