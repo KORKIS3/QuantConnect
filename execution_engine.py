@@ -8,6 +8,7 @@ Exit:  TRANSITION, THESIS_CHALLENGED, or session end
 Filters (data-driven, robust across both Pinball and FRED):
 - Late session: no new entries after bar 330 (~15:00) unless STRONG conviction
 - Quick kill: exit immediately-wrong trades by bar 8 if losing >= 50 pts
+- Spike trail: if +400 reached within 25 bars, trail 125 pts from peak
 """
 
 import pandas as pd
@@ -21,6 +22,10 @@ _LATE_SESSION_BAR = 330
 # Quick kill: if losing >= 50 pts by bar 8, trade is immediately wrong
 _QUICK_KILL_BARS = 8
 _QUICK_KILL_THRESHOLD = 50  # pts adverse (on 2 contracts)
+# Spike trail: arms when +400 reached within 25 bars, trails 125 from peak
+_SPIKE_THRESHOLD = 400
+_SPIKE_BARS = 25
+_SPIKE_TRAIL_DISTANCE = 125
 
 
 class ExecutionEngine:
@@ -33,6 +38,8 @@ class ExecutionEngine:
         self.trades: List[Dict] = []
         self.session_pl = 0.0
         self._daily_killed = False
+        self._peak_unrealized = 0.0
+        self._spike_armed = False
 
     def run_session(self, day_data: pd.DataFrame) -> Dict:
         """Run full pipeline: structure → evidence → conviction → execution."""
@@ -67,15 +74,28 @@ class ExecutionEngine:
                     self.position = -1
                     self.entry_price = close
                     self.entry_bar = bar
+                    self._peak_unrealized = 0.0
+                    self._spike_armed = False
                 elif state in ("BULLISH_CONVICTION", "STRONG_BULLISH_RESOLVE"):
                     self.position = +1
                     self.entry_price = close
                     self.entry_bar = bar
+                    self._peak_unrealized = 0.0
+                    self._spike_armed = False
 
             # --- EXIT ---
             elif self.position != 0:
                 unrealized = (close - self.entry_price) * self.position * 2
                 bars_held = bar - self.entry_bar
+
+                # Track peak unrealized for spike trail
+                if unrealized > self._peak_unrealized:
+                    self._peak_unrealized = unrealized
+
+                # Arm spike trail: +400 within 25 bars
+                if (not self._spike_armed and bars_held <= _SPIKE_BARS
+                    and self._peak_unrealized >= _SPIKE_THRESHOLD):
+                    self._spike_armed = True
 
                 should_exit = False
                 exit_reason = ""
@@ -104,6 +124,13 @@ class ExecutionEngine:
                 elif bars_held >= 50 and unrealized <= 0:
                     should_exit = True
                     exit_reason = "THESIS_TIMEOUT"
+
+                # === SPIKE TRAIL (protect rapid winners) ===
+                # If +400 reached within 25 bars, trail 125 pts from peak
+                elif (self._spike_armed
+                      and unrealized <= self._peak_unrealized - _SPIKE_TRAIL_DISTANCE):
+                    should_exit = True
+                    exit_reason = "SPIKE_TRAIL"
 
                 # === CONVICTION-BASED EXITS ===
 
