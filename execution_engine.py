@@ -1,11 +1,13 @@
 """
-execution_engine.py — Phase 4: Simplest Execution Prototype
+execution_engine.py — Phase 4: Execution from conviction states
 
 Entry: BEARISH_CONVICTION or STRONG_BEARISH_RESOLVE (SHORT)
        BULLISH_CONVICTION or STRONG_BULLISH_RESOLVE (LONG)
 Exit:  TRANSITION, THESIS_CHALLENGED, or session end
 
-No additional complexity. Let data tell us what's missing.
+Filters (data-driven, robust across both Pinball and FRED):
+- Late session: no new entries after bar 330 (~15:00) unless STRONG conviction
+- Quick kill: exit immediately-wrong trades by bar 8 if losing >= 50 pts
 """
 
 import pandas as pd
@@ -14,9 +16,15 @@ from typing import List, Dict
 from evidence_engine import EvidenceEngine
 from conviction_engine import ConvictionEngine
 
+# Late session filter: ~330 bars into session = 15:00 (session starts 09:30)
+_LATE_SESSION_BAR = 330
+# Quick kill: if losing >= 50 pts by bar 8, trade is immediately wrong
+_QUICK_KILL_BARS = 8
+_QUICK_KILL_THRESHOLD = 50  # pts adverse (on 2 contracts)
+
 
 class ExecutionEngine:
-    """Phase 4: Simplest possible execution from conviction states."""
+    """Phase 4: Execution from conviction states with research-backed filters."""
 
     def __init__(self):
         self.position = 0  # +1 long, -1 short, 0 flat
@@ -24,6 +32,7 @@ class ExecutionEngine:
         self.entry_bar = -1
         self.trades: List[Dict] = []
         self.session_pl = 0.0
+        self._daily_killed = False
 
     def run_session(self, day_data: pd.DataFrame) -> Dict:
         """Run full pipeline: structure → evidence → conviction → execution."""
@@ -46,8 +55,13 @@ class ExecutionEngine:
             # --- ENTRY ---
             if self.position == 0:
                 # Daily kill active — no more trading today
-                if hasattr(self, '_daily_killed') and self._daily_killed:
+                if self._daily_killed:
                     continue
+
+                # Late session filter: no entries after ~15:00 unless STRONG
+                if bar >= _LATE_SESSION_BAR:
+                    if state not in ("STRONG_BEARISH_RESOLVE", "STRONG_BULLISH_RESOLVE"):
+                        continue
 
                 if state in ("BEARISH_CONVICTION", "STRONG_BEARISH_RESOLVE"):
                     self.position = -1
@@ -79,6 +93,12 @@ class ExecutionEngine:
                     should_exit = True
                     exit_reason = "DAILY_KILL"
                     self._daily_killed = True
+
+                # Quick kill: immediately-wrong trades (losing >= 50 by bar 8)
+                elif (bars_held == _QUICK_KILL_BARS
+                      and unrealized <= -_QUICK_KILL_THRESHOLD):
+                    should_exit = True
+                    exit_reason = "QUICK_KILL"
 
                 # Thesis timeout: no progress after 50 bars → exit
                 elif bars_held >= 50 and unrealized <= 0:
