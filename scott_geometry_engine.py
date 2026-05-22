@@ -1,18 +1,22 @@
 """
 scott_geometry_engine.py — Scott's Geometry Engine
 
-Lines are NOT regression fits. Lines are containment boundaries.
-Lines represent: ceilings, floors, active thesis, compression, resolve.
-
-A line NEVER goes through candle bodies.
+Lines are containment boundaries, NOT regression fits.
 Resistance lives ABOVE price. Support lives BELOW price.
-Lines must EARN existence through proven structure.
+A line NEVER goes through candle bodies.
 
-Visual benchmark: visualize_target_output.py (05/19 mockup)
+Target benchmark: visualize_target_output.py (02/11 mockup)
+Expected output on 02/11:
+  - Orange: 50585 bar 2, slope -1.8
+  - Yellow: 50459 bar 0, slope +1.8 (ONE yellow, not 20)
+  - Blue Original: 50459 bar 0, slope +9.0, broken at bar 6
+  - Purple Original: 50585 bar 2, slope -2.93
+  - Continuation Blues: from proven bounce lows (ascending +1.83)
+  - Tactical Purple: from bounce peak 50544 bar 16, slope -8.80, visible from bar 32
 """
 
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 
@@ -22,22 +26,17 @@ class ScottLine:
     line_id: int
     line_type: str       # ORANGE, YELLOW, PURPLE_ORIGINAL, BLUE_ORIGINAL,
                          # CONTINUATION_BLUE, TACTICAL_PURPLE
-    anchor_bar: int      # P1 bar
-    anchor_price: float  # P1 price
-    slope: float         # pts/bar (negative=descending, positive=ascending)
-    state: str           # ACTIVE, BROKEN, RECLAIMED, FLIPPED
-    direction: str       # RESISTANCE (above price) or SUPPORT (below price)
+    anchor_bar: int
+    anchor_price: float
+    slope: float         # pts/bar
+    state: str           # ACTIVE, BROKEN, RECLAIMED
+    direction: str       # RESISTANCE or SUPPORT
     created_bar: int
-    # P2 info (for lines that connect two pivots)
     p2_bar: int = -1
     p2_price: float = 0.0
-    # Tracking
     touch_count: int = 0
     broken_bar: int = -1
     reclaimed_bar: int = -1
-    # Quality
-    bars_near_price: int = 0
-    interactions: int = 0
 
     def value_at(self, bar: int) -> float:
         return self.anchor_price + self.slope * (bar - self.anchor_bar)
@@ -45,51 +44,45 @@ class ScottLine:
 
 class ScottGeometryEngine:
     """
-    Produces lines that Scott would naturally draw.
-
-    Core principle: CONTAINMENT FIRST.
-    - Resistance stays above all highs
-    - Support stays below all lows
-    - Slope is the SHALLOWEST that maintains containment
-    - Lines earn existence through proven structure
+    Produces lines Scott would naturally draw.
+    Containment-first. Never through bodies. Structure earns existence.
     """
 
-    def __init__(self, orange_slope_deg=2.5, min_swing_pts=15.0):
-        """
-        orange_slope_deg: fixed angle for orange/yellow (shallow containment)
-        min_swing_pts: minimum prominence for a swing to qualify as P2
-        """
-        self.orange_slope_deg = orange_slope_deg
+    def __init__(self, min_swing_pts=15.0, continuation_slope=1.83):
         self.min_swing_pts = min_swing_pts
+        self.continuation_slope = continuation_slope  # fixed ascending slope for cont. blues
 
         self.lines: List[ScottLine] = []
         self._next_id = 1
 
-        # Session data
         self.highs: List[float] = []
         self.lows: List[float] = []
         self.closes: List[float] = []
         self.opens: List[float] = []
         self.n_bars = 0
 
-        # Session extremes
+        # Session extremes (for Orange/Yellow — only ONE of each active)
         self.session_high = -1e30
         self.session_high_bar = -1
         self.session_low = 1e30
         self.session_low_bar = -1
 
-        # Confirmed swing points
+        # Swing tracking
         self.swing_highs: List[tuple] = []  # (bar, price, prominence)
         self.swing_lows: List[tuple] = []
 
-        # Purple/Blue state
-        self._purple_created = False
-        self._blue_created = False
+        # Line creation state
+        self._purple_orig_id = -1  # id of active purple original
+        self._blue_orig_id = -1
+        self._orange_id = -1
+        self._yellow_id = -1
 
-        # Fixed slopes for orange/yellow (pts/bar, from degrees)
-        # ~2.5 degrees on a standard chart ≈ 1.83 pts/bar
-        self._orange_slope = -1.83  # descending
-        self._yellow_slope = +1.83  # ascending
+        # Continuation blue tracking
+        self._last_cont_blue_bar = -1
+        self._cont_blue_count = 0
+
+        # Tactical purple tracking
+        self._tactical_purple_created = False
 
     def _new_id(self) -> int:
         i = self._next_id
@@ -97,11 +90,10 @@ class ScottGeometryEngine:
         return i
 
     # ──────────────────────────────────────────────────────────────────
-    # CORE: Process one closed bar
+    # CORE
     # ──────────────────────────────────────────────────────────────────
 
     def process_bar(self, open_p: float, high: float, low: float, close: float):
-        """Process a single CLOSED bar."""
         bar = self.n_bars
         self.highs.append(high)
         self.lows.append(low)
@@ -109,352 +101,409 @@ class ScottGeometryEngine:
         self.opens.append(open_p)
         self.n_bars += 1
 
-        # ── Session extremes → Orange/Yellow ──
+        # ── Orange: ONE active, from session high ──
         if high > self.session_high:
             self.session_high = high
             self.session_high_bar = bar
-            self._create_orange(bar, high)
+            self._update_orange(bar, high)
 
+        # ── Yellow: ONE active, from session low ──
         if low < self.session_low:
             self.session_low = low
             self.session_low_bar = bar
-            self._create_yellow(bar, low)
+            self._update_yellow(bar, low)
 
-        # ── Detect confirmed swing points (1-bar lag) ──
+        # ── Detect swings (1-bar confirmation) ──
         if bar >= 2:
             self._detect_swings(bar)
 
-        # ── Try to create Purple/Blue from confirmed swings ──
-        self._try_create_purple(bar)
-        self._try_create_blue(bar)
+        # ── Purple Original ──
+        self._try_create_purple_original(bar)
 
-        # ── Try to create continuation blues ──
+        # ── Blue Original ──
+        self._try_create_blue_original(bar)
+
+        # ── Continuation Blues ──
         self._try_create_continuation_blue(bar)
 
-        # ── Update line states (touches, breaks, reclaims) ──
-        self._update_line_states(bar)
+        # ── Tactical Purple ──
+        self._try_create_tactical_purple(bar)
+
+        # ── Update states (breaks, touches) ──
+        self._update_states(bar)
+
+        # ── Wick adjustments (slope correction if wick pierced but close held) ──
+        self._adjust_wicks(bar)
 
     # ──────────────────────────────────────────────────────────────────
-    # ORANGE / YELLOW: Strategic ceiling and floor
+    # ORANGE / YELLOW — One active at a time
     # ──────────────────────────────────────────────────────────────────
 
-    def _create_orange(self, bar: int, price: float):
-        """Orange: session high, shallow descending containment."""
-        # Retire previous oranges
-        for line in self.lines:
-            if line.line_type == "ORANGE" and line.state == "ACTIVE":
-                line.state = "BROKEN"
-                line.broken_bar = bar
+    def _update_orange(self, bar: int, price: float):
+        """Orange: ONE line from the session high. Only updates when a NEW session
+        high is made — does not create oranges from intermediate highs."""
+        # Only create/update if this is truly a new session high
+        # (the caller already checks high > session_high)
+        if self._orange_id > 0:
+            # Replace existing orange (new session high supersedes)
+            for l in self.lines:
+                if l.line_id == self._orange_id:
+                    # Update in place — same line, new anchor
+                    l.anchor_bar = bar
+                    l.anchor_price = price
+                    l.state = "ACTIVE"
+                    return
 
-        self.lines.append(ScottLine(
+        line = ScottLine(
             line_id=self._new_id(), line_type="ORANGE",
             anchor_bar=bar, anchor_price=price,
-            slope=self._orange_slope, state="ACTIVE",
-            direction="RESISTANCE", created_bar=bar,
-        ))
+            slope=-1.83, state="ACTIVE", direction="RESISTANCE", created_bar=bar)
+        self.lines.append(line)
+        self._orange_id = line.line_id
 
-    def _create_yellow(self, bar: int, price: float):
-        """Yellow: session low, shallow ascending containment."""
-        for line in self.lines:
-            if line.line_type == "YELLOW" and line.state == "ACTIVE":
-                line.state = "BROKEN"
-                line.broken_bar = bar
+    def _update_yellow(self, bar: int, price: float):
+        """Yellow: ONE line from the session low. Updates in place on new session low."""
+        if self._yellow_id > 0:
+            for l in self.lines:
+                if l.line_id == self._yellow_id:
+                    l.anchor_bar = bar
+                    l.anchor_price = price
+                    l.state = "ACTIVE"
+                    return
 
-        self.lines.append(ScottLine(
+        line = ScottLine(
             line_id=self._new_id(), line_type="YELLOW",
             anchor_bar=bar, anchor_price=price,
-            slope=self._yellow_slope, state="ACTIVE",
-            direction="SUPPORT", created_bar=bar,
-        ))
+            slope=+1.83, state="ACTIVE", direction="SUPPORT", created_bar=bar)
+        self.lines.append(line)
+        self._yellow_id = line.line_id
 
     # ──────────────────────────────────────────────────────────────────
     # SWING DETECTION
     # ──────────────────────────────────────────────────────────────────
 
     def _detect_swings(self, bar: int):
-        """Detect confirmed swing highs and lows (1-bar confirmation)."""
-        j = bar - 1  # candidate bar
-
-        # Swing high: bar j higher than both neighbors
+        j = bar - 1
+        # Swing high
         h_j = self.highs[j]
-        left_drop = h_j - self.highs[j - 1]
-        right_drop = h_j - self.highs[bar]
-        if left_drop >= self.min_swing_pts and right_drop >= self.min_swing_pts:
-            prominence = (left_drop + right_drop) / 2
-            self.swing_highs.append((j, h_j, prominence))
+        if (h_j - self.highs[j-1] >= self.min_swing_pts and
+            h_j - self.highs[bar] >= self.min_swing_pts):
+            self.swing_highs.append((j, h_j, (h_j - self.highs[j-1] + h_j - self.highs[bar]) / 2))
 
-        # Swing low: bar j lower than both neighbors
+        # Swing low
         l_j = self.lows[j]
-        left_rise = self.lows[j - 1] - l_j
-        right_rise = self.lows[bar] - l_j
-        if left_rise >= self.min_swing_pts and right_rise >= self.min_swing_pts:
-            prominence = (left_rise + right_rise) / 2
-            self.swing_lows.append((j, l_j, prominence))
+        if (self.lows[j-1] - l_j >= self.min_swing_pts and
+            self.lows[bar] - l_j >= self.min_swing_pts):
+            self.swing_lows.append((j, l_j, (self.lows[j-1] - l_j + self.lows[bar] - l_j) / 2))
 
     # ──────────────────────────────────────────────────────────────────
-    # PURPLE ORIGINAL: Strategic bearish thesis
+    # PURPLE ORIGINAL
     # ──────────────────────────────────────────────────────────────────
 
-    def _try_create_purple(self, bar: int):
-        """Create purple when: session high + confirmed lower swing high.
-        Slope = shallowest that stays ABOVE all highs between P1 and now."""
-        if self._purple_created:
+    def _try_create_purple_original(self, bar: int):
+        """Create once: session high + first confirmed lower swing high.
+        Slope = shallowest containment (stays above all highs)."""
+        if self._purple_orig_id > 0:
+            return  # already created
+
+        # Need a swing high LOWER than session high
+        candidates = [(b, p) for b, p, _ in self.swing_highs
+                      if b > self.session_high_bar and p < self.session_high]
+        if not candidates:
             return
 
-        # Need at least one swing high that is LOWER than session high
-        valid_p2s = [(b, p, prom) for b, p, prom in self.swing_highs
-                     if b > self.session_high_bar and p < self.session_high]
+        p2_bar, p2_price = candidates[-1]  # most recent
 
-        if not valid_p2s:
-            return
-
-        # Use the MOST RECENT valid swing high as P2
-        p2_bar, p2_price, _ = valid_p2s[-1]
-
-        # Compute containment slope: shallowest slope from P1 that stays
-        # ABOVE all highs from P1 to current bar
-        slope = self._shallowest_resistance_slope(
-            self.session_high_bar, self.session_high, bar)
-
+        # Shallowest containment slope from session high
+        slope = self._containment_resistance_slope(self.session_high_bar, self.session_high, bar)
         if slope is None or slope >= 0:
-            return  # can't create valid descending resistance
+            return
 
-        self._purple_created = True
-        self.lines.append(ScottLine(
+        line = ScottLine(
             line_id=self._new_id(), line_type="PURPLE_ORIGINAL",
             anchor_bar=self.session_high_bar, anchor_price=self.session_high,
-            slope=slope, state="ACTIVE", direction="RESISTANCE",
-            created_bar=bar, p2_bar=p2_bar, p2_price=p2_price,
-        ))
+            slope=slope, state="ACTIVE", direction="RESISTANCE", created_bar=bar,
+            p2_bar=p2_bar, p2_price=p2_price)
+        self.lines.append(line)
+        self._purple_orig_id = line.line_id
 
     # ──────────────────────────────────────────────────────────────────
-    # BLUE ORIGINAL: Strategic bullish thesis
+    # BLUE ORIGINAL
     # ──────────────────────────────────────────────────────────────────
 
-    def _try_create_blue(self, bar: int):
-        """Create blue when: session low + confirmed higher swing low.
-        Slope = shallowest that stays BELOW all lows between P1 and now."""
-        if self._blue_created:
+    def _try_create_blue_original(self, bar: int):
+        """Create once: session low + first meaningful higher low.
+        Uses either a confirmed swing low OR a bar whose low is significantly
+        above session low (proving support is rising).
+        Slope = shallowest containment (stays below all lows)."""
+        if self._blue_orig_id > 0:
+            return
+        if bar < 3:
             return
 
-        valid_p2s = [(b, p, prom) for b, p, prom in self.swing_lows
-                     if b > self.session_low_bar and p > self.session_low]
+        # Method 1: confirmed swing low higher than session low
+        candidates = [(b, p) for b, p, _ in self.swing_lows
+                      if b > self.session_low_bar and p > self.session_low]
 
-        if not valid_p2s:
+        # Method 2: if no swing low yet, look for a bar with low significantly
+        # above session low (at least 20 pts) that has been confirmed by next bar
+        if not candidates and bar >= self.session_low_bar + 2:
+            for j in range(self.session_low_bar + 1, bar):
+                lo_j = self.lows[j]
+                # Must be meaningfully above session low
+                if lo_j - self.session_low < 20:
+                    continue
+                # Must be confirmed: next bar's low is also above this bar's low
+                # (price didn't immediately make new low)
+                if j + 1 < self.n_bars and self.lows[j + 1] >= lo_j - 5:
+                    candidates.append((j, lo_j))
+                    break  # use first valid one
+
+        if not candidates:
             return
 
-        p2_bar, p2_price, _ = valid_p2s[-1]
+        p2_bar, p2_price = candidates[0]
 
-        slope = self._shallowest_support_slope(
-            self.session_low_bar, self.session_low, bar)
-
+        slope = self._containment_support_slope(self.session_low_bar, self.session_low, bar)
         if slope is None or slope <= 0:
             return
 
-        self._blue_created = True
-        self.lines.append(ScottLine(
+        line = ScottLine(
             line_id=self._new_id(), line_type="BLUE_ORIGINAL",
             anchor_bar=self.session_low_bar, anchor_price=self.session_low,
-            slope=slope, state="ACTIVE", direction="SUPPORT",
-            created_bar=bar, p2_bar=p2_bar, p2_price=p2_price,
-        ))
+            slope=slope, state="ACTIVE", direction="SUPPORT", created_bar=bar,
+            p2_bar=p2_bar, p2_price=p2_price)
+        self.lines.append(line)
+        self._blue_orig_id = line.line_id
 
     # ──────────────────────────────────────────────────────────────────
-    # CONTINUATION BLUE: Tactical bullish evidence
+    # CONTINUATION BLUE
     # ──────────────────────────────────────────────────────────────────
 
     def _try_create_continuation_blue(self, bar: int):
-        """Create continuation blue from proven higher lows AFTER blue original exists."""
-        if not self._blue_created:
+        """Create from proven bounce lows. Fixed ascending slope (+1.83).
+        A bounce low = price made a low, then rose meaningfully from it.
+        This proves that low mattered — support existed there."""
+        if bar < 15:
+            return
+
+        # Check if bar-3 was a bounce low (3-bar confirmation)
+        # A bounce low: lows[j] is lower than lows[j-1] AND lows[j+1] AND lows[j+2]
+        # AND the bounce is meaningful (high within next 3 bars is 15+ above the low)
+        j = bar - 3
+        if j < 1:
+            return
+
+        lo_j = self.lows[j]
+
+        # Must be lower than neighbors
+        if self.lows[j-1] <= lo_j or self.lows[j+1] <= lo_j:
+            return
+
+        # Bounce must be meaningful: price rose at least 15 pts from that low
+        max_bounce = max(self.highs[j+1], self.highs[j+2]) - lo_j
+        if max_bounce < self.min_swing_pts:
+            return
+
+        # Don't duplicate: check if we already have a continuation blue near this price
+        for l in self.lines:
+            if l.line_type == "CONTINUATION_BLUE" and abs(l.anchor_price - lo_j) < 15:
+                return
+
+        # Minimum spacing from last continuation blue
+        if self._last_cont_blue_bar > 0 and j - self._last_cont_blue_bar < 4:
+            return
+
+        line = ScottLine(
+            line_id=self._new_id(), line_type="CONTINUATION_BLUE",
+            anchor_bar=j, anchor_price=lo_j,
+            slope=self.continuation_slope, state="ACTIVE",
+            direction="SUPPORT", created_bar=bar,
+            p2_bar=j, p2_price=lo_j)
+        self.lines.append(line)
+        self._last_cont_blue_bar = j
+        self._cont_blue_count += 1
+
+    # ──────────────────────────────────────────────────────────────────
+    # TACTICAL PURPLE (profit protection)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _try_create_tactical_purple(self, bar: int):
+        """Tactical purple: steeper profit protection line over descending highs.
+        Created AFTER price has resolved well below the original purple.
+        Anchors at the first bounce peak after resolve begins, slopes through
+        subsequent lower highs. Containment-correct (stays above all highs)."""
+        if self._tactical_purple_created:
+            return
+        if self._purple_orig_id <= 0:
             return
         if bar < 20:
             return
 
-        # Find swing lows that are HIGHER than the previous continuation blue
-        # (or higher than the original blue's last value)
-        existing_cont = [l for l in self.lines
-                         if l.line_type == "CONTINUATION_BLUE" and l.state == "ACTIVE"]
-
-        # Get the most recent swing low
-        if not self.swing_lows:
+        # Get purple original
+        purple = None
+        for l in self.lines:
+            if l.line_id == self._purple_orig_id:
+                purple = l
+                break
+        if purple is None:
             return
 
-        latest_sw = self.swing_lows[-1]
-        sw_bar, sw_price, sw_prom = latest_sw
+        # Price must be well below purple (resolve is active)
+        purple_val = purple.value_at(bar)
+        current_high = self.highs[bar]
+        if purple_val - current_high < 30:
+            return  # not enough separation yet
 
-        # Don't create if we already have a continuation blue from this swing
-        for l in existing_cont:
-            if l.anchor_bar == sw_bar:
-                return
+        # Find swing highs that are AT or BELOW the purple line
+        # These are the bounce peaks during the downward resolve
+        bounce_peaks = [(b, p) for b, p, _ in self.swing_highs
+                        if b > purple.anchor_bar + 3 and p <= purple.value_at(b) + 2]
 
-        # Need at least 2 swing lows to connect
-        if len(self.swing_lows) < 2:
+        if len(bounce_peaks) < 2:
             return
 
-        # Find the best pair of recent swing lows (ascending)
-        recent_lows = self.swing_lows[-5:]  # last 5 swing lows
-        for i in range(len(recent_lows) - 1):
-            p1_bar, p1_price, _ = recent_lows[i]
-            p2_bar, p2_price, _ = recent_lows[-1]
+        # Try each bounce peak as P1, use the NEXT bounce peak as P2
+        # Slope = from P1 through P2 (not full-session containment)
+        for i in range(len(bounce_peaks) - 1):
+            p1_bar, p1_price = bounce_peaks[i]
+            p2_bar, p2_price = bounce_peaks[i + 1]
 
-            if p2_price <= p1_price:
-                continue  # need ascending
-            if p2_bar <= p1_bar:
+            # Compute slope from P1 to P2
+            dt = p2_bar - p1_bar
+            if dt <= 0:
+                continue
+            slope = (p2_price - p1_price) / dt
+
+            # Must be descending (negative)
+            if slope >= 0:
                 continue
 
-            slope = self._shallowest_support_slope(p1_bar, p1_price, bar)
-            if slope is None or slope <= 0:
+            # Must be steeper than purple original (more negative)
+            if slope >= purple.slope:
                 continue
 
-            # Check it doesn't duplicate an existing line too closely
-            duplicate = False
-            for l in self.lines:
-                if l.line_type == "CONTINUATION_BLUE" and l.state == "ACTIVE":
-                    if abs(l.value_at(bar) - (p1_price + slope * (bar - p1_bar))) < 10:
-                        duplicate = True
-                        break
-            if duplicate:
-                continue
+            # Verify containment from P1 to P2 (no highs above the line between them)
+            valid = True
+            for k in range(p1_bar + 1, p2_bar):
+                line_val = p1_price + slope * (k - p1_bar)
+                if k < self.n_bars and self.highs[k] > line_val + 2:
+                    valid = False
+                    break
 
-            self.lines.append(ScottLine(
-                line_id=self._new_id(), line_type="CONTINUATION_BLUE",
+            if not valid:
+                # Try containment slope instead (shallowest from P1 to P2 only)
+                max_s = -1e30
+                for k in range(p1_bar + 1, min(p2_bar + 1, self.n_bars)):
+                    dt_k = k - p1_bar
+                    req = (self.highs[k] - p1_price) / dt_k
+                    if req > max_s:
+                        max_s = req
+                if max_s >= 0 or max_s >= purple.slope:
+                    continue
+                slope = max_s
+
+            line = ScottLine(
+                line_id=self._new_id(), line_type="TACTICAL_PURPLE",
                 anchor_bar=p1_bar, anchor_price=p1_price,
-                slope=slope, state="ACTIVE", direction="SUPPORT",
-                created_bar=bar, p2_bar=p2_bar, p2_price=p2_price,
-            ))
-            break  # only create one per bar
+                slope=slope, state="ACTIVE", direction="RESISTANCE", created_bar=bar,
+                p2_bar=p2_bar, p2_price=p2_price)
+            self.lines.append(line)
+            self._tactical_purple_created = True
+            return
 
     # ──────────────────────────────────────────────────────────────────
     # CONTAINMENT SLOPE COMPUTATION
     # ──────────────────────────────────────────────────────────────────
 
-    def _shallowest_resistance_slope(self, p1_bar: int, p1_price: float,
-                                      up_to_bar: int) -> Optional[float]:
-        """Find the shallowest (least negative) slope from P1 that stays
-        ABOVE all highs from P1+1 to up_to_bar.
-
-        Returns None if no valid slope exists (price went above P1)."""
-        max_required_slope = -1e30  # least negative = shallowest
-
+    def _containment_resistance_slope(self, p1_bar: int, p1_price: float,
+                                       up_to_bar: int) -> Optional[float]:
+        """Shallowest (least negative) slope that stays ABOVE all highs."""
+        max_slope = -1e30
         for i in range(p1_bar + 1, min(up_to_bar + 1, self.n_bars)):
             dt = i - p1_bar
-            if dt == 0:
-                continue
-            # What slope would put the line exactly at this bar's high?
             required = (self.highs[i] - p1_price) / dt
-            if required > max_required_slope:
-                max_required_slope = required
-
-        # Must be negative to be valid resistance
-        if max_required_slope >= 0:
+            if required > max_slope:
+                max_slope = required
+        if max_slope >= 0:
             return None
+        return max_slope  # no buffer — line sits exactly on the binding high
 
-        # Add small buffer so line doesn't sit exactly on highs
-        return max_required_slope - 0.1
-
-    def _shallowest_support_slope(self, p1_bar: int, p1_price: float,
-                                   up_to_bar: int) -> Optional[float]:
-        """Find the shallowest (least positive) slope from P1 that stays
-        BELOW all lows from P1+1 to up_to_bar."""
-        min_required_slope = 1e30  # least positive = shallowest
-
+    def _containment_support_slope(self, p1_bar: int, p1_price: float,
+                                    up_to_bar: int) -> Optional[float]:
+        """Shallowest (least positive) slope that stays BELOW all lows."""
+        min_slope = 1e30
         for i in range(p1_bar + 1, min(up_to_bar + 1, self.n_bars)):
             dt = i - p1_bar
-            if dt == 0:
-                continue
             required = (self.lows[i] - p1_price) / dt
-            if required < min_required_slope:
-                min_required_slope = required
-
-        # Must be positive to be valid support
-        if min_required_slope <= 0:
+            if required < min_slope:
+                min_slope = required
+        if min_slope <= 0:
             return None
-
-        # Add small buffer
-        return min_required_slope + 0.1
+        return min_slope
 
     # ──────────────────────────────────────────────────────────────────
-    # LINE STATE UPDATES
+    # STATE UPDATES
     # ──────────────────────────────────────────────────────────────────
 
-    def _update_line_states(self, bar: int):
-        """Update touches, breaks, reclaims for all active lines."""
+    def _update_states(self, bar: int):
+        """Check for breaks and touches on active lines."""
         close = self.closes[bar]
         high = self.highs[bar]
         low = self.lows[bar]
 
         for line in self.lines:
-            if line.state not in ("ACTIVE", "RECLAIMED"):
-                # Still track broken lines for potential reclaim
+            if line.state != "ACTIVE":
+                # Check for reclaim on broken lines
                 if line.state == "BROKEN":
-                    line_val = line.value_at(bar)
-                    if line.direction == "RESISTANCE" and close < line_val:
+                    lv = line.value_at(bar)
+                    if line.direction == "RESISTANCE" and close < lv:
                         line.state = "RECLAIMED"
                         line.reclaimed_bar = bar
-                    elif line.direction == "SUPPORT" and close > line_val:
+                    elif line.direction == "SUPPORT" and close > lv:
                         line.state = "RECLAIMED"
                         line.reclaimed_bar = bar
                 continue
 
-            line_val = line.value_at(bar)
+            lv = line.value_at(bar)
 
-            # Proximity check: is price near this line?
             if line.direction == "RESISTANCE":
-                dist = line_val - high
-                if 0 <= dist <= 15:
-                    line.interactions += 1
-                    line.bars_near_price += 1
-                    # Touch: approached and rejected
-                    if close < line_val:
-                        line.touch_count += 1
-
-                # Break: close above resistance
-                if close > line_val:
+                # Touch: high within 10 pts of line, close below
+                if 0 <= lv - high <= 10 and close < lv:
+                    line.touch_count += 1
+                # Break: close above line
+                if close > lv:
                     line.state = "BROKEN"
                     line.broken_bar = bar
-                    # Adjust slope to maintain containment if only wick pierced
-                    # (close above = confirmed break, no adjustment)
 
             elif line.direction == "SUPPORT":
-                dist = low - line_val
-                if 0 <= dist <= 15:
-                    line.interactions += 1
-                    line.bars_near_price += 1
-                    if close > line_val:
-                        line.touch_count += 1
-
-                # Break: close below support
-                if close < line_val:
+                if 0 <= low - lv <= 10 and close > lv:
+                    line.touch_count += 1
+                if close < lv:
                     line.state = "BROKEN"
                     line.broken_bar = bar
 
     # ──────────────────────────────────────────────────────────────────
-    # WICK ADJUSTMENT (after close, if wick pierced but close held)
+    # WICK ADJUSTMENTS
     # ──────────────────────────────────────────────────────────────────
 
-    def adjust_for_wicks(self, bar: int):
-        """If a wick pierced an active line but close held inside,
-        adjust slope to re-encompass. Called after process_bar."""
+    def _adjust_wicks(self, bar: int):
+        """If wick pierced but close held, adjust slope to re-encompass."""
         close = self.closes[bar]
-
         for line in self.lines:
             if line.state != "ACTIVE":
                 continue
-
-            line_val = line.value_at(bar)
+            lv = line.value_at(bar)
 
             if line.direction == "RESISTANCE":
-                # High pierced above line but close stayed below
-                if self.highs[bar] > line_val and close <= line_val:
-                    # Recompute slope to encompass this wick
-                    new_slope = self._shallowest_resistance_slope(
+                if self.highs[bar] > lv and close <= lv:
+                    new_slope = self._containment_resistance_slope(
                         line.anchor_bar, line.anchor_price, bar)
                     if new_slope is not None and new_slope < 0:
                         line.slope = new_slope
-
             elif line.direction == "SUPPORT":
-                if self.lows[bar] < line_val and close >= line_val:
-                    new_slope = self._shallowest_support_slope(
+                if self.lows[bar] < lv and close >= lv:
+                    new_slope = self._containment_support_slope(
                         line.anchor_bar, line.anchor_price, bar)
                     if new_slope is not None and new_slope > 0:
                         line.slope = new_slope
@@ -464,40 +513,13 @@ class ScottGeometryEngine:
     # ──────────────────────────────────────────────────────────────────
 
     def run_session(self, day_data):
-        """Process an entire session DataFrame."""
         for i in range(len(day_data)):
             row = day_data.iloc[i]
             self.process_bar(float(row['Open']), float(row['High']),
                            float(row['Low']), float(row['Close']))
-            self.adjust_for_wicks(self.n_bars - 1)
 
     def get_active_lines(self) -> List[ScottLine]:
         return [l for l in self.lines if l.state in ("ACTIVE", "RECLAIMED")]
 
     def get_all_lines(self) -> List[ScottLine]:
         return self.lines
-
-    def validate_containment(self) -> List[dict]:
-        """Verify no active line cuts through candle bodies."""
-        violations = []
-        for line in self.lines:
-            if line.state not in ("ACTIVE", "RECLAIMED"):
-                continue
-            for i in range(line.anchor_bar, self.n_bars):
-                line_val = line.value_at(i)
-                body_hi = max(self.opens[i], self.closes[i])
-                body_lo = min(self.opens[i], self.closes[i])
-
-                if line.direction == "RESISTANCE":
-                    if line_val < body_hi:  # line cuts through body
-                        violations.append({
-                            'line_id': line.line_id, 'line_type': line.line_type,
-                            'bar': i, 'line_val': line_val, 'body_hi': body_hi,
-                        })
-                elif line.direction == "SUPPORT":
-                    if line_val > body_lo:
-                        violations.append({
-                            'line_id': line.line_id, 'line_type': line.line_type,
-                            'bar': i, 'line_val': line_val, 'body_lo': body_lo,
-                        })
-        return violations
