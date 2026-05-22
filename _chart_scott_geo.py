@@ -96,13 +96,7 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
             elif line.state == "BROKEN":
                 ax.plot(xs, ys_c, color=color, linewidth=1.2, linestyle='--', alpha=0.4)
 
-        # Swing markers
-        for b, p in engine.swing_highs:
-            if view_start <= b <= frame:
-                ax.scatter([b], [p], color='purple', s=25, marker='v', alpha=0.5, zorder=5)
-        for b, p in engine.swing_lows:
-            if view_start <= b <= frame:
-                ax.scatter([b], [p], color='cyan', s=25, marker='^', alpha=0.5, zorder=5)
+        # Swing markers removed — engine uses internal rolling window
 
         ax.set_title(f'Scott Geometry — {target_date} | Bar {frame} ({times[frame].strftime("%H:%M")})',
                      fontsize=11, fontweight='bold')
