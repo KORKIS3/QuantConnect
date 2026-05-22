@@ -13,7 +13,8 @@ _DATA_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "ful
 
 LINE_COLORS = {
     'ORANGE': 'orange', 'YELLOW': '#DAA520',
-    'PURPLE_ORIGINAL': 'purple', 'BLUE_ORIGINAL': 'deepskyblue',
+    'PURPLE': '#8B008B', 'BLUE': '#1E90FF',
+    'PURPLE_ORIGINAL': '#8B008B', 'BLUE_ORIGINAL': 'deepskyblue',
     'CONTINUATION_BLUE': 'cyan', 'TACTICAL_PURPLE': 'magenta',
 }
 
@@ -68,12 +69,10 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
         p_min = min(vis_l) - 20
         p_max = max(vis_h) + 20
 
-        # Draw lines
+        # Draw lines — show active solid, broken faded
+        # Only draw lines whose value is within visible price range at some point
         for line in engine.lines:
             if line.created_bar > frame:
-                continue
-            # Skip broken yellows and oranges (only show current active)
-            if line.line_type in ("YELLOW", "ORANGE") and line.state != "ACTIVE":
                 continue
             color = LINE_COLORS.get(line.line_type, 'gray')
             start_b = max(line.anchor_bar, view_start)
@@ -83,20 +82,17 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
             if not xs:
                 continue
             ys = [line.value_at(x) for x in xs]
-            # Clip to visible price range (generous margin)
             margin = (p_max - p_min) * 0.3
             ys_c = [y if (p_min - margin) <= y <= (p_max + margin) else np.nan for y in ys]
 
-            # Skip if entire line is outside visible range
             if all(np.isnan(y) for y in ys_c):
                 continue
 
             if line.state == "ACTIVE" or (line.state == "BROKEN" and line.broken_bar > frame):
-                lw = 2.5 if line.line_type in ('ORANGE', 'YELLOW', 'PURPLE_ORIGINAL', 'BLUE_ORIGINAL') else 1.8
+                lw = 2.5 if line.line_type in ('ORANGE', 'YELLOW') else 2.0
                 ax.plot(xs, ys_c, color=color, linewidth=lw, alpha=0.9)
             elif line.state == "BROKEN":
-                lw = 1.5 if line.line_type in ('PURPLE_ORIGINAL', 'BLUE_ORIGINAL') else 1.0
-                ax.plot(xs, ys_c, color=color, linewidth=lw, linestyle='--', alpha=0.45)
+                ax.plot(xs, ys_c, color=color, linewidth=1.2, linestyle='--', alpha=0.4)
             elif line.state == "RECLAIMED":
                 ax.plot(xs, ys_c, color=color, linewidth=2.0, alpha=0.7)
 
