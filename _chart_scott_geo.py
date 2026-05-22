@@ -69,10 +69,11 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
         p_min = min(vis_l) - 20
         p_max = max(vis_h) + 20
 
-        # Draw lines — show active solid, broken faded
-        # Only draw lines whose value is within visible price range at some point
+        # Draw lines
         for line in engine.lines:
             if line.created_bar > frame:
+                continue
+            if line.state == "REMOVED":
                 continue
             color = LINE_COLORS.get(line.line_type, 'gray')
             start_b = max(line.anchor_bar, view_start)
@@ -93,8 +94,6 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
                 ax.plot(xs, ys_c, color=color, linewidth=lw, alpha=0.9)
             elif line.state == "BROKEN":
                 ax.plot(xs, ys_c, color=color, linewidth=1.2, linestyle='--', alpha=0.4)
-            elif line.state == "RECLAIMED":
-                ax.plot(xs, ys_c, color=color, linewidth=2.0, alpha=0.7)
 
         # Swing markers
         for b, p in engine.swing_highs:
