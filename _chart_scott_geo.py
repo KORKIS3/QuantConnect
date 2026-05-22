@@ -16,6 +16,7 @@ LINE_COLORS = {
     'PURPLE': '#8B008B', 'BLUE': '#1E90FF',
     'PURPLE_ORIGINAL': '#8B008B', 'BLUE_ORIGINAL': 'deepskyblue',
     'CONTINUATION_BLUE': 'cyan', 'TACTICAL_PURPLE': 'magenta',
+    'TACTICAL_BLUE': 'cyan',
 }
 
 def run_chart(target_date, start_t="09:30", end_t="10:30"):
