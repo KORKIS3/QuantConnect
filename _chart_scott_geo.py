@@ -32,7 +32,7 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
     opens = day['Open'].values
     times = day.index
 
-    engine = ScottGeometryEngine(min_swing_pts=15.0)
+    engine = ScottGeometryEngine()
     engine.run_session(day)
 
     # Print summary
@@ -78,29 +78,33 @@ def run_chart(target_date, start_t="09:30", end_t="10:30"):
             color = LINE_COLORS.get(line.line_type, 'gray')
             start_b = max(line.anchor_bar, view_start)
             end_b = frame
-            # If broken, still draw but faded
-            if line.state == "BROKEN" and line.broken_bar <= frame:
-                end_b = min(frame, line.broken_bar + 20)  # show 20 bars past break
 
             xs = list(range(start_b, end_b + 1))
             if not xs:
                 continue
             ys = [line.value_at(x) for x in xs]
-            ys_c = [y if p_min - 30 <= y <= p_max + 30 else np.nan for y in ys]
+            # Clip to visible price range (generous margin)
+            margin = (p_max - p_min) * 0.3
+            ys_c = [y if (p_min - margin) <= y <= (p_max + margin) else np.nan for y in ys]
+
+            # Skip if entire line is outside visible range
+            if all(np.isnan(y) for y in ys_c):
+                continue
 
             if line.state == "ACTIVE" or (line.state == "BROKEN" and line.broken_bar > frame):
                 lw = 2.5 if line.line_type in ('ORANGE', 'YELLOW', 'PURPLE_ORIGINAL', 'BLUE_ORIGINAL') else 1.8
                 ax.plot(xs, ys_c, color=color, linewidth=lw, alpha=0.9)
             elif line.state == "BROKEN":
-                ax.plot(xs, ys_c, color=color, linewidth=1.0, linestyle='--', alpha=0.35)
+                lw = 1.5 if line.line_type in ('PURPLE_ORIGINAL', 'BLUE_ORIGINAL') else 1.0
+                ax.plot(xs, ys_c, color=color, linewidth=lw, linestyle='--', alpha=0.45)
             elif line.state == "RECLAIMED":
                 ax.plot(xs, ys_c, color=color, linewidth=2.0, alpha=0.7)
 
         # Swing markers
-        for b, p, _ in engine.swing_highs:
+        for b, p in engine.swing_highs:
             if view_start <= b <= frame:
                 ax.scatter([b], [p], color='purple', s=25, marker='v', alpha=0.5, zorder=5)
-        for b, p, _ in engine.swing_lows:
+        for b, p in engine.swing_lows:
             if view_start <= b <= frame:
                 ax.scatter([b], [p], color='cyan', s=25, marker='^', alpha=0.5, zorder=5)
 
