@@ -48,7 +48,7 @@ matplotlib.use('TkAgg')  # must be before any pyplot import for interactive wind
 
 import pandas as pd
 import pytz
-from ib_insync import IB, BarData, Contract, Future, MarketOrder, util
+from ib_insync import IB, BarData, Contract, Future, MarketOrder, LimitOrder, StopOrder, util
 from openpyxl import Workbook
 
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
@@ -307,6 +307,14 @@ class IBDataBridge:
         self._pinball: PinballEngine = PinballEngine(PinballConfig())  # Pinball overlay
         self._pinball_last_action: str = "HOLD"  # last Pinball decision
         
+        # TP/SL bracket order management
+        self._tp_sl_enabled: bool = True
+        self._tp_points: float = 60.0   # total TP in points (30 per contract × 2)
+        self._sl_points: float = 50.0   # total SL in points (25 per contract × 2)
+        self._bracket_tp_order = None   # active TP limit order
+        self._bracket_sl_order = None   # active SL stop order
+        self._entry_price: float = 0.0  # price we entered at
+        
         # NEW: Create account-specific logger if account_id is provided
         if self.account_id:
             self._setup_account_logger()
@@ -470,6 +478,7 @@ class IBDataBridge:
         if item.contract.symbol in ("YM", "MYM"):
             new_pos = int(item.position)
             if new_pos != self._ib_position:
+                old_pos = self._ib_position
                 log.info("[PositionSync] IB fill confirmed: _ib_position %d -> %d",
                          self._ib_position, new_pos)
                 self._ib_position = new_pos
@@ -477,8 +486,17 @@ class IBDataBridge:
                 self._pending_order_time = None
                 log.info("[PositionSync] _pending_order cleared")
                 
+                # Place bracket TP/SL orders when entering a new position
+                if self._tp_sl_enabled and new_pos != 0 and old_pos == 0:
+                    # Just entered a position — place bracket
+                    fill_price = float(item.averageCost) / 5.0 if item.averageCost else self._entry_price
+                    direction = 1 if new_pos > 0 else -1
+                    self._place_bracket_orders(fill_price, direction)
+                elif new_pos == 0 and old_pos != 0:
+                    # Just exited — cancel any remaining bracket orders
+                    self._cancel_bracket_orders()
+
                 # IMMEDIATE CSV WRITE after fill confirmation
-                # This ensures mirror accounts see the position change as soon as possible
                 try:
                     self._save_tracking_csv()
                     log.info("[PositionSync] Tracking CSV updated immediately after fill")
@@ -1086,6 +1104,10 @@ class IBDataBridge:
             log.info("[ORDER dry_run] %-10s  contract=%s", tag, self._contract.localSymbol)
             return
 
+        # Cancel bracket orders before signal exit or reversal
+        if liquidate or (not partial_tp and self._ib_position != 0):
+            self._cancel_bracket_orders()
+
         # Determine current position size from algo's last known state (not IB's stale position)
         current_pos = 0
         if self._last_result is not None and not self._last_result.empty:
@@ -1146,7 +1168,20 @@ class IBDataBridge:
         log.info("[ORDER calc]    current_pos=%d  target=%s  action=%s  qty=%d", 
                  current_pos, algo_target_position, action, qty)
         
-        order = MarketOrder(action, totalQuantity=qty)
+        # Use LIMIT order for entries, MARKET order for exits/liquidations
+        if liquidate or partial_tp:
+            order = MarketOrder(action, totalQuantity=qty)
+        else:
+            # Entry: use limit order at current price for zero slippage
+            limit_price = 0.0
+            if self._session_bars:
+                limit_price = self._session_bars[-1].get("Close", 0.0)
+            if limit_price > 0:
+                order = LimitOrder(action, totalQuantity=qty, lmtPrice=limit_price)
+                self._entry_price = limit_price
+                log.info("[ORDER] LIMIT entry at %.0f", limit_price)
+            else:
+                order = MarketOrder(action, totalQuantity=qty)
         order.tif = "DAY"
         exec_contract = self._order_contract or self._contract
         trade = self._ib.placeOrder(exec_contract, order)
@@ -1180,6 +1215,60 @@ class IBDataBridge:
             )
         except Exception as exc:
             log.error("[Email] trade alert error: %s", exc)
+
+    def _place_bracket_orders(self, entry_price: float, direction: int) -> None:
+        """Place TP limit and SL stop orders after entry fill.
+        direction: +1 for long, -1 for short.
+        TP=60 pts total, SL=50 pts total."""
+        if not self._tp_sl_enabled or self.dry_run:
+            return
+
+        self._entry_price = entry_price
+        nc = abs(self._ib_position) or self.config.num_contracts
+        exec_contract = self._order_contract or self._contract
+
+        # TP: limit order to close at profit
+        tp_price = entry_price + (self._tp_points / 2) * direction  # per-contract price move
+        # SL: stop order to close at loss
+        sl_price = entry_price - (self._sl_points / 2) * direction
+
+        if direction > 0:  # long position → sell to close
+            tp_order = LimitOrder("SELL", nc, tp_price)
+            sl_order = StopOrder("SELL", nc, sl_price)
+        else:  # short position → buy to close
+            tp_order = LimitOrder("BUY", nc, tp_price)
+            sl_order = StopOrder("BUY", nc, sl_price)
+
+        tp_order.tif = "DAY"
+        sl_order.tif = "DAY"
+        tp_order.ocaGroup = f"FRED_BRACKET_{int(time.time())}"
+        sl_order.ocaGroup = tp_order.ocaGroup
+        tp_order.ocaType = 1  # cancel other on fill
+        sl_order.ocaType = 1
+
+        try:
+            self._bracket_tp_order = self._ib.placeOrder(exec_contract, tp_order)
+            self._bracket_sl_order = self._ib.placeOrder(exec_contract, sl_order)
+            log.info("[BRACKET] Placed TP=%.0f SL=%.0f for %s %d contracts (OCA: %s)",
+                     tp_price, sl_price, "LONG" if direction > 0 else "SHORT", nc, tp_order.ocaGroup)
+        except Exception as exc:
+            log.error("[BRACKET] Failed to place bracket orders: %s", exc)
+
+    def _cancel_bracket_orders(self) -> None:
+        """Cancel any active TP/SL bracket orders (called before signal exit)."""
+        if self.dry_run:
+            return
+        try:
+            if self._bracket_tp_order:
+                self._ib.cancelOrder(self._bracket_tp_order.order)
+                log.info("[BRACKET] Cancelled TP order")
+                self._bracket_tp_order = None
+            if self._bracket_sl_order:
+                self._ib.cancelOrder(self._bracket_sl_order.order)
+                log.info("[BRACKET] Cancelled SL order")
+                self._bracket_sl_order = None
+        except Exception as exc:
+            log.error("[BRACKET] Cancel error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
