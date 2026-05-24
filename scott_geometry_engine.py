@@ -1,17 +1,18 @@
 """
-scott_geometry_engine.py — Universal Scott Geometry
+scott_geometry_engine.py — Universal Scott Geometry (Clean Rewrite)
 
-TWO tiers of lines:
-STRATEGIC: Orange/Yellow from session extremes (big picture)
-LOCAL: Purple/Blue from recent swing structure within rolling window (active argument)
+TWO TIERS:
+  Strategic: Orange/Yellow from session extremes (big picture boundaries)
+  Local: Purple/Blue from recent swing pairs (active argument near current price)
 
-Swing detection: rolling window of last 20 bars. Find highest high and lowest low
-within that window. When a new swing confirms, update local lines.
+Both tiers coexist and are visible simultaneously.
+Strategic = where price COULD go. Local = where the current argument IS.
 
-All lines maintain containment. Wick adjusts slope. Horizontal = removed.
+Lines wick-adjust (slope gets flatter when price pushes against them).
+Lines are removed when slope goes past horizontal.
+Broken lines stay visible but faded.
 """
 
-import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -19,7 +20,7 @@ from typing import List, Optional
 @dataclass
 class ScottLine:
     line_id: int
-    line_type: str
+    line_type: str       # ORANGE, YELLOW, PURPLE, BLUE
     anchor_bar: int
     anchor_price: float
     slope: float
@@ -37,7 +38,7 @@ class ScottLine:
 
 class ScottGeometryEngine:
     ORANGE_YELLOW_SLOPE = 1.83
-    LOCAL_WINDOW = 20  # bars to look back for local swing structure
+    LOCAL_WINDOW = 20
 
     def __init__(self):
         self.lines: List[ScottLine] = []
@@ -51,28 +52,29 @@ class ScottGeometryEngine:
         self.session_high_bar = -1
         self.session_low = 1e30
         self.session_low_bar = -1
+        # Line IDs (one per role)
         self._orange_id = -1
         self._yellow_id = -1
-        # Strategic purple/blue: from session extremes, wick adjusts until horizontal
         self._strategic_purple_id = -1
         self._strategic_blue_id = -1
-        # Local purple/blue: from recent swings within rolling window
         self._local_purple_id = -1
         self._local_blue_id = -1
 
-    def _new_id(self):
+    def _id(self):
         i = self._next_id
         self._next_id += 1
         return i
 
-    def _get(self, lid):
+    def _line(self, lid):
+        if lid <= 0:
+            return None
         for l in self.lines:
             if l.line_id == lid:
                 return l
         return None
 
     # ══════════════════════════════════════════════════════════════════
-    # MAIN
+    # MAIN LOOP
     # ══════════════════════════════════════════════════════════════════
 
     def process_bar(self, open_p: float, high: float, low: float, close: float):
@@ -83,242 +85,249 @@ class ScottGeometryEngine:
         self.opens.append(open_p)
         self.n_bars += 1
 
-        # Orange/Yellow
+        # 1. Orange/Yellow — session extremes
         if high > self.session_high:
             self.session_high = high
             self.session_high_bar = bar
-            self._set_orange(bar, high)
+            self._update_orange(bar, high)
         if low < self.session_low:
             self.session_low = low
             self.session_low_bar = bar
-            self._set_yellow(bar, low)
+            self._update_yellow(bar, low)
 
-        # Wick adjust all active lines
-        self._wick_adjust_orange(bar)
-        self._wick_adjust_yellow(bar)
-        self._wick_adjust_line(self._strategic_purple_id, bar)
-        self._wick_adjust_line(self._strategic_blue_id, bar)
-        self._wick_adjust_line(self._local_purple_id, bar)
-        self._wick_adjust_line(self._local_blue_id, bar)
+        # 2. Wick adjust orange/yellow
+        self._wick_orange(bar)
+        self._wick_yellow(bar)
 
-        # Break check
+        # 3. Wick adjust strategic purple/blue
+        self._wick_line(self._strategic_purple_id, bar)
+        self._wick_line(self._strategic_blue_id, bar)
+
+        # 4. Wick adjust local purple/blue
+        self._wick_line(self._local_purple_id, bar)
+        self._wick_line(self._local_blue_id, bar)
+
+        # 5. Break check (close beyond line)
         self._check_breaks(bar)
 
-        # Strategic purple/blue: from session high/low, created once
+        # 6. Strategic purple/blue — create once from session extremes
         if self._strategic_purple_id <= 0 and bar >= 5:
             self._create_strategic_purple(bar)
         if self._strategic_blue_id <= 0 and bar >= 5:
             self._create_strategic_blue(bar)
 
-        # Local purple/blue: from recent swings, update every 5 bars
-        if bar >= self.LOCAL_WINDOW and bar % 5 == 0:
-            self._update_local_purple(bar)
-            self._update_local_blue(bar)
+        # 7. Local purple/blue — only create when we don't have one
+        if self._local_purple_id <= 0 and bar >= self.LOCAL_WINDOW:
+            self._create_local_purple(bar)
+        if self._local_blue_id <= 0 and bar >= self.LOCAL_WINDOW:
+            self._create_local_blue(bar)
 
-        # Touches
+        # 8. Touches
         self._check_touches(bar)
 
     # ══════════════════════════════════════════════════════════════════
-    # ORANGE / YELLOW
+    # ORANGE / YELLOW — Strategic boundaries
     # ══════════════════════════════════════════════════════════════════
 
-    def _set_orange(self, bar, price):
-        if self._orange_id > 0:
-            l = self._get(self._orange_id)
-            if l:
-                l.anchor_bar = bar
-                l.anchor_price = price
-                l.slope = -self.ORANGE_YELLOW_SLOPE
-                l.state = "ACTIVE"
-                return
-        line = ScottLine(self._new_id(), "ORANGE", bar, price,
-                         -self.ORANGE_YELLOW_SLOPE, "ACTIVE", "RESISTANCE", bar)
-        self.lines.append(line)
-        self._orange_id = line.line_id
+    def _update_orange(self, bar, price):
+        """One orange. Re-anchors at new session high. Fixed slope."""
+        l = self._line(self._orange_id)
+        if l:
+            l.anchor_bar = bar
+            l.anchor_price = price
+            l.slope = -self.ORANGE_YELLOW_SLOPE
+            l.state = "ACTIVE"
+        else:
+            line = ScottLine(self._id(), "ORANGE", bar, price,
+                             -self.ORANGE_YELLOW_SLOPE, "ACTIVE", "RESISTANCE", bar)
+            self.lines.append(line)
+            self._orange_id = line.line_id
 
-    def _set_yellow(self, bar, price):
-        if self._yellow_id > 0:
-            l = self._get(self._yellow_id)
-            if l:
-                l.anchor_bar = bar
-                l.anchor_price = price
-                l.slope = +self.ORANGE_YELLOW_SLOPE
-                l.state = "ACTIVE"
-                return
-        line = ScottLine(self._new_id(), "YELLOW", bar, price,
-                         +self.ORANGE_YELLOW_SLOPE, "ACTIVE", "SUPPORT", bar)
-        self.lines.append(line)
-        self._yellow_id = line.line_id
+    def _update_yellow(self, bar, price):
+        """One yellow. Re-anchors at new session low. Fixed slope."""
+        l = self._line(self._yellow_id)
+        if l:
+            l.anchor_bar = bar
+            l.anchor_price = price
+            l.slope = +self.ORANGE_YELLOW_SLOPE
+            l.state = "ACTIVE"
+        else:
+            line = ScottLine(self._id(), "YELLOW", bar, price,
+                             +self.ORANGE_YELLOW_SLOPE, "ACTIVE", "SUPPORT", bar)
+            self.lines.append(line)
+            self._yellow_id = line.line_id
 
-    def _wick_adjust_orange(self, bar):
-        orange = self._get(self._orange_id) if self._orange_id > 0 else None
-        if not orange or orange.state != "ACTIVE":
+    def _wick_orange(self, bar):
+        """Orange adjusts slope when high pierces it. Re-anchors when horizontal."""
+        l = self._line(self._orange_id)
+        if not l or l.state != "ACTIVE":
             return
-        lv = orange.value_at(bar)
-        if self.highs[bar] > lv:
-            new_slope = self._resistance_slope(orange.anchor_bar, orange.anchor_price, bar)
+        if self.highs[bar] > l.value_at(bar):
+            new_slope = self._res_slope(l.anchor_bar, l.anchor_price, bar)
             if new_slope is None or new_slope >= 0:
-                # Past horizontal — re-anchor at current bar's high
-                orange.anchor_bar = bar
-                orange.anchor_price = self.highs[bar]
-                orange.slope = -self.ORANGE_YELLOW_SLOPE
+                l.anchor_bar = bar
+                l.anchor_price = self.highs[bar]
+                l.slope = -self.ORANGE_YELLOW_SLOPE
             else:
-                orange.slope = new_slope
+                l.slope = new_slope
 
-    def _wick_adjust_yellow(self, bar):
-        yellow = self._get(self._yellow_id) if self._yellow_id > 0 else None
-        if not yellow or yellow.state != "ACTIVE":
+    def _wick_yellow(self, bar):
+        """Yellow adjusts slope when low pierces it. Re-anchors when horizontal."""
+        l = self._line(self._yellow_id)
+        if not l or l.state != "ACTIVE":
             return
-        lv = yellow.value_at(bar)
-        if self.lows[bar] < lv:
-            new_slope = self._support_slope(yellow.anchor_bar, yellow.anchor_price, bar)
+        if self.lows[bar] < l.value_at(bar):
+            new_slope = self._sup_slope(l.anchor_bar, l.anchor_price, bar)
             if new_slope is None or new_slope <= 0:
-                yellow.anchor_bar = bar
-                yellow.anchor_price = self.lows[bar]
-                yellow.slope = +self.ORANGE_YELLOW_SLOPE
+                l.anchor_bar = bar
+                l.anchor_price = self.lows[bar]
+                l.slope = +self.ORANGE_YELLOW_SLOPE
             else:
-                yellow.slope = new_slope
+                l.slope = new_slope
 
     # ══════════════════════════════════════════════════════════════════
-    # LOCAL PURPLE / BLUE — From rolling window of recent swings
+    # STRATEGIC PURPLE / BLUE — From session extremes
+    # ══════════════════════════════════════════════════════════════════
+
+    def _create_strategic_purple(self, bar):
+        """From session high, containment slope. Created once."""
+        slope = self._res_slope(self.session_high_bar, self.session_high, bar)
+        if slope is None or slope >= 0:
+            return
+        line = ScottLine(self._id(), "PURPLE", self.session_high_bar, self.session_high,
+                         slope, "ACTIVE", "RESISTANCE", bar)
+        self.lines.append(line)
+        self._strategic_purple_id = line.line_id
+
+    def _create_strategic_blue(self, bar):
+        """From session low, containment slope. Created once."""
+        slope = self._sup_slope(self.session_low_bar, self.session_low, bar)
+        if slope is None or slope <= 0:
+            return
+        line = ScottLine(self._id(), "BLUE", self.session_low_bar, self.session_low,
+                         slope, "ACTIVE", "SUPPORT", bar)
+        self.lines.append(line)
+        self._strategic_blue_id = line.line_id
+
+    # ══════════════════════════════════════════════════════════════════
+    # LOCAL PURPLE / BLUE — From recent swings (rolling window)
     # ══════════════════════════════════════════════════════════════════
 
     def _create_local_purple(self, bar):
-        """Create purple from the most recent descending swing high pair.
-        BUT: if a previous purple existed from a higher anchor, reuse that anchor."""
+        """Find descending swing high pair in rolling window.
+        P1 = HIGHEST swing high in window (anchor stays at the top).
+        P2 = most recent swing high lower than P1."""
         window_start = max(0, bar - self.LOCAL_WINDOW * 2)
 
-        # Check if there's a previous purple we should reuse the anchor from
-        best_old_anchor = None
-        for l in self.lines:
-            if l.line_type == "PURPLE" and l.state == "BROKEN":
-                if best_old_anchor is None or l.anchor_price > best_old_anchor[1]:
-                    best_old_anchor = (l.anchor_bar, l.anchor_price)
-
-        if best_old_anchor:
-            slope = self._resistance_slope(best_old_anchor[0], best_old_anchor[1], bar)
-            if slope is not None and slope < 0:
-                line = ScottLine(self._new_id(), "PURPLE", best_old_anchor[0], best_old_anchor[1],
-                                 slope, "ACTIVE", "RESISTANCE", bar,
-                                 p2_bar=bar, p2_price=self.highs[bar])
-                self.lines.append(line)
-                self._purple_id = line.line_id
-                return
-
-        # No previous anchor — find from rolling window
-        local_highs = []
-        for i in range(window_start + 1, bar - 1):
+        peaks = []
+        for i in range(max(window_start + 1, 1), bar - 1):
             if self.highs[i] > self.highs[i-1] and self.highs[i] > self.highs[i+1]:
-                local_highs.append((i, self.highs[i]))
+                peaks.append((i, self.highs[i]))
 
-        if len(local_highs) < 2:
+        if len(peaks) < 2:
             return
 
-        p2_bar, p2_price = local_highs[-1]
-        best_p1 = None
-        for i in range(len(local_highs) - 2, -1, -1):
-            p1_bar, p1_price = local_highs[i]
-            if p1_price > p2_price:
-                best_p1 = (p1_bar, p1_price)
+        # P1 = HIGHEST swing high in window (anchor at the top)
+        best_p1 = max(peaks, key=lambda x: x[1])
+
+        # P2 = most recent swing high LOWER than P1 and AFTER P1
+        p2 = None
+        for i in range(len(peaks) - 1, -1, -1):
+            if peaks[i][1] < best_p1[1] and peaks[i][0] > best_p1[0]:
+                p2 = peaks[i]
                 break
 
-        if best_p1 is None:
+        if p2 is None:
             return
 
-        slope = self._resistance_slope(best_p1[0], best_p1[1], bar)
+        slope = self._res_slope(best_p1[0], best_p1[1], bar)
         if slope is None or slope >= 0:
             return
 
-        line = ScottLine(self._new_id(), "PURPLE", best_p1[0], best_p1[1],
+        existing = self._line(self._local_purple_id)
+        if existing and existing.state == "ACTIVE":
+            return  # already have one, let wick adjust handle it
+
+        line = ScottLine(self._id(), "PURPLE", best_p1[0], best_p1[1],
                          slope, "ACTIVE", "RESISTANCE", bar,
-                         p2_bar=p2_bar, p2_price=p2_price)
+                         p2_bar=p2[0], p2_price=p2[1])
         self.lines.append(line)
-        self._purple_id = line.line_id
+        self._local_purple_id = line.line_id
 
     def _create_local_blue(self, bar):
-        """Create blue from the most recent ascending swing low pair
-        within the rolling window. BUT: if a previous blue existed from a lower
-        anchor, reuse that anchor (just recompute slope)."""
+        """Find ascending swing low pair in rolling window.
+        P1 = LOWEST swing low in window (anchor stays at the bottom).
+        P2 = most recent swing low higher than P1."""
         window_start = max(0, bar - self.LOCAL_WINDOW * 2)
 
-        # Check if there's a previous blue we should reuse the anchor from
-        # (the lowest anchor from any previous blue that hasn't been REMOVED)
-        best_old_anchor = None
-        for l in self.lines:
-            if l.line_type == "BLUE" and l.state == "BROKEN":
-                if best_old_anchor is None or l.anchor_price < best_old_anchor[1]:
-                    best_old_anchor = (l.anchor_bar, l.anchor_price)
-
-        if best_old_anchor:
-            # Reuse the old anchor — just compute new containment slope
-            slope = self._support_slope(best_old_anchor[0], best_old_anchor[1], bar)
-            if slope is not None and slope > 0:
-                line = ScottLine(self._new_id(), "BLUE", best_old_anchor[0], best_old_anchor[1],
-                                 slope, "ACTIVE", "SUPPORT", bar,
-                                 p2_bar=bar, p2_price=self.lows[bar])
-                self.lines.append(line)
-                self._blue_id = line.line_id
-                return
-
-        # No previous anchor — find from rolling window
-        local_lows = []
-        for i in range(window_start + 1, bar - 1):
+        troughs = []
+        for i in range(max(window_start + 1, 1), bar - 1):
             if self.lows[i] < self.lows[i-1] and self.lows[i] < self.lows[i+1]:
-                local_lows.append((i, self.lows[i]))
+                troughs.append((i, self.lows[i]))
 
-        if len(local_lows) < 2:
+        if len(troughs) < 2:
             return
 
-        p2_bar, p2_price = local_lows[-1]
-        best_p1 = None
-        for i in range(len(local_lows) - 2, -1, -1):
-            p1_bar, p1_price = local_lows[i]
-            if p1_price < p2_price:
-                best_p1 = (p1_bar, p1_price)
+        # P1 = LOWEST swing low in window (anchor at the bottom)
+        best_p1 = min(troughs, key=lambda x: x[1])
+
+        # P2 = most recent swing low HIGHER than P1 and AFTER P1
+        p2 = None
+        for i in range(len(troughs) - 1, -1, -1):
+            if troughs[i][1] > best_p1[1] and troughs[i][0] > best_p1[0]:
+                p2 = troughs[i]
                 break
 
-        if best_p1 is None:
+        if p2 is None:
             return
 
-        slope = self._support_slope(best_p1[0], best_p1[1], bar)
+        slope = self._sup_slope(best_p1[0], best_p1[1], bar)
         if slope is None or slope <= 0:
             return
 
-        line = ScottLine(self._new_id(), "BLUE", best_p1[0], best_p1[1],
+        existing = self._line(self._local_blue_id)
+        if existing and existing.state == "ACTIVE":
+            return  # already have one, let wick adjust handle it
+
+        line = ScottLine(self._id(), "BLUE", best_p1[0], best_p1[1],
                          slope, "ACTIVE", "SUPPORT", bar,
-                         p2_bar=p2_bar, p2_price=p2_price)
+                         p2_bar=p2[0], p2_price=p2[1])
         self.lines.append(line)
-        self._blue_id = line.line_id
+        self._local_blue_id = line.line_id
 
     # ══════════════════════════════════════════════════════════════════
-    # WICK ADJUST PURPLE / BLUE
+    # GENERIC WICK ADJUST
     # ══════════════════════════════════════════════════════════════════
 
-    def _wick_adjust_purple(self, bar):
-        purple = self._get(self._purple_id) if self._purple_id > 0 else None
-        if not purple or purple.state != "ACTIVE":
+    def _wick_line(self, lid, bar):
+        """Adjust slope when price pushes against line. Remove if horizontal."""
+        l = self._line(lid)
+        if not l or l.state != "ACTIVE":
             return
-        lv = purple.value_at(bar)
-        if self.highs[bar] > lv and self.closes[bar] <= lv:
-            new_slope = self._resistance_slope(purple.anchor_bar, purple.anchor_price, bar)
-            if new_slope is None or new_slope >= 0:
-                purple.state = "REMOVED"
-                self._purple_id = -1
-            else:
-                purple.slope = new_slope
+        lv = l.value_at(bar)
 
-    def _wick_adjust_blue(self, bar):
-        blue = self._get(self._blue_id) if self._blue_id > 0 else None
-        if not blue or blue.state != "ACTIVE":
-            return
-        lv = blue.value_at(bar)
-        if self.lows[bar] < lv and self.closes[bar] >= lv:
-            new_slope = self._support_slope(blue.anchor_bar, blue.anchor_price, bar)
-            if new_slope is None or new_slope <= 0:
-                blue.state = "REMOVED"
-                self._blue_id = -1
-            else:
-                blue.slope = new_slope
+        if l.direction == "RESISTANCE":
+            if self.highs[bar] > lv and self.closes[bar] <= lv:
+                new_slope = self._res_slope(l.anchor_bar, l.anchor_price, bar)
+                if new_slope is None or new_slope >= 0:
+                    l.state = "REMOVED"
+                    self._clear_ref(lid)
+                else:
+                    l.slope = new_slope
+        elif l.direction == "SUPPORT":
+            if self.lows[bar] < lv and self.closes[bar] >= lv:
+                new_slope = self._sup_slope(l.anchor_bar, l.anchor_price, bar)
+                if new_slope is None or new_slope <= 0:
+                    l.state = "REMOVED"
+                    self._clear_ref(lid)
+                else:
+                    l.slope = new_slope
+
+    def _clear_ref(self, lid):
+        if self._strategic_purple_id == lid: self._strategic_purple_id = -1
+        elif self._strategic_blue_id == lid: self._strategic_blue_id = -1
+        elif self._local_purple_id == lid: self._local_purple_id = -1
+        elif self._local_blue_id == lid: self._local_blue_id = -1
 
     # ══════════════════════════════════════════════════════════════════
     # BREAK CHECK
@@ -330,24 +339,23 @@ class ScottGeometryEngine:
             if line.state != "ACTIVE":
                 continue
             if line.line_type in ("ORANGE", "YELLOW"):
-                continue
+                continue  # these re-anchor, don't break
             lv = line.value_at(bar)
             if line.direction == "RESISTANCE" and close > lv:
                 line.state = "BROKEN"
                 line.broken_bar = bar
-                if line.line_id == self._purple_id:
-                    self._purple_id = -1
+                self._clear_ref(line.line_id)
             elif line.direction == "SUPPORT" and close < lv:
                 line.state = "BROKEN"
                 line.broken_bar = bar
-                if line.line_id == self._blue_id:
-                    self._blue_id = -1
+                self._clear_ref(line.line_id)
 
     # ══════════════════════════════════════════════════════════════════
-    # CONTAINMENT
+    # CONTAINMENT SLOPE
     # ══════════════════════════════════════════════════════════════════
 
-    def _resistance_slope(self, p1_bar, p1_price, up_to_bar):
+    def _res_slope(self, p1_bar, p1_price, up_to_bar):
+        """Shallowest slope staying ABOVE all highs."""
         max_s = -1e30
         for i in range(p1_bar + 1, min(up_to_bar + 1, self.n_bars)):
             s = (self.highs[i] - p1_price) / (i - p1_bar)
@@ -355,7 +363,8 @@ class ScottGeometryEngine:
                 max_s = s
         return max_s if max_s < 0 else None
 
-    def _support_slope(self, p1_bar, p1_price, up_to_bar):
+    def _sup_slope(self, p1_bar, p1_price, up_to_bar):
+        """Shallowest slope staying BELOW all lows."""
         min_s = 1e30
         for i in range(p1_bar + 1, min(up_to_bar + 1, self.n_bars)):
             s = (self.lows[i] - p1_price) / (i - p1_bar)
