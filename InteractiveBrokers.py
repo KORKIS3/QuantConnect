@@ -311,6 +311,7 @@ class IBDataBridge:
         self._tp_sl_enabled: bool = True
         self._tp_points: float = 60.0   # total TP in points (30 per contract × 2)
         self._sl_points: float = 50.0   # total SL in points (25 per contract × 2)
+        self._cushion_points: float = 40.0  # enter 40 pts better than signal (buy dip / sell rip)
         self._bracket_tp_order = None   # active TP limit order
         self._bracket_sl_order = None   # active SL stop order
         self._entry_price: float = 0.0  # price we entered at
@@ -1172,14 +1173,21 @@ class IBDataBridge:
         if liquidate or partial_tp:
             order = MarketOrder(action, totalQuantity=qty)
         else:
-            # Entry: use limit order at current price for zero slippage
+            # Entry: use limit order with CUSHION (40 pts better than signal)
+            # BUY: limit at signal_price - cushion (buy the dip)
+            # SELL: limit at signal_price + cushion (sell the rip)
             limit_price = 0.0
             if self._session_bars:
-                limit_price = self._session_bars[-1].get("Close", 0.0)
+                signal_price = self._session_bars[-1].get("Close", 0.0)
+                if action == "BUY":
+                    limit_price = signal_price - self._cushion_points
+                else:
+                    limit_price = signal_price + self._cushion_points
             if limit_price > 0:
                 order = LimitOrder(action, totalQuantity=qty, lmtPrice=limit_price)
                 self._entry_price = limit_price
-                log.info("[ORDER] LIMIT entry at %.0f", limit_price)
+                log.info("[ORDER] CUSHION LIMIT %s at %.0f (signal=%.0f, cushion=%.0f)",
+                         action, limit_price, signal_price, self._cushion_points)
             else:
                 order = MarketOrder(action, totalQuantity=qty)
         order.tif = "DAY"
