@@ -59,6 +59,9 @@ class AlgoConfig:
     session_end_minutes: float = 0.0      # minutes after session start to hard-stop (0=disabled, e.g. 60 for 10:30)
     one_and_done: bool = False            # if True, no re-entry after first exit to flat
     first_entry_trend_filter: bool = False # if True, first entry must match purple/blue slope direction
+    # --- Limit order simulation (matches live IB behavior) ---
+    cushion_points: float = 0.0           # 0=instant fill at signal price, >0=limit order N pts better
+    limit_expiry_bars: int = 5            # cancel limit order after N bars if not filled
 
 
 # ---------------------------------------------------------------------------
@@ -266,19 +269,23 @@ def _compute_rays_nb(
     """
     # --- Orange ray ---
     orange_vals = np.zeros(n)
-    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]
+    orange_anchor_idxs = np.zeros(n, dtype=np.int64)
+    o_anchor_p = highs_arr[0]; o_anchor_t = times_num[0]; o_anchor_i = 0
     for i in range(n):
         if highs_arr[i] > o_anchor_p:
-            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]
+            o_anchor_p = highs_arr[i]; o_anchor_t = times_num[i]; o_anchor_i = i
         orange_vals[i] = o_anchor_p + orange_slope_val * (times_num[i] - o_anchor_t)
+        orange_anchor_idxs[i] = o_anchor_i
 
     # --- Yellow ray ---
     yellow_vals = np.zeros(n)
-    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]
+    yellow_anchor_idxs = np.zeros(n, dtype=np.int64)
+    y_anchor_p = lows_arr[0]; y_anchor_t = times_num[0]; y_anchor_i = 0
     for i in range(n):
         if lows_arr[i] < y_anchor_p:
-            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]
+            y_anchor_p = lows_arr[i]; y_anchor_t = times_num[i]; y_anchor_i = i
         yellow_vals[i] = y_anchor_p + yellow_slope_val * (times_num[i] - y_anchor_t)
+        yellow_anchor_idxs[i] = y_anchor_i
 
     # --- Purple/blue rays ---
     # Purple anchors at session high, then re-anchors at each subsequent LOWER swing high.
@@ -291,6 +298,8 @@ def _compute_rays_nb(
     blue_slopes         = np.zeros(n)
     purple_start_prices = np.full(n, highs_arr[0])
     blue_start_prices   = np.full(n, lows_arr[0])
+    purple_anchor_idxs  = np.zeros(n, dtype=np.int64)
+    blue_anchor_idxs    = np.zeros(n, dtype=np.int64)
 
     # Purple: start at session high, move forward to each lower swing high
     p_session_high = highs_arr[0]; p_session_high_idx = 0
@@ -330,6 +339,8 @@ def _compute_rays_nb(
                 b_anchor_idx = j
 
         pw_start = p_anchor_idx; bw_start = b_anchor_idx
+        purple_anchor_idxs[i] = pw_start
+        blue_anchor_idxs[i] = bw_start
         pw_len = i + 1 - pw_start; bw_len = i + 1 - bw_start
 
         if pw_len >= 2 and bw_len >= 2:
@@ -416,7 +427,8 @@ def _compute_rays_nb(
     return (orange_vals, yellow_vals, purple_vals, blue_vals,
             purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
             magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
-            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx)
+            p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
+            orange_anchor_idxs, yellow_anchor_idxs, purple_anchor_idxs, blue_anchor_idxs)
 
 
 @jit(nopython=True, cache=True)
@@ -469,6 +481,8 @@ def _run_signals_nb(
     one_and_done,
     first_entry_trend_filter,
     session_start_time_num,
+    cushion_points,
+    limit_expiry_bars,
 ):
     """Pure numpy signal detection — returns parallel arrays of signals."""
     sig_type  = np.zeros(n, dtype=np.int8)
@@ -495,6 +509,14 @@ def _run_signals_nb(
     first_trade_exited = False  # for one-and-done mode
     last_reversal_time_num = -1.0  # timestamp of last reversal/entry (for cooldown)
 
+    # Limit order state (cushion_points > 0 enables limit order simulation)
+    limit_active = False       # is there a pending limit order?
+    limit_direction = 0        # 1=buy limit, 2=sell limit
+    limit_price = 0.0          # the limit price
+    limit_signal_bar = 0       # bar index where signal fired
+    limit_from_pos = 0         # position we're coming FROM (to compute P/L on fill)
+    limit_from_entry = 0.0     # entry price of position we're closing
+
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
         prev_close = closes_arr[i - 1]
@@ -509,6 +531,47 @@ def _run_signals_nb(
         prev_blue_slope   = blue_slopes[i - 1]
         liquidated = False
         is_last = (i == n - 1)
+
+        # --- Limit order fill check (before anything else) ---
+        if limit_active:
+            bars_elapsed = i - limit_signal_bar
+            filled = False
+            if limit_direction == 1:  # pending BUY limit
+                if lows_arr[i] <= limit_price:
+                    filled = True
+            else:  # pending SELL limit
+                if highs_arr[i] >= limit_price:
+                    filled = True
+
+            if filled:
+                # Execute the fill at limit_price
+                if limit_from_pos == 2 and limit_from_entry > 0.0:
+                    # Closing a short
+                    session_pl += (limit_from_entry - limit_price) * contracts_remaining
+                elif limit_from_pos == 1 and limit_from_entry > 0.0:
+                    # Closing a long
+                    session_pl += (limit_price - limit_from_entry) * contracts_remaining
+
+                sig_type[i] = limit_direction
+                sig_price[i] = limit_price
+                if is_last:
+                    pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                else:
+                    pos = limit_direction  # 1=long, 2=short
+                    entry_price = limit_price
+                    entry_time_num = times_num[i]
+                    entry_time_idx = i
+                    first_trade_done = True
+                    partial_taken = False
+                    contracts_remaining = 2
+                    trail_anchor_p = -1e30
+                    trail_anchor_t = 0.0
+                    last_reversal_time_num = times_num[i]
+                limit_active = False
+                liquidated = True  # prevent further signals this bar
+            elif bars_elapsed >= limit_expiry_bars:
+                # Expired — cancel
+                limit_active = False
 
         # --- Session end: force exit and block new entries ---
         session_ended = False
@@ -652,7 +715,7 @@ def _run_signals_nb(
             angle_ready = True
 
         # --- BUY signals ---
-        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
+        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked and not limit_active:
             if pos == 2 and reversal_blocked:
                 pending_buy = False
             else:
@@ -709,15 +772,24 @@ def _run_signals_nb(
                             if prev_purple_slope < 0.0 and prev_blue_slope < 0.0:
                                 buy_triggered = False
                     if buy_triggered:
-                        if pos == 2: session_pl += (entry_price - close) * contracts_remaining
-                        sig_type[i] = 1; sig_price[i] = close
-                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                        if cushion_points > 0.0:
+                            # Defer to limit order — fill check happens on subsequent bars
+                            limit_active = True
+                            limit_direction = 1  # buy
+                            limit_price = close - cushion_points
+                            limit_signal_bar = i
+                            limit_from_pos = pos
+                            limit_from_entry = entry_price
                         else:
-                            pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                            last_reversal_time_num = times_num[i]
+                            if pos == 2: session_pl += (entry_price - close) * contracts_remaining
+                            sig_type[i] = 1; sig_price[i] = close
+                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                            else:
+                                pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                last_reversal_time_num = times_num[i]
 
         # --- SELL signals ---
-        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
+        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked and not limit_active:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
             else:
@@ -774,12 +846,21 @@ def _run_signals_nb(
                             if prev_purple_slope > 0.0 and prev_blue_slope > 0.0:
                                 sell_triggered = False
                     if sell_triggered:
-                        if pos == 1: session_pl += (close - entry_price) * contracts_remaining
-                        sig_type[i] = 2; sig_price[i] = close
-                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                        if cushion_points > 0.0:
+                            # Defer to limit order — fill check happens on subsequent bars
+                            limit_active = True
+                            limit_direction = 2  # sell
+                            limit_price = close + cushion_points
+                            limit_signal_bar = i
+                            limit_from_pos = pos
+                            limit_from_entry = entry_price
                         else:
-                            pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                            last_reversal_time_num = times_num[i]
+                            if pos == 1: session_pl += (close - entry_price) * contracts_remaining
+                            sig_type[i] = 2; sig_price[i] = close
+                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
+                            else:
+                                pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                                last_reversal_time_num = times_num[i]
 
         # Track cumulative 2-contract P/L (realized + unrealized on remaining contracts)
         if pos == 0 or entry_price == 0.0:
@@ -853,7 +934,8 @@ def run_trading_algo_fast(
     (orange_vals, yellow_vals, purple_vals, blue_vals,
      purple_slopes, blue_slopes, purple_start_prices, blue_start_prices,
      magenta_vals, magenta_slopes, lime_vals, lime_slopes_arr,
-     p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx) = _compute_rays_nb(
+     p_anchor_p, p_anchor_idx, b_anchor_p, b_anchor_idx,
+     orange_anchor_idxs, yellow_anchor_idxs, purple_anchor_idxs, blue_anchor_idxs) = _compute_rays_nb(
         n, highs_arr, lows_arr, closes_arr, times_num,
         orange_slope_val, yellow_slope_val,
         cfg.swing_anchor_threshold,
@@ -887,6 +969,8 @@ def run_trading_algo_fast(
         1 if cfg.one_and_done else 0,
         1 if cfg.first_entry_trend_filter else 0,
         times_num[0],  # session_start_time_num
+        cfg.cushion_points,
+        cfg.limit_expiry_bars,
     )
 
     # Convert numpy signal arrays back to dicts for _build_signals_frame
@@ -933,15 +1017,19 @@ def run_trading_algo_fast(
     result["blue_anchor_price"]   = b_anchor_p
     result["blue_anchor_time"]    = times_idx[b_anchor_idx]
 
-    # Ray start data — anchor price is where the ray originates, end price is where it is at session end
-    result["orange_ray_start_price"] = orange_vals[0]   # ray starts at first bar's anchor
-    result["orange_ray_start_time"]  = times_idx[0]
-    result["yellow_ray_start_price"] = yellow_vals[0]
-    result["yellow_ray_start_time"]  = times_idx[0]
+    # Ray start data — anchor time/price is where the ray originates on the CURRENT bar's perspective
+    # Orange: anchors at session high
+    result["orange_ray_start_price"] = [orange_vals[int(orange_anchor_idxs[i])] for i in range(n)]
+    result["orange_ray_start_time"]  = [times_idx[int(orange_anchor_idxs[i])] for i in range(n)]
+    # Yellow: anchors at session low
+    result["yellow_ray_start_price"] = [yellow_vals[int(yellow_anchor_idxs[i])] for i in range(n)]
+    result["yellow_ray_start_time"]  = [times_idx[int(yellow_anchor_idxs[i])] for i in range(n)]
+    # Purple: anchors at swing high (trendline intercept at anchor bar)
     result["purple_ray_start_price"] = purple_start_prices
-    result["purple_ray_start_time"]  = [times_idx[0]] * n
+    result["purple_ray_start_time"]  = [times_idx[int(purple_anchor_idxs[i])] for i in range(n)]
+    # Blue: anchors at swing low (trendline intercept at anchor bar)
     result["blue_ray_start_price"]   = blue_start_prices
-    result["blue_ray_start_time"]    = [times_idx[0]] * n
+    result["blue_ray_start_time"]    = [times_idx[int(blue_anchor_idxs[i])] for i in range(n)]
 
     result["orange_angle"] = _display_angle_from_slope(orange_slope_val, x_per_unit, y_per_unit)
     result["yellow_angle"] = _display_angle_from_slope(yellow_slope_val, x_per_unit, y_per_unit)
@@ -950,10 +1038,10 @@ def run_trading_algo_fast(
     result["blue_angle"]   = [float(abs(np.rad2deg(np.arctan(abs(s) / pts_per_bar_visual)))) for s in blue_slopes]
 
     _end_num = times_num[-1]
-    result["orange_ray_end_price"] = orange_vals[-1]
-    result["yellow_ray_end_price"] = yellow_vals[-1]
-    result["purple_ray_end_price"] = purple_vals[-1]
-    result["blue_ray_end_price"]   = blue_vals[-1]
+    result["orange_ray_end_price"] = orange_vals
+    result["yellow_ray_end_price"] = yellow_vals
+    result["purple_ray_end_price"] = purple_vals
+    result["blue_ray_end_price"]   = blue_vals
 
     # Display layer pre-computations
     result["y_min"] = lows_arr.min() - 20.0

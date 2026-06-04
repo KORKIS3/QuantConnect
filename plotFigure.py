@@ -227,7 +227,7 @@ class ChartPlotter:
                   current_time, current_price, angle,
                   color, edge_color, y_offset):
         import math
-        end_time = self.data.index[-1]
+        end_time = current_time
         if math.isnan(float(start_price)) or math.isnan(float(end_price)):
             self.lines[line_key].set_data([], [])
             old_ann = getattr(self, ann_attr, None)
@@ -388,62 +388,137 @@ class ChartPlotter:
             self.annotations.append(ann)
 
     def update_signal_markers(self, current_data):
-        for marker in self.signal_markers["buy"] + self.signal_markers["sell"] + self.signal_markers["halt"] + self.signal_markers.get("tp", []):
+        for marker in self.signal_markers["buy"] + self.signal_markers["sell"] + self.signal_markers["halt"] + self.signal_markers.get("tp", []) + self.signal_markers.get("expired", []) + self.signal_markers.get("pending", []):
             try:
                 marker.remove()
             except Exception:
                 pass
-        for ann in self.signal_annotations["buy"] + self.signal_annotations["sell"] + self.signal_annotations["halt"] + self.signal_annotations.get("tp", []):
+        for ann in self.signal_annotations["buy"] + self.signal_annotations["sell"] + self.signal_annotations["halt"] + self.signal_annotations.get("tp", []) + self.signal_annotations.get("expired", []) + self.signal_annotations.get("pending", []):
             try:
                 ann.remove()
             except Exception:
                 pass
 
-        self.signal_markers     = {"buy": [], "sell": [], "halt": [], "tp": []}
-        self.signal_annotations = {"buy": [], "sell": [], "halt": [], "tp": []}
+        self.signal_markers     = {"buy": [], "sell": [], "halt": [], "tp": [], "expired": [], "pending": []}
+        self.signal_annotations = {"buy": [], "sell": [], "halt": [], "tp": [], "expired": [], "pending": []}
 
         if "signal" not in current_data.columns:
             return
 
+        has_order_status = "order_status" in current_data.columns
+
         for ts, row in current_data.iterrows():
             sig    = row.get("signal", "")
             is_liq = bool(row.get("is_liquidation", False))
+            order_status = str(row.get("order_status", "")) if has_order_status else ""
+
+            # Expired limit order — grey X marker at the limit price
+            if order_status == "expired":
+                limit_p = row.get("limit_price")
+                if pd.notna(limit_p):
+                    limit_p = float(limit_p)
+                    marker, = self.ax.plot(ts, limit_p, marker="x", markersize=10,
+                                           color="grey", markeredgewidth=2.5, zorder=9)
+                    self.signal_markers["expired"].append(marker)
+                    ann = self.ax.annotate(
+                        f"EXPIRED\n{int(limit_p)}", xy=(ts, limit_p), xytext=(0, -18),
+                        textcoords="offset points",
+                        ha="center", va="top", fontsize=7, color="white", fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="grey", alpha=0.7,
+                                  edgecolor="dimgrey", linewidth=1.0))
+                    self.signal_annotations["expired"].append(ann)
+                continue  # don't draw a buy/sell marker for expired signals
+
+            # Pending limit order — hollow circle marker at the limit price
+            if order_status == "pending":
+                limit_p = row.get("limit_price")
+                if pd.notna(limit_p):
+                    limit_p = float(limit_p)
+                    color = "cyan" if sig == "BUY" or (not sig and limit_p < row.get("Close", 0)) else "orange"
+                    marker, = self.ax.plot(ts, limit_p, marker="o", markersize=10,
+                                           color="none", markeredgecolor=color,
+                                           markeredgewidth=2.0, zorder=9)
+                    self.signal_markers["pending"].append(marker)
+                    ann = self.ax.annotate(
+                        f"LIMIT\n{int(limit_p)}", xy=(ts, limit_p), xytext=(0, -18),
+                        textcoords="offset points",
+                        ha="center", va="top", fontsize=7, color="white", fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.7,
+                                  edgecolor=color, linewidth=1.0))
+                    self.signal_annotations["pending"].append(ann)
+                continue
 
             if sig == "BUY":
-                price = row.get("buy_price")
-                if pd.isna(price):
-                    continue
-                price = float(price)
-                label = ("LIQ" if is_liq else "BUY") + "\n" + str(int(price))
+                # Use fill_price if available (actual IB fill), else buy_price (theoretical)
+                if has_order_status and order_status == "filled" and pd.notna(row.get("fill_price")):
+                    price = float(row["fill_price"])
+                    label_prefix = "FILLED" if not is_liq else "LIQ"
+                    face_color = "#00aa00"  # darker green for confirmed fill
+                    edge_color = "#005500"
+                else:
+                    price = row.get("buy_price")
+                    if pd.isna(price):
+                        continue
+                    price = float(price)
+                    label_prefix = "LIQ" if is_liq else "BUY"
+                    face_color = "green"
+                    edge_color = "darkgreen"
+
+                label = label_prefix + "\n" + str(int(price))
                 marker, = self.ax.plot(ts, price, marker="^", markersize=12,
-                                       color="green", markeredgecolor="darkgreen",
+                                       color=face_color, markeredgecolor=edge_color,
                                        markeredgewidth=1.5, zorder=10)
                 self.signal_markers["buy"].append(marker)
                 ann = self.ax.annotate(
                     label, xy=(ts, price), xytext=(0, 22), textcoords="offset points",
                     ha="center", va="bottom", fontsize=8, color="white", fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.4", facecolor="green", alpha=0.9,
-                              edgecolor="darkgreen", linewidth=1.5),
-                    arrowprops=dict(arrowstyle="->", color="green", lw=1.5))
+                    bbox=dict(boxstyle="round,pad=0.4", facecolor=face_color, alpha=0.9,
+                              edgecolor=edge_color, linewidth=1.5),
+                    arrowprops=dict(arrowstyle="->", color=face_color, lw=1.5))
                 self.signal_annotations["buy"].append(ann)
 
+                # Draw dashed line from signal price to limit/fill price if different
+                if has_order_status and order_status == "filled":
+                    sig_p = row.get("buy_price")
+                    if pd.notna(sig_p) and abs(float(sig_p) - price) > 2:
+                        self.ax.plot([ts, ts], [float(sig_p), price], '--',
+                                     color='green', alpha=0.5, lw=1.0, zorder=8)
+
             elif sig == "SELL":
-                price = row.get("sell_price")
-                if pd.isna(price):
-                    continue
-                price = float(price)
-                label = ("LIQ" if is_liq else "SELL") + "\n" + str(int(price))
+                # Use fill_price if available (actual IB fill), else sell_price (theoretical)
+                if has_order_status and order_status == "filled" and pd.notna(row.get("fill_price")):
+                    price = float(row["fill_price"])
+                    label_prefix = "FILLED" if not is_liq else "LIQ"
+                    face_color = "#cc0000"  # darker red for confirmed fill
+                    edge_color = "#660000"
+                else:
+                    price = row.get("sell_price")
+                    if pd.isna(price):
+                        continue
+                    price = float(price)
+                    label_prefix = "LIQ" if is_liq else "SELL"
+                    face_color = "red"
+                    edge_color = "darkred"
+
+                label = label_prefix + "\n" + str(int(price))
                 marker, = self.ax.plot(ts, price, marker="v", markersize=12,
-                                       color="red", markeredgecolor="darkred",
+                                       color=face_color, markeredgecolor=edge_color,
                                        markeredgewidth=1.5, zorder=10)
                 self.signal_markers["sell"].append(marker)
                 ann = self.ax.annotate(
                     label, xy=(ts, price), xytext=(0, -22), textcoords="offset points",
                     ha="center", va="top", fontsize=8, color="white", fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.4", facecolor="red", alpha=0.9,
-                              edgecolor="darkred", linewidth=1.5),
-                    arrowprops=dict(arrowstyle="->", color="red", lw=1.5))
+                    bbox=dict(boxstyle="round,pad=0.4", facecolor=face_color, alpha=0.9,
+                              edgecolor=edge_color, linewidth=1.5),
+                    arrowprops=dict(arrowstyle="->", color=face_color, lw=1.5))
                 self.signal_annotations["sell"].append(ann)
+
+                # Draw dashed line from signal price to limit/fill price if different
+                if has_order_status and order_status == "filled":
+                    sig_p = row.get("sell_price")
+                    if pd.notna(sig_p) and abs(float(sig_p) - price) > 2:
+                        self.ax.plot([ts, ts], [float(sig_p), price], '--',
+                                     color='red', alpha=0.5, lw=1.0, zorder=8)
 
             # Partial TP marker — gold diamond on the bar where TP fired
             if bool(row.get("partial_tp", False)):

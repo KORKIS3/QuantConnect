@@ -86,7 +86,10 @@ def validate_csv_timestamp(csv_path):
         # Check the most recent timestamp in the CSV
         last_timestamp = pd.to_datetime(df.index[-1])
         today = datetime.now(_EST).date()
-        csv_date = last_timestamp.date()
+        if last_timestamp.tzinfo is not None:
+            csv_date = last_timestamp.tz_convert(_EST).date()
+        else:
+            csv_date = last_timestamp.date()
         
         if csv_date != today:
             log.error(f"[CSV] STALE DATA DETECTED: CSV contains data from {csv_date}, but today is {today}")
@@ -94,7 +97,11 @@ def validate_csv_timestamp(csv_path):
         
         # Check that the data is recent (within last 5 minutes)
         now = datetime.now(_EST)
-        age_seconds = (now - last_timestamp.tz_localize(_EST)).total_seconds()
+        if last_timestamp.tzinfo is None:
+            last_ts_est = _EST.localize(last_timestamp)
+        else:
+            last_ts_est = last_timestamp.tz_convert(_EST)
+        age_seconds = (now - last_ts_est).total_seconds()
         if age_seconds > 300:  # 5 minutes
             log.warning(f"[CSV] Data is {age_seconds:.0f}s old - may be stale")
         
@@ -190,7 +197,13 @@ def mirror_trades(port=4003, client_id=2, account_id="DUQ921172"):
                     if len(df) > last_csv_row_count:
                         # Get the latest row
                         latest_row = df.iloc[-1]
-                        position_str = str(latest_row.get('position', 'flat')).lower()
+                        
+                        # Use ib_position column (actual IB fills) if available,
+                        # otherwise fall back to theoretical position column
+                        if 'ib_position' in df.columns and pd.notna(latest_row.get('ib_position')):
+                            position_str = str(latest_row['ib_position']).lower()
+                        else:
+                            position_str = str(latest_row.get('position', 'flat')).lower()
                         
                         # Convert position string to number
                         if position_str == 'long':

@@ -43,8 +43,13 @@ import time
 from datetime import datetime
 from typing import Optional
 
+import sys as _sys
 import matplotlib
-matplotlib.use('TkAgg')  # must be before any pyplot import for interactive windows on Windows
+# Use non-interactive backend when --no-plot is passed (avoids needing a display)
+if "--no-plot" in _sys.argv:
+    matplotlib.use("Agg")
+else:
+    matplotlib.use('TkAgg')  # interactive windows on Windows
 
 import pandas as pd
 import pytz
@@ -138,7 +143,7 @@ class _LiveChartWindow:
         self.end_time = end_time
         self._plotter: Optional[ChartPlotter] = None
 
-    def update(self, algo_df: pd.DataFrame) -> None:
+    def update(self, algo_df: pd.DataFrame, headless: bool = False) -> None:
         """Redraw the chart at the latest frame with the current minute data."""
         import matplotlib.pyplot as _plt
 
@@ -148,14 +153,15 @@ class _LiveChartWindow:
 
         is_first = self._plotter is None
         if is_first:
-            _plt.ion()
+            if not headless:
+                _plt.ion()
             self._plotter = ChartPlotter(
                 algo_df,
                 self.target_date,
                 self.start_time,
                 self.end_time,
                 output_dir="",
-                batch_mode=False,
+                batch_mode=headless,
             )
             self._plotter.create_figure()
             self._plotter.ax.set_xlim(_x_start, _x_end)
@@ -169,6 +175,10 @@ class _LiveChartWindow:
 
         frame = len(algo_df) - 1
         self._plotter.update_plot(frame)
+
+        if headless:
+            return
+
         if is_first:
             _plt.show(block=False)
             self._plotter.fig.canvas.draw_idle()
@@ -303,6 +313,7 @@ class IBDataBridge:
         self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
         self._pending_order: bool = False  # True while an order is placed but not yet confirmed
         self._pending_order_time: Optional[float] = None  # timestamp when pending order was set
+        self._pending_target: int = 0  # target position the pending order is working toward
         self._last_position_check: Optional[float] = None  # last time we validated position size
         self._pinball: PinballEngine = PinballEngine(PinballConfig())  # Pinball overlay
         self._pinball_last_action: str = "HOLD"  # last Pinball decision
@@ -315,6 +326,10 @@ class IBDataBridge:
         self._bracket_tp_order = None   # active TP limit order
         self._bracket_sl_order = None   # active SL stop order
         self._entry_price: float = 0.0  # price we entered at
+        
+        # Live order event tracking — records actual IB outcomes for CSV/chart
+        # Each entry: {time, signal, signal_price, limit_price, status, fill_price, fill_time}
+        self._order_events: list[dict] = []
         
         # NEW: Create account-specific logger if account_id is provided
         if self.account_id:
@@ -333,6 +348,115 @@ class IBDataBridge:
         # Add handler to root logger so all messages go to this account's log
         logging.getLogger().addHandler(handler)
         log.info("[Account %s] Logging to %s", self.account_id, log_file)
+
+    def _seed_events_from_logs(self) -> None:
+        """Parse today's IB logs to reconstruct trade history on restart.
+        
+        Scans all log files for today's date matching this account, extracts
+        execution fills (BOT/SLD), and builds _order_events so the chart
+        reflects the full day's actual IB activity.
+        """
+        import re
+        from datetime import datetime as _dt
+        
+        today_str = _dt.now().strftime("%Y%m%d")
+        account_pattern = f"fred_ib_{self.account_id}_{today_str}" if self.account_id else f"fred_ib_{today_str}"
+        
+        # Find all today's log files for this account
+        log_files = sorted([
+            os.path.join(_LOG_DIR, f) for f in os.listdir(_LOG_DIR)
+            if f.startswith(account_pattern) and f.endswith(".log")
+        ])
+        
+        if not log_files:
+            log.info("[LogParser] No previous logs found for today")
+            return
+        
+        # Parse executions: side='BOT'|'SLD', price=XXXXX.X, cumQty=N.0
+        # We only care about the FINAL cumQty for each orderId (avoid double-counting partial fills)
+        exec_pattern = re.compile(
+            r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*execDetails Execution\("
+            r".*side='(BOT|SLD)'.*price=([\d.]+).*orderId=(\d+).*cumQty=([\d.]+)"
+        )
+        
+        # Collect unique fills: key by orderId, keep max cumQty
+        fills_by_order = {}  # orderId -> {time, side, price, qty}
+        
+        for log_file in log_files:
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        m = exec_pattern.search(line)
+                        if m:
+                            time_str, side, price, order_id, cum_qty = m.groups()
+                            cum_qty_f = float(cum_qty)
+                            # Keep the highest cumQty per order (final fill state)
+                            if order_id not in fills_by_order or cum_qty_f > fills_by_order[order_id]["qty"]:
+                                fills_by_order[order_id] = {
+                                    "time_str": time_str,
+                                    "side": side,
+                                    "price": float(price),
+                                    "qty": cum_qty_f,
+                                }
+            except Exception as exc:
+                log.warning("[LogParser] Error reading %s: %s", log_file, exc)
+        
+        if not fills_by_order:
+            log.info("[LogParser] No executions found in today's logs")
+            return
+        
+        # Sort by time and build order events
+        sorted_fills = sorted(fills_by_order.values(), key=lambda x: x["time_str"])
+        
+        # Clear any existing seeded events (avoid duplicates)
+        self._order_events = []
+        
+        est = pytz.timezone("US/Eastern")
+        pos = 0  # track position through fills
+        entry_price = 0.0
+        
+        for fill in sorted_fills:
+            fill_time = pd.Timestamp(fill["time_str"], tz=est)
+            signal = "BUY" if fill["side"] == "BOT" else "SELL"
+            qty = int(fill["qty"])
+            
+            is_liquidation = False
+            if signal == "BUY" and pos <= 0:
+                # Going long or closing short
+                if pos < 0:
+                    is_liquidation = (pos + qty) == 0  # exact close
+                pos = pos + qty
+                if not is_liquidation:
+                    entry_price = fill["price"]
+            elif signal == "SELL" and pos >= 0:
+                # Going short or closing long
+                if pos > 0:
+                    is_liquidation = (pos - qty) == 0  # exact close
+                pos = pos - qty
+                if not is_liquidation:
+                    entry_price = fill["price"]
+            else:
+                # Adding to position
+                pos = pos + qty if signal == "BUY" else pos - qty
+                entry_price = fill["price"]
+            
+            self._order_events.append({
+                "time": fill_time,
+                "signal": signal,
+                "signal_price": fill["price"],
+                "limit_price": fill["price"],
+                "status": "filled",
+                "fill_price": fill["price"],
+                "fill_time": fill_time,
+                "is_liquidation": is_liquidation,
+                "is_partial_tp": False,
+            })
+        
+        if entry_price > 0:
+            self._entry_price = entry_price
+        
+        log.info("[LogParser] Reconstructed %d fills from today's logs. Current pos=%d, entry=%.0f",
+                 len(self._order_events), pos, entry_price)
 
     # -- connection -----------------------------------------------------------
 
@@ -428,8 +552,11 @@ class IBDataBridge:
                     self._ib_position = int(p.position)
                     log.info("[Connect] Synced _ib_position=%d from IB account", self._ib_position)
                     
-                    # SAFETY CHECK: Flatten any position at session start
-                    if self._ib_position != 0:
+                    # Only flatten if BEFORE session start (9:30). Mid-session restarts keep position.
+                    now_est = pd.Timestamp.now(tz=pytz.timezone("US/Eastern"))
+                    session_start = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+                    
+                    if self._ib_position != 0 and now_est < session_start:
                         log.warning("=" * 80)
                         log.warning("WARNING: Account is NOT FLAT at session start!")
                         log.warning("Current position: %d contracts", self._ib_position)
@@ -438,21 +565,19 @@ class IBDataBridge:
                         
                         # Flatten the position
                         if self._ib_position > 0:
-                            # Long position - sell to flatten
                             from ib_insync import MarketOrder
                             order = MarketOrder("SELL", abs(self._ib_position))
                             order.tif = "DAY"
                             trade = self._ib.placeOrder(self._contract, order)
                             log.info("[Connect] Placed SELL %d to flatten long position", abs(self._ib_position))
-                            self._ib.sleep(3)  # wait for fill
+                            self._ib.sleep(3)
                         elif self._ib_position < 0:
-                            # Short position - buy to flatten
                             from ib_insync import MarketOrder
                             order = MarketOrder("BUY", abs(self._ib_position))
                             order.tif = "DAY"
                             trade = self._ib.placeOrder(self._contract, order)
                             log.info("[Connect] Placed BUY %d to flatten short position", abs(self._ib_position))
-                            self._ib.sleep(3)  # wait for fill
+                            self._ib.sleep(3)
                         
                         # Re-check position after flatten
                         positions = self._ib.positions()
@@ -462,17 +587,54 @@ class IBDataBridge:
                                 break
                         
                         if self._ib_position == 0:
-                            log.info("[Connect] ✓ Position flattened successfully — ready to trade")
+                            log.info("[Connect] Position flattened successfully — ready to trade")
                         else:
-                            log.error("[Connect] ✗ Position still not flat: %d contracts", self._ib_position)
+                            log.error("[Connect] Position still not flat: %d contracts", self._ib_position)
+                    elif self._ib_position != 0:
+                        log.info("[Connect] Mid-session restart — keeping position %d (after 9:30)",
+                                 self._ib_position)
                     else:
-                        log.info("[Connect] ✓ Account is FLAT — ready to trade")
+                        log.info("[Connect] Account is FLAT — ready to trade")
                     break
         except Exception as exc:
             log.warning("[Connect] Could not sync position from IB: %s", exc)
 
         # Subscribe to portfolio updates so _ib_position stays accurate from real fills
         self._ib.updatePortfolioEvent += self._on_portfolio_update
+
+        # Seed _order_events from IB's current state (handles mid-session restarts)
+        # If IB has a position, create a synthetic "filled" event so chart/P&L track correctly
+        if self._ib_position != 0:
+            try:
+                portfolio = self._ib.portfolio()
+                for item in portfolio:
+                    if item.contract.symbol in ("YM", "MYM") and int(item.position) != 0:
+                        pos_size = int(item.position)
+                        # averageCost for MYM = price * multiplier(0.5)
+                        entry_p = float(item.averageCost) / 0.5 if item.averageCost else 0.0
+                        if entry_p > 100000 or entry_p < 10000:
+                            entry_p = float(item.marketPrice) if item.marketPrice else 0.0
+                        signal = "BUY" if pos_size > 0 else "SELL"
+                        self._order_events.append({
+                            "time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")).floor("min"),
+                            "signal": signal,
+                            "signal_price": entry_p,
+                            "limit_price": entry_p,
+                            "status": "filled",
+                            "fill_price": entry_p,
+                            "fill_time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")),
+                            "is_liquidation": False,
+                            "is_partial_tp": False,
+                        })
+                        self._entry_price = entry_p
+                        log.info("[Connect] Seeded _order_events: %s %d @ %.0f (from IB portfolio)",
+                                 signal, abs(pos_size), entry_p)
+                        break
+            except Exception as exc:
+                log.warning("[Connect] Could not seed order events from portfolio: %s", exc)
+
+        # Parse today's IB logs to reconstruct full trade history (handles restarts)
+        self._seed_events_from_logs()
 
     def _on_portfolio_update(self, item) -> None:
         """Called by IB on every fill - keeps _ib_position in sync with real fills."""
@@ -487,15 +649,66 @@ class IBDataBridge:
                 self._pending_order_time = None
                 log.info("[PositionSync] _pending_order cleared")
                 
+                # Update order event tracking — mark last pending as filled
+                fill_price = float(item.averageCost) / 0.5 if item.averageCost else 0.0
+                # averageCost for MYM is price * multiplier(0.5), so divide back
+                # But if that gives nonsense, use marketPrice
+                if fill_price > 100000 or fill_price < 10000:
+                    fill_price = float(item.marketPrice) if item.marketPrice else self._entry_price
+                for evt in reversed(self._order_events):
+                    if evt["status"] == "pending":
+                        evt["status"] = "filled"
+                        evt["fill_price"] = fill_price
+                        evt["fill_time"] = pd.Timestamp.now(tz=pytz.timezone("US/Eastern"))
+                        break
+                
                 # Place bracket TP/SL orders when entering a new position
-                if self._tp_sl_enabled and new_pos != 0 and old_pos == 0:
-                    # Just entered a position — place bracket
-                    fill_price = float(item.averageCost) / 5.0 if item.averageCost else self._entry_price
-                    direction = 1 if new_pos > 0 else -1
-                    self._place_bracket_orders(fill_price, direction)
+                if self._tp_sl_enabled and new_pos != 0:
+                    if old_pos == 0 or (old_pos > 0 and new_pos < 0) or (old_pos < 0 and new_pos > 0):
+                        # Fresh entry OR reversal — place bracket
+                        bracket_fill = float(item.averageCost) / 5.0 if item.averageCost else self._entry_price
+                        direction = 1 if new_pos > 0 else -1
+                        self._place_bracket_orders(bracket_fill, direction)
                 elif new_pos == 0 and old_pos != 0:
                     # Just exited — cancel any remaining bracket orders
                     self._cancel_bracket_orders()
+                    
+                    # Send TP/SL fill alert email
+                    try:
+                        exit_price = float(item.marketPrice) if item.marketPrice else 0.0
+                        pl_pts = 0.0
+                        if self._entry_price > 0:
+                            if old_pos > 0:  # was long
+                                pl_pts = exit_price - self._entry_price
+                            else:  # was short
+                                pl_pts = self._entry_price - exit_price
+                        exit_type = "TP" if pl_pts > 0 else "SL"
+                        action = "SELL" if old_pos > 0 else "BUY"
+                        
+                        # Record bracket exit as an order event for chart/CSV
+                        self._order_events.append({
+                            "time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")).floor("min"),
+                            "signal": action,
+                            "signal_price": exit_price,
+                            "limit_price": exit_price,
+                            "status": "filled",
+                            "fill_price": exit_price,
+                            "fill_time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")),
+                            "is_liquidation": True,
+                            "is_partial_tp": False,
+                        })
+                        
+                        send_trade_alert(
+                            action=action,
+                            price=exit_price,
+                            qty=abs(old_pos),
+                            session_pl=pl_pts,
+                            target_date=self._current_date or "",
+                            position="flat",
+                            order_type=f"BRACKET {exit_type} ({pl_pts:+.0f} pts)",
+                        )
+                    except Exception as exc:
+                        log.error("[Email] bracket fill alert error: %s", exc)
 
                 # IMMEDIATE CSV WRITE after fill confirmation
                 try:
@@ -631,6 +844,11 @@ class IBDataBridge:
             log.error("[Session] flatten error: %s", exc)
 
         # Save the chart image directly from the live figure before closing it.
+        # If running headless (--no-plot), render the final chart now for saving.
+        if self._live_chart is None and self.enable_chart:
+            log.info("[Session] rendering final chart for image save (headless mode) ...")
+            self._update_live_chart(filter_to_session=True, force=True)
+
         saved_image_path = None
         if self._live_chart is not None and self._live_chart._plotter is not None:
             try:
@@ -695,6 +913,7 @@ class IBDataBridge:
         self._pending_order = False
         self._pending_order_time = None
         self._last_position_check = None
+        self._order_events = []
 
     def _resample_to_minutes(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> pd.DataFrame:
         """Resample accumulated 5-second bars to OHLCV bars.
@@ -729,9 +948,20 @@ class IBDataBridge:
         # Always use 1-minute bars — matches the backtest data format
         return _agg(df, "1min")
 
-    def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0) -> None:
-        """Resample bars to 1-min, run the algo, and refresh the live chart window."""
-        if not self.enable_chart or not self.show_plot or not self._session_bars:
+    def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0, force: bool = False) -> None:
+        """Resample bars to 1-min, run the algo, and refresh the live chart window.
+        
+        When show_plot=False (headless/--no-plot), per-minute updates are skipped
+        for performance. Use force=True at session end to render the final chart
+        for image saving.
+        """
+        if not self.enable_chart or not self._session_bars:
+            log.info("[LiveChart] skipped — enable_chart=%s  show_plot=%s  bars=%d",
+                     self.enable_chart, self.show_plot, len(self._session_bars))
+            return
+
+        # In headless mode, skip per-minute renders (expensive) unless forced at session end
+        if not self.show_plot and not force:
             log.info("[LiveChart] skipped — enable_chart=%s  show_plot=%s  bars=%d",
                      self.enable_chart, self.show_plot, len(self._session_bars))
             return
@@ -755,6 +985,112 @@ class IBDataBridge:
             return
 
         log.info("[LiveChart] algo done — %d rows, updating chart ...", len(algo_df))
+        
+        # Clear signals/position/P&L before signal guard time — those are backfill artifacts
+        if self._last_signal_ts is not None and not algo_df.empty:
+            guard_mask = algo_df.index < self._last_signal_ts
+            if guard_mask.any():
+                algo_df.loc[guard_mask, "signal"] = ""
+                algo_df.loc[guard_mask, "buy_price"] = pd.NA
+                algo_df.loc[guard_mask, "sell_price"] = pd.NA
+                algo_df.loc[guard_mask, "position"] = "flat"
+                algo_df.loc[guard_mask, "pl"] = 0.0
+                algo_df.loc[guard_mask, "session_pl"] = 0.0
+                if "partial_tp" in algo_df.columns:
+                    algo_df.loc[guard_mask, "partial_tp"] = False
+                if "is_spike_exit" in algo_df.columns:
+                    algo_df.loc[guard_mask, "is_spike_exit"] = False
+
+        # Override ALL signals/P&L with IB reality
+        # The algo shows theoretical instant fills, but IB may have expired them.
+        # When no fills have happened, chart should show flat/zero.
+        if not algo_df.empty:
+            # Build set of timestamps where signals actually filled on IB
+            filled_times = set()
+            for evt in self._order_events:
+                if evt["status"] == "filled" and evt.get("fill_time") is not None:
+                    filled_times.add(evt["fill_time"].floor("min"))
+                elif evt["status"] == "filled":
+                    filled_times.add(evt["time"].floor("min"))
+
+            # Clear ALL algo signals that didn't result in IB fills
+            for ts in algo_df.index:
+                sig = algo_df.at[ts, "signal"] if "signal" in algo_df.columns else ""
+                if sig in ("BUY", "SELL"):
+                    ts_min = ts.floor("min") if hasattr(ts, 'floor') else ts
+                    if ts_min not in filled_times:
+                        algo_df.at[ts, "signal"] = ""
+                        algo_df.at[ts, "buy_price"] = pd.NA
+                        algo_df.at[ts, "sell_price"] = pd.NA
+                        if "partial_tp" in algo_df.columns:
+                            algo_df.at[ts, "partial_tp"] = False
+
+            # Inject signal markers for filled events (so chart shows them)
+            for evt in self._order_events:
+                if evt["status"] != "filled":
+                    continue
+                fill_t = evt.get("fill_time") or evt["time"]
+                fill_t_min = fill_t.floor("min")
+                fill_p = evt.get("fill_price") or evt["limit_price"]
+                # Find the closest bar in algo_df
+                if fill_t_min in algo_df.index:
+                    target_ts = fill_t_min
+                else:
+                    # Find nearest bar
+                    diffs = abs(algo_df.index - fill_t_min)
+                    target_ts = algo_df.index[diffs.argmin()]
+                algo_df.at[target_ts, "signal"] = evt["signal"]
+                algo_df.at[target_ts, "order_status"] = "filled"
+                algo_df.at[target_ts, "fill_price"] = fill_p
+                algo_df.at[target_ts, "limit_price"] = evt.get("limit_price", fill_p)
+                if evt["signal"] == "BUY":
+                    algo_df.at[target_ts, "buy_price"] = fill_p
+                else:
+                    algo_df.at[target_ts, "sell_price"] = fill_p
+
+            # Recompute position and P/L from only filled events
+            algo_df["position"] = "flat"
+            algo_df["pl"] = 0.0
+            algo_df["session_pl"] = 0.0
+            if "partial_tp" in algo_df.columns:
+                algo_df["partial_tp"] = False
+            if "is_spike_exit" in algo_df.columns:
+                algo_df["is_spike_exit"] = False
+            pos = "flat"
+            entry_p = 0.0
+            realized = 0.0
+            for evt in self._order_events:
+                if evt["status"] != "filled":
+                    continue
+                fill_t = evt.get("fill_time") or evt["time"]
+                fill_t_min = fill_t.floor("min")
+                fill_p = evt.get("fill_price") or evt["limit_price"]
+                if evt["signal"] == "BUY":
+                    if pos == "short" and entry_p > 0:
+                        realized += entry_p - fill_p
+                    pos = "flat" if evt.get("is_liquidation") else "long"
+                    entry_p = 0.0 if evt.get("is_liquidation") else fill_p
+                elif evt["signal"] == "SELL":
+                    if pos == "long" and entry_p > 0:
+                        realized += fill_p - entry_p
+                    pos = "flat" if evt.get("is_liquidation") else "short"
+                    entry_p = 0.0 if evt.get("is_liquidation") else fill_p
+                # Apply position from this fill time onward
+                mask = algo_df.index >= fill_t_min
+                algo_df.loc[mask, "position"] = pos
+
+            # Compute P/L for each bar based on actual fills
+            for ts in algo_df.index:
+                close = float(algo_df.at[ts, "Close"])
+                unrealized = 0.0
+                cur_pos = algo_df.at[ts, "position"]
+                if cur_pos == "long" and entry_p > 0:
+                    unrealized = close - entry_p
+                elif cur_pos == "short" and entry_p > 0:
+                    unrealized = entry_p - close
+                algo_df.at[ts, "pl"] = realized + unrealized
+                algo_df.at[ts, "session_pl"] = realized + unrealized
+
         if self._live_chart is None:
             self._live_chart = _LiveChartWindow(
                 target_date=self._current_date,
@@ -763,7 +1099,7 @@ class IBDataBridge:
             )
 
         try:
-            self._live_chart.update(algo_df)
+            self._live_chart.update(algo_df, headless=not self.show_plot)
             # Wire the Refresh Now button to re-run _update_live_chart
             if (self._live_chart._plotter is not None and
                     getattr(self._live_chart._plotter, '_refresh_callback', None) is None):
@@ -844,7 +1180,11 @@ class IBDataBridge:
             except Exception as exc:
                 log.error("[Snapshot] save error: %s", exc)
 
-        self._session_bars.append({            "Open":   bar.open_,
+        # Print each bar to terminal for live visibility
+        print(f"  {bar_time.strftime('%H:%M:%S')}  O={bar.open_}  H={bar.high}  L={bar.low}  C={bar.close}  V={int(bar.volume)}")
+
+        self._session_bars.append({
+            "Open":   bar.open_,
             "High":   bar.high,
             "Low":    bar.low,
             "Close":  bar.close,
@@ -887,10 +1227,8 @@ class IBDataBridge:
 
     def _on_timeout(self, elapsed: float) -> None:
         """Called every 200 ms by ib_insync to keep the chart window responsive."""
-        if self._live_chart is not None:
+        if self._live_chart is not None and self.show_plot:
             self._live_chart.pump()
-        else:
-            log.debug("[Timeout] no live chart yet")
         self._ib.setTimeout(0.2)
 
     # -- raw 5-second Excel log ----------------------------------------------
@@ -926,7 +1264,8 @@ class IBDataBridge:
         Called at every minute boundary so ``YM_tracking_{date}_{time}.csv`` reflects
         the latest algo output throughout the session, not just at session end.
         
-        Uses timestamped filename to prevent overwriting on restart.
+        Overlays actual IB order events (filled/expired/pending) onto the algo's
+        theoretical signals so the CSV reflects reality.
         """
         if not self.tracking_root or not self._current_date or not self._session_bars:
             return
@@ -947,10 +1286,87 @@ class IBDataBridge:
             log.error("[TrackingCSV] run_trading_algo error: %s", exc)
             return
 
+        # Overlay actual IB order events onto the algo DataFrame
+        algo_df["order_status"] = ""
+        algo_df["limit_price"] = pd.NA
+        algo_df["fill_price"] = pd.NA
+        
+        # Build actual position/P&L from IB fills only
+        ib_position = "flat"
+        ib_entry_price = 0.0
+        ib_realized_pl = 0.0
+        ib_positions = []
+        ib_pls = []
+        
+        # Index order events by their signal time for fast lookup
+        filled_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "filled"}
+        expired_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "expired"}
+        pending_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "pending"}
+        
+        for ts in algo_df.index:
+            # Check if this bar has an IB order event
+            # Round to minute for matching
+            ts_min = ts.floor("min")
+            
+            if ts_min in filled_events:
+                evt = filled_events[ts_min]
+                algo_df.at[ts, "order_status"] = "filled"
+                algo_df.at[ts, "limit_price"] = evt["limit_price"]
+                algo_df.at[ts, "fill_price"] = evt["fill_price"]
+                
+                # Update IB-based position tracking
+                fill_p = evt["fill_price"] or evt["limit_price"]
+                if evt["signal"] == "BUY":
+                    if ib_position == "short" and ib_entry_price > 0:
+                        ib_realized_pl += ib_entry_price - fill_p
+                    if not evt.get("is_liquidation"):
+                        ib_position = "long"
+                        ib_entry_price = fill_p
+                    else:
+                        ib_position = "flat"
+                        ib_entry_price = 0.0
+                elif evt["signal"] == "SELL":
+                    if ib_position == "long" and ib_entry_price > 0:
+                        ib_realized_pl += fill_p - ib_entry_price
+                    if not evt.get("is_liquidation"):
+                        ib_position = "short"
+                        ib_entry_price = fill_p
+                    else:
+                        ib_position = "flat"
+                        ib_entry_price = 0.0
+                        
+            elif ts_min in expired_events:
+                evt = expired_events[ts_min]
+                algo_df.at[ts, "order_status"] = "expired"
+                algo_df.at[ts, "limit_price"] = evt["limit_price"]
+                # Clear the theoretical signal — it didn't actually execute
+                algo_df.at[ts, "signal"] = ""
+                algo_df.at[ts, "buy_price"] = pd.NA
+                algo_df.at[ts, "sell_price"] = pd.NA
+                
+            elif ts_min in pending_events:
+                evt = pending_events[ts_min]
+                algo_df.at[ts, "order_status"] = "pending"
+                algo_df.at[ts, "limit_price"] = evt["limit_price"]
+            
+            # Compute IB-based P/L (realized + unrealized)
+            close = float(algo_df.at[ts, "Close"])
+            unrealized = 0.0
+            if ib_position == "long" and ib_entry_price > 0:
+                unrealized = close - ib_entry_price
+            elif ib_position == "short" and ib_entry_price > 0:
+                unrealized = ib_entry_price - close
+            
+            ib_positions.append(ib_position)
+            ib_pls.append(ib_realized_pl + unrealized)
+        
+        # Override position and P/L with IB actuals if we have any order events
+        if self._order_events:
+            algo_df["ib_position"] = ib_positions
+            algo_df["ib_pl"] = ib_pls
+
         try:
             os.makedirs(self.tracking_root, exist_ok=True)
-            # Use timestamped filename to prevent overwriting on restart
-            # Format: YM_tracking_2026-05-08_0930.csv (or YM_tracking_DUO158495_2026-05-08_0930.csv for multi-account)
             start_time_str = self.start_time.replace(':', '')
             if self.account_id:
                 path = os.path.join(self.tracking_root, f"YM_tracking_{self.account_id}_{self._current_date}_{start_time_str}.csv")
@@ -1001,31 +1417,34 @@ class IBDataBridge:
         except Exception as exc:
             log.error("[PositionSync] Pre-trade reconcile failed: %s", exc)
 
-        # --- Run Pinball engine on the full algo output ---
-        # Reset and re-run Pinball on the entire session so far (stateless per call)
-        pinball = PinballEngine(PinballConfig())
-        pinball.run_session(result)
-
-        # Get the latest Pinball action (last bar's decision)
-        if not pinball.bar_logs:
-            return
-
-        latest_pinball = pinball.bar_logs[-1]
-        pinball_action = latest_pinball.get("action", "HOLD")
-        pinball_pl = latest_pinball.get("session_pl", 0.0)
-        pinball_pos = latest_pinball.get("position", 0)
-        pinball_mode = latest_pinball.get("mode", "CHOP")
-
-        # Only act if Pinball's position differs from what we already have in IB
-        # Convert Pinball position (1=long, -1=short, 0=flat) to contract count
-        target_contracts = pinball_pos * 2  # +2, -2, or 0
-
-        # Check pending order timeout
+        # --- Run Ray Engine signals for trade decisions ---
+        # The ray engine's signal column tells us BUY/SELL on ray crossings.
+        # We use TP/SL brackets for exits, cushion limit for entries.
         import time
+
+        # Get the latest signal from the ray engine
+        last_row = result.iloc[-1]
+        current_signal = str(last_row.get("signal", "")).strip()
+        current_time = result.index[-1]
+
+        # Check pending order timeout — 5 minutes (5 bars) for limit orders to fill
         if self._pending_order and self._pending_order_time is not None:
             elapsed = time.time() - self._pending_order_time
-            if elapsed > 30.0:
-                log.warning("[PositionSync] Pending order timeout after %.1fs — clearing flag", elapsed)
+            if elapsed > 300.0:  # 5 minutes
+                log.info("[RayEngine] Limit order expired after 5 minutes — cancelling")
+                try:
+                    open_trades = self._ib.openTrades()
+                    for t in open_trades:
+                        if t.contract.symbol in ("YM", "MYM") and t.orderStatus.status in ("PreSubmitted", "Submitted"):
+                            self._ib.cancelOrder(t.order)
+                            log.info("[RayEngine] Cancelled expired order %d", t.order.orderId)
+                except Exception as exc:
+                    log.warning("[RayEngine] Could not cancel expired order: %s", exc)
+                # Mark order event as expired
+                for evt in reversed(self._order_events):
+                    if evt["status"] == "pending":
+                        evt["status"] = "expired"
+                        break
                 self._pending_order = False
                 self._pending_order_time = None
 
@@ -1049,44 +1468,58 @@ class IBDataBridge:
                 except Exception as exc:
                     log.error("[EMERGENCY] Failed to flatten excess position: %s", exc)
 
-        # Skip if pending order
-        if self._pending_order:
+        # Skip duplicate signals — only act on NEW signals (different timestamp from last)
+        if current_signal not in ("BUY", "SELL"):
+            return
+        if self._last_signal_ts is not None and current_time <= self._last_signal_ts:
             return
 
-        # --- Sync IB position to match Pinball's target ---
-        # Pinball position: +1=long, -1=short, 0=flat
-        # Pinball contracts: 2=full, 1=after partial TP, 0=flat
-        pinball_contracts = latest_pinball.get("contracts", 0)
-        if pinball_pos == 1:
-            target_contracts = pinball_contracts   # +1 or +2
-        elif pinball_pos == -1:
-            target_contracts = -pinball_contracts  # -1 or -2
+        # Determine target position from signal
+        nc = self.config.num_contracts
+        if current_signal == "BUY":
+            target_contracts = nc   # +2
         else:
-            target_contracts = 0
+            target_contracts = -nc  # -2
 
-        if target_contracts != self._ib_position:
-            qty_diff = target_contracts - self._ib_position
+        # Skip if already in the target direction
+        if target_contracts == self._ib_position:
+            return
 
-            # Determine action
-            if qty_diff > 0:
-                action = "BUY"
-                qty = qty_diff
+        # If pending order exists, check if direction changed
+        if self._pending_order:
+            if target_contracts != self._pending_target:
+                # Signal changed direction — cancel pending and place new
+                log.info("[RayEngine] Direction changed (pending=%d, new=%d) — cancelling",
+                         self._pending_target, target_contracts)
+                try:
+                    open_trades = self._ib.openTrades()
+                    for t in open_trades:
+                        if t.contract.symbol in ("YM", "MYM") and t.orderStatus.status in ("PreSubmitted", "Submitted"):
+                            self._ib.cancelOrder(t.order)
+                            log.info("[RayEngine] Cancelled order %d for direction change", t.order.orderId)
+                except Exception as exc:
+                    log.warning("[RayEngine] Could not cancel for direction change: %s", exc)
+                self._pending_order = False
+                self._pending_order_time = None
             else:
-                action = "SELL"
-                qty = abs(qty_diff)
-
-            # Safety: never exceed 2 contracts
-            if abs(target_contracts) > 2:
-                log.error("[Pinball] SAFETY: target %d exceeds max 2 — BLOCKING", target_contracts)
+                # Same direction — order already working
                 return
 
-            price = float(minute_df["Close"].iloc[-1])
-            is_liquidation = (target_contracts == 0)
-            is_partial = (abs(target_contracts) == 1 and abs(self._ib_position) == 2)
+        # Place the order
+        if target_contracts > self._ib_position:
+            action = "BUY"
+        else:
+            action = "SELL"
 
-            log.info("[Pinball] %s  mode=%s  action=%s  target=%d  ib_pos=%d  qty=%d  price=%.2f  pl=%.1f",
-                     pinball_action, pinball_mode, action, target_contracts, self._ib_position, qty, price, pinball_pl)
-            self._place_order(action, liquidate=is_liquidation, partial_tp=is_partial)
+        price = float(minute_df["Close"].iloc[-1])
+        is_liquidation = False  # TP/SL brackets handle exits, not liquidation orders
+        is_partial = False
+
+        log.info("[RayEngine] SIGNAL=%s  target=%d  ib_pos=%d  price=%.2f  time=%s",
+                 current_signal, target_contracts, self._ib_position, price, current_time.strftime('%H:%M'))
+        self._place_order(action, liquidate=is_liquidation, partial_tp=is_partial)
+        self._pending_target = target_contracts
+        self._last_signal_ts = current_time
 
     # -- order execution ------------------------------------------------------
 
@@ -1197,6 +1630,21 @@ class IBDataBridge:
         self._pending_order_time = time.time()  # track when order was placed
         log.info("[ORDER placed]  %-10s  qty=%d  contract=%s  orderId=%s",
                  tag, qty, exec_contract.localSymbol, trade.order.orderId)
+
+        # Record order event for live tracking CSV/chart
+        signal_price = self._session_bars[-1].get("Close", 0.0) if self._session_bars else 0.0
+        _lmt = getattr(order, 'lmtPrice', 0.0) or 0.0
+        self._order_events.append({
+            "time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")).floor("min"),
+            "signal": action,
+            "signal_price": signal_price,
+            "limit_price": _lmt if _lmt > 0 else signal_price,
+            "status": "pending",
+            "fill_price": None,
+            "fill_time": None,
+            "is_liquidation": liquidate,
+            "is_partial_tp": partial_tp,
+        })
 
         # NOTE: _ib_position is now updated by _on_portfolio_update() on fill confirmation,
         # not here on order placement. This prevents the race condition where a partial TP

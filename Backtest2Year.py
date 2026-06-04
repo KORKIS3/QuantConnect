@@ -86,6 +86,8 @@ def _process_day(fname, quick=False):
         partial_tp_pts=50.0,
         wm_shield_distance=0.0,
         swing_anchor_threshold=10.0,
+        cushion_points=40.0,
+        limit_expiry_bars=5,
     )
     all_end_times = DAY_END_TIMES + ([] if quick else NIGHT_END_TIMES)
     result = {et: None for et in all_end_times}
