@@ -331,6 +331,11 @@ class IBDataBridge:
         # Each entry: {time, signal, signal_price, limit_price, status, fill_price, fill_time}
         self._order_events: list[dict] = []
         
+        # IB-reported P/L (authoritative, directly from portfolio updates)
+        self._ib_realized_pnl: float = 0.0
+        self._ib_unrealized_pnl: float = 0.0
+        self._ib_total_pnl: float = 0.0
+        
         # NEW: Create account-specific logger if account_id is provided
         if self.account_id:
             self._setup_account_logger()
@@ -639,6 +644,11 @@ class IBDataBridge:
     def _on_portfolio_update(self, item) -> None:
         """Called by IB on every fill - keeps _ib_position in sync with real fills."""
         if item.contract.symbol in ("YM", "MYM"):
+            # Always track IB's reported P/L (authoritative source)
+            self._ib_realized_pnl = float(item.realizedPNL) if item.realizedPNL else 0.0
+            self._ib_unrealized_pnl = float(item.unrealizedPNL) if item.unrealizedPNL else 0.0
+            self._ib_total_pnl = self._ib_realized_pnl + self._ib_unrealized_pnl
+            
             new_pos = int(item.position)
             if new_pos != self._ib_position:
                 old_pos = self._ib_position
@@ -1079,17 +1089,15 @@ class IBDataBridge:
                 mask = algo_df.index >= fill_t_min
                 algo_df.loc[mask, "position"] = pos
 
-            # Compute P/L for each bar based on actual fills
-            for ts in algo_df.index:
-                close = float(algo_df.at[ts, "Close"])
-                unrealized = 0.0
-                cur_pos = algo_df.at[ts, "position"]
-                if cur_pos == "long" and entry_p > 0:
-                    unrealized = close - entry_p
-                elif cur_pos == "short" and entry_p > 0:
-                    unrealized = entry_p - close
-                algo_df.at[ts, "pl"] = realized + unrealized
-                algo_df.at[ts, "session_pl"] = realized + unrealized
+            # Use IB's reported P/L directly (authoritative source)
+            # Convert from USD to points: MYM multiplier is $0.50/pt
+            ib_realized_pts = self._ib_realized_pnl / 0.5
+            ib_unrealized_pts = self._ib_unrealized_pnl / 0.5
+            ib_total_pts = self._ib_total_pnl / 0.5
+            algo_df["pl"] = ib_total_pts
+            algo_df["session_pl"] = ib_total_pts
+            algo_df["ib_realized_pl"] = ib_realized_pts
+            algo_df["ib_unrealized_pl"] = ib_unrealized_pts
 
         if self._live_chart is None:
             self._live_chart = _LiveChartWindow(
@@ -1291,6 +1299,11 @@ class IBDataBridge:
         algo_df["limit_price"] = pd.NA
         algo_df["fill_price"] = pd.NA
         
+        # CLEAR all theoretical signals — only filled IB events will be re-injected
+        algo_df["signal"] = ""
+        algo_df["buy_price"] = pd.NA
+        algo_df["sell_price"] = pd.NA
+        
         # Build actual position/P&L from IB fills only
         ib_position = "flat"
         ib_entry_price = 0.0
@@ -1299,9 +1312,19 @@ class IBDataBridge:
         ib_pls = []
         
         # Index order events by their signal time for fast lookup
-        filled_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "filled"}
-        expired_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "expired"}
-        pending_events = {evt["time"]: evt for evt in self._order_events if evt["status"] == "pending"}
+        # Use lists since multiple events can share the same minute
+        from collections import defaultdict
+        filled_events = defaultdict(list)
+        expired_events = defaultdict(list)
+        pending_events = defaultdict(list)
+        for evt in self._order_events:
+            ts_key = evt["time"].floor("min") if hasattr(evt["time"], "floor") else evt["time"]
+            if evt["status"] == "filled":
+                filled_events[ts_key].append(evt)
+            elif evt["status"] == "expired":
+                expired_events[ts_key].append(evt)
+            elif evt["status"] == "pending":
+                pending_events[ts_key].append(evt)
         
         for ts in algo_df.index:
             # Check if this bar has an IB order event
@@ -1309,43 +1332,47 @@ class IBDataBridge:
             ts_min = ts.floor("min")
             
             if ts_min in filled_events:
-                evt = filled_events[ts_min]
+                # Use last fill event for this minute (most recent state)
+                evt = filled_events[ts_min][-1]
                 algo_df.at[ts, "order_status"] = "filled"
                 algo_df.at[ts, "limit_price"] = evt["limit_price"]
                 algo_df.at[ts, "fill_price"] = evt["fill_price"]
-                
-                # Update IB-based position tracking
-                fill_p = evt["fill_price"] or evt["limit_price"]
+                # Re-inject the signal since we cleared all above
+                algo_df.at[ts, "signal"] = evt["signal"]
                 if evt["signal"] == "BUY":
-                    if ib_position == "short" and ib_entry_price > 0:
-                        ib_realized_pl += ib_entry_price - fill_p
-                    if not evt.get("is_liquidation"):
-                        ib_position = "long"
-                        ib_entry_price = fill_p
-                    else:
-                        ib_position = "flat"
-                        ib_entry_price = 0.0
-                elif evt["signal"] == "SELL":
-                    if ib_position == "long" and ib_entry_price > 0:
-                        ib_realized_pl += fill_p - ib_entry_price
-                    if not evt.get("is_liquidation"):
-                        ib_position = "short"
-                        ib_entry_price = fill_p
-                    else:
-                        ib_position = "flat"
-                        ib_entry_price = 0.0
+                    algo_df.at[ts, "buy_price"] = evt["fill_price"] or evt["limit_price"]
+                else:
+                    algo_df.at[ts, "sell_price"] = evt["fill_price"] or evt["limit_price"]
+                
+                # Process ALL fills for this minute for P/L tracking
+                for fill_evt in filled_events[ts_min]:
+                    fill_p = fill_evt["fill_price"] or fill_evt["limit_price"]
+                    if fill_evt["signal"] == "BUY":
+                        if ib_position == "short" and ib_entry_price > 0:
+                            ib_realized_pl += ib_entry_price - fill_p
+                        if not fill_evt.get("is_liquidation"):
+                            ib_position = "long"
+                            ib_entry_price = fill_p
+                        else:
+                            ib_position = "flat"
+                            ib_entry_price = 0.0
+                    elif fill_evt["signal"] == "SELL":
+                        if ib_position == "long" and ib_entry_price > 0:
+                            ib_realized_pl += fill_p - ib_entry_price
+                        if not fill_evt.get("is_liquidation"):
+                            ib_position = "short"
+                            ib_entry_price = fill_p
+                        else:
+                            ib_position = "flat"
+                            ib_entry_price = 0.0
                         
             elif ts_min in expired_events:
-                evt = expired_events[ts_min]
+                evt = expired_events[ts_min][-1]
                 algo_df.at[ts, "order_status"] = "expired"
                 algo_df.at[ts, "limit_price"] = evt["limit_price"]
-                # Clear the theoretical signal — it didn't actually execute
-                algo_df.at[ts, "signal"] = ""
-                algo_df.at[ts, "buy_price"] = pd.NA
-                algo_df.at[ts, "sell_price"] = pd.NA
                 
             elif ts_min in pending_events:
-                evt = pending_events[ts_min]
+                evt = pending_events[ts_min][-1]
                 algo_df.at[ts, "order_status"] = "pending"
                 algo_df.at[ts, "limit_price"] = evt["limit_price"]
             
@@ -1360,10 +1387,16 @@ class IBDataBridge:
             ib_positions.append(ib_position)
             ib_pls.append(ib_realized_pl + unrealized)
         
-        # Override position and P/L with IB actuals if we have any order events
+        # Override position and P/L with IB actuals
         if self._order_events:
             algo_df["ib_position"] = ib_positions
-            algo_df["ib_pl"] = ib_pls
+        # IB-reported P/L (authoritative, in USD)
+        ib_realized_pts = self._ib_realized_pnl / 0.5  # USD -> points (MYM $0.50/pt)
+        ib_unrealized_pts = self._ib_unrealized_pnl / 0.5
+        ib_total_pts = self._ib_total_pnl / 0.5
+        algo_df["ib_realized_pl"] = ib_realized_pts
+        algo_df["ib_unrealized_pl"] = ib_unrealized_pts
+        algo_df["ib_pl"] = ib_total_pts
 
         try:
             os.makedirs(self.tracking_root, exist_ok=True)
