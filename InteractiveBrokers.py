@@ -1410,6 +1410,8 @@ class IBDataBridge:
         # Override position and P/L with IB actuals
         if self._order_events:
             algo_df["ib_position"] = ib_positions
+            # Override session_pl with fill-based P/L (raw points, no commissions)
+            algo_df["session_pl"] = ib_pls
         # IB-reported P/L (authoritative, in USD)
         ib_realized_pts = self._ib_realized_pnl / 0.5  # USD -> points (MYM $0.50/pt)
         ib_unrealized_pts = self._ib_unrealized_pnl / 0.5

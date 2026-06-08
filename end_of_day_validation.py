@@ -98,25 +98,40 @@ def parse_ib_fills(target_date):
 
 
 def parse_ib_pnl(target_date):
-    """Get the last reported realizedPNL from IB logs."""
-    date_str = target_date.replace("-", "")
-    last_realized = 0.0
-    # Use the account-specific log file directly
-    for fname in sorted(os.listdir(_IB_LOG_DIR)):
-        if date_str not in fname or not fname.endswith(".log"):
-            continue
-        if "DUO158495" not in fname:
-            continue
-        fpath = os.path.join(_IB_LOG_DIR, fname)
-        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                if "realizedPNL=" in line:
-                    m = re.search(r"realizedPNL=([-\d.]+)", line)
-                    if m:
-                        val = float(m.group(1))
-                        if val != 0.0:
-                            last_realized = val
-    return last_realized
+    """Calculate realized P/L directly from fill prices (ground truth).
+    Short: (entry - exit) * contracts
+    Long: (exit - entry) * contracts
+    """
+    fills = parse_ib_fills(target_date)
+    if not fills:
+        return 0.0
+
+    # Reconstruct position and P/L from fills in order
+    pos = 0  # positive = long, negative = short
+    entry_price = 0.0
+    realized_pts = 0.0
+
+    for fill in fills:
+        qty = int(fill["cum_qty"])
+        price = fill["price"]
+        side = fill["side"]
+
+        if side == "BOT":
+            if pos < 0:
+                # Closing short: profit = entry - exit
+                realized_pts += (entry_price - price) * min(qty, abs(pos))
+            pos += qty
+            if pos > 0:
+                entry_price = price
+        else:  # SLD
+            if pos > 0:
+                # Closing long: profit = exit - entry
+                realized_pts += (price - entry_price) * min(qty, pos)
+            pos -= qty
+            if pos < 0:
+                entry_price = price
+
+    return realized_pts
 
 
 def run_backtest_for_day(target_date):
@@ -232,12 +247,11 @@ def main():
     # --- 3. Parse IB fills ---
     print(f"\n[3] Parsing IB log fills...")
     ib_fills = parse_ib_fills(target_date)
-    ib_realized_usd = parse_ib_pnl(target_date)
-    ib_realized_pts = ib_realized_usd / 0.5
+    ib_realized_pts = parse_ib_pnl(target_date)
     print(f"  IB fills: {len(ib_fills)}")
     for f in ib_fills:
         print(f"    {f['side']} {int(f['cum_qty'])} @ {f['price']:.0f} (orderId={f['order_id']})")
-    print(f"  IB realizedPNL: ${ib_realized_usd:.2f} = {ib_realized_pts:.1f} pts")
+    print(f"  IB P/L (from fills): {ib_realized_pts:+.1f} pts")
 
     # --- 4. Parse live tracking CSV ---
     print(f"\n[4] Parsing live tracking CSV...")
@@ -301,9 +315,9 @@ def main():
 
     values = list(sources.values())
     if max(values) - min(values) < 5:
-        print(f"  ✓ All sources within 5 pts — MATCH")
+        print("  [OK] All sources within 5 pts -- MATCH")
     else:
-        print(f"  ✗ MISMATCH detected:")
+        print("  [X] MISMATCH detected:")
         for name, val in sources.items():
             print(f"    {name}: {val:+.1f}")
         print(f"    Gap: {max(values) - min(values):.1f} pts")
