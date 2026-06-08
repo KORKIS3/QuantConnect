@@ -727,6 +727,26 @@ class IBDataBridge:
                 except Exception as exc:
                     log.error("[PositionSync] Immediate CSV write failed: %s", exc)
 
+                # Send trade alert email ONLY on confirmed fill
+                try:
+                    fill_price = float(item.marketPrice) if item.marketPrice else 0.0
+                    action = "BUY" if new_pos > old_pos else "SELL"
+                    qty = abs(new_pos - old_pos)
+                    session_pl = self._ib_total_pnl / 0.5  # USD -> points
+                    position = "long" if new_pos > 0 else ("short" if new_pos < 0 else "flat")
+                    order_type = "ENTRY/REVERSAL" if new_pos != 0 else "EXIT"
+                    send_trade_alert(
+                        action=action,
+                        price=fill_price,
+                        qty=qty,
+                        session_pl=session_pl,
+                        target_date=self._current_date or "",
+                        position=position,
+                        order_type=order_type,
+                    )
+                except Exception as exc:
+                    log.error("[Email] fill alert error: %s", exc)
+
     def disconnect(self) -> None:
         self._ib.disconnect()
         log.info("Disconnected from IB.")
@@ -1683,27 +1703,8 @@ class IBDataBridge:
         # not here on order placement. This prevents the race condition where a partial TP
         # order is placed but not yet filled when the next signal fires.
 
-        # Send trade alert email
-        try:
-            session_pl = 0.0
-            position = "flat"
-            if self._last_result is not None and not self._last_result.empty:
-                session_pl = float(self._last_result["pl"].iloc[-1])
-                position   = str(self._last_result["position"].iloc[-1])
-            fill_price = 0.0
-            if self._session_bars:
-                fill_price = self._session_bars[-1].get("Close", 0.0)
-            send_trade_alert(
-                action=action,
-                price=fill_price,
-                qty=qty,
-                session_pl=session_pl,
-                target_date=self._current_date or "",
-                position=position,
-                order_type="LIQUIDATE" if liquidate else "ENTRY/REVERSAL",
-            )
-        except Exception as exc:
-            log.error("[Email] trade alert error: %s", exc)
+        # NOTE: Email alert is now sent from _on_portfolio_update() on fill confirmation,
+        # not here on order placement. This ensures emails only go out for actual fills.
 
     def _place_bracket_orders(self, entry_price: float, direction: int) -> None:
         """Place TP limit and SL stop orders after entry fill.
