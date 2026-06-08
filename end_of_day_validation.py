@@ -8,6 +8,9 @@ Runs after market close. Produces:
 Usage: python end_of_day_validation.py [date]
        python end_of_day_validation.py 2026-06-08
 """
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
+
 import os, sys, re
 import pandas as pd
 import numpy as np
