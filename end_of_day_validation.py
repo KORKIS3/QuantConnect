@@ -101,6 +101,7 @@ def parse_ib_pnl(target_date):
     """Get the last reported realizedPNL from IB logs."""
     date_str = target_date.replace("-", "")
     last_realized = 0.0
+    # Use the account-specific log file directly
     for fname in sorted(os.listdir(_IB_LOG_DIR)):
         if date_str not in fname or not fname.endswith(".log"):
             continue
@@ -109,10 +110,12 @@ def parse_ib_pnl(target_date):
         fpath = os.path.join(_IB_LOG_DIR, fname)
         with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
-                if "realizedPNL=" in line and "DUO158495" in line:
+                if "realizedPNL=" in line:
                     m = re.search(r"realizedPNL=([-\d.]+)", line)
                     if m:
-                        last_realized = float(m.group(1))
+                        val = float(m.group(1))
+                        if val != 0.0:
+                            last_realized = val
     return last_realized
 
 
