@@ -712,7 +712,7 @@ class IBDataBridge:
                             action=action,
                             price=exit_price,
                             qty=abs(old_pos),
-                            session_pl=pl_pts,
+                            session_pl=self._ib_total_pnl / 0.5,
                             target_date=self._current_date or "",
                             position="flat",
                             order_type=f"BRACKET {exit_type} ({pl_pts:+.0f} pts)",
