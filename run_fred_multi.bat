@@ -1,9 +1,17 @@
 @echo off
 cd /d C:\Users\Administrator\source\repos\KORKIS3\QuantConnect
+
+:: Always run from production branch regardless of what's checked out
+echo Switching to production branch...
+git stash -q 2>nul
+git checkout production -q
+git pull scott production -q
+
 echo ==========================================
 echo   Fred Multi - Account 1 + Mirror
 echo   Account 1: DUO158495 (trading)
 echo   Account 2: DUQ921172 (mirroring)
+echo   Branch: production
 echo ==========================================
 start "Fred - Account 1 (DUO158495) Port 4002" cmd /k "C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe" InteractiveBrokers.py --port 4002 --client-id 1 --account-id DUO158495 --duration 450
 timeout /t 5 /nobreak
