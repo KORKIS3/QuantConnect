@@ -283,6 +283,8 @@ class IBDataBridge:
             wm_shield_distance=0.0,
             swing_anchor_threshold=10.0,
             num_contracts=2,
+            cushion_points=0.0,   # DISABLED: was 40.0 — now instant market fills
+            limit_expiry_bars=5,
         )
         self.dry_run = dry_run
         self.start_time = start_time
@@ -318,11 +320,14 @@ class IBDataBridge:
         self._pinball: PinballEngine = PinballEngine(PinballConfig())  # Pinball overlay
         self._pinball_last_action: str = "HOLD"  # last Pinball decision
         
-        # TP/SL bracket order management
-        self._tp_sl_enabled: bool = True
+        # # DISABLED: TP/SL bracket order management (removed — using signal exits only)
+        # self._tp_sl_enabled: bool = True
+        # self._tp_points: float = 60.0
+        # self._sl_points: float = 50.0
+        self._tp_sl_enabled: bool = False  # brackets disabled
         self._tp_points: float = 60.0   # total TP in points (30 per contract × 2)
         self._sl_points: float = 50.0   # total SL in points (25 per contract × 2)
-        self._cushion_points: float = 40.0  # enter 40 pts better than signal (buy dip / sell rip)
+        self._cushion_points: float = 0.0  # DISABLED: was 40.0 — now instant market fills
         self._bracket_tp_order = None   # active TP limit order
         self._bracket_sl_order = None   # active SL stop order
         self._entry_price: float = 0.0  # price we entered at
@@ -1474,7 +1479,7 @@ class IBDataBridge:
 
         # --- Run Ray Engine signals for trade decisions ---
         # The ray engine's signal column tells us BUY/SELL on ray crossings.
-        # We use TP/SL brackets for exits, cushion limit for entries.
+        # Entries are now MARKET orders — no cushion limit, no expiry needed.
         import time
 
         # Get the latest signal from the ray engine
@@ -1482,11 +1487,12 @@ class IBDataBridge:
         current_signal = str(last_row.get("signal", "")).strip()
         current_time = result.index[-1]
 
-        # Check pending order timeout — 5 minutes (5 bars) for limit orders to fill
+        # # DISABLED: Limit order expiry (no longer using limit orders)
+        # Check pending order timeout — but now only as a safety net (market orders fill instantly)
         if self._pending_order and self._pending_order_time is not None:
             elapsed = time.time() - self._pending_order_time
-            if elapsed > 300.0:  # 5 minutes
-                log.info("[RayEngine] Limit order expired after 5 minutes — cancelling")
+            if elapsed > 300.0:  # 5 minutes — safety net for stuck orders
+                log.info("[RayEngine] Order stuck for 5 minutes — cancelling")
                 try:
                     open_trades = self._ib.openTrades()
                     for t in open_trades:
@@ -1567,7 +1573,7 @@ class IBDataBridge:
             action = "SELL"
 
         price = float(minute_df["Close"].iloc[-1])
-        is_liquidation = False  # TP/SL brackets handle exits, not liquidation orders
+        is_liquidation = False  # signal exits handled by reversals, not liquidation orders
         is_partial = False
 
         log.info("[RayEngine] SIGNAL=%s  target=%d  ib_pos=%d  price=%.2f  time=%s",
@@ -1593,7 +1599,7 @@ class IBDataBridge:
             log.info("[ORDER dry_run] %-10s  contract=%s", tag, self._contract.localSymbol)
             return
 
-        # Cancel bracket orders before signal exit or reversal
+        # Cancel bracket orders before signal exit or reversal (safety — brackets are disabled)
         if liquidate or (not partial_tp and self._ib_position != 0):
             self._cancel_bracket_orders()
 
@@ -1657,27 +1663,15 @@ class IBDataBridge:
         log.info("[ORDER calc]    current_pos=%d  target=%s  action=%s  qty=%d", 
                  current_pos, algo_target_position, action, qty)
         
-        # Use LIMIT order for entries, MARKET order for exits/liquidations
+        # Use MARKET orders for all entries and exits (cushion limit removed)
         if liquidate or partial_tp:
             order = MarketOrder(action, totalQuantity=qty)
         else:
-            # Entry: use limit order with CUSHION (40 pts better than signal)
-            # BUY: limit at signal_price - cushion (buy the dip)
-            # SELL: limit at signal_price + cushion (sell the rip)
-            limit_price = 0.0
+            # Entry: market order at current price (cushion logic removed)
+            order = MarketOrder(action, totalQuantity=qty)
             if self._session_bars:
                 signal_price = self._session_bars[-1].get("Close", 0.0)
-                if action == "BUY":
-                    limit_price = signal_price - self._cushion_points
-                else:
-                    limit_price = signal_price + self._cushion_points
-            if limit_price > 0:
-                order = LimitOrder(action, totalQuantity=qty, lmtPrice=limit_price)
-                self._entry_price = limit_price
-                log.info("[ORDER] CUSHION LIMIT %s at %.0f (signal=%.0f, cushion=%.0f)",
-                         action, limit_price, signal_price, self._cushion_points)
-            else:
-                order = MarketOrder(action, totalQuantity=qty)
+                log.info("[ORDER] MARKET %s (signal=%.0f)", action, signal_price)
         order.tif = "DAY"
         exec_contract = self._order_contract or self._contract
         trade = self._ib.placeOrder(exec_contract, order)

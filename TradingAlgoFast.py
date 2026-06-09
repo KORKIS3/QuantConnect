@@ -509,13 +509,13 @@ def _run_signals_nb(
     first_trade_exited = False  # for one-and-done mode
     last_reversal_time_num = -1.0  # timestamp of last reversal/entry (for cooldown)
 
-    # Limit order state (cushion_points > 0 enables limit order simulation)
-    limit_active = False       # is there a pending limit order?
-    limit_direction = 0        # 1=buy limit, 2=sell limit
-    limit_price = 0.0          # the limit price
-    limit_signal_bar = 0       # bar index where signal fired
-    limit_from_pos = 0         # position we're coming FROM (to compute P/L on fill)
-    limit_from_entry = 0.0     # entry price of position we're closing
+    # # DISABLED: Limit order state (cushion/fill logic removed)
+    # limit_active = False
+    # limit_direction = 0
+    # limit_price = 0.0
+    # limit_signal_bar = 0
+    # limit_from_pos = 0
+    # limit_from_entry = 0.0
 
     for i in range(max(cutoff_idx, 3), n):
         close      = closes_arr[i]
@@ -532,46 +532,8 @@ def _run_signals_nb(
         liquidated = False
         is_last = (i == n - 1)
 
-        # --- Limit order fill check (before anything else) ---
-        if limit_active:
-            bars_elapsed = i - limit_signal_bar
-            filled = False
-            if limit_direction == 1:  # pending BUY limit
-                if lows_arr[i] <= limit_price:
-                    filled = True
-            else:  # pending SELL limit
-                if highs_arr[i] >= limit_price:
-                    filled = True
-
-            if filled:
-                # Execute the fill at limit_price
-                if limit_from_pos == 2 and limit_from_entry > 0.0:
-                    # Closing a short
-                    session_pl += (limit_from_entry - limit_price) * contracts_remaining
-                elif limit_from_pos == 1 and limit_from_entry > 0.0:
-                    # Closing a long
-                    session_pl += (limit_price - limit_from_entry) * contracts_remaining
-
-                sig_type[i] = limit_direction
-                sig_price[i] = limit_price
-                if is_last:
-                    pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                else:
-                    pos = limit_direction  # 1=long, 2=short
-                    entry_price = limit_price
-                    entry_time_num = times_num[i]
-                    entry_time_idx = i
-                    first_trade_done = True
-                    partial_taken = False
-                    contracts_remaining = 2
-                    trail_anchor_p = -1e30
-                    trail_anchor_t = 0.0
-                    last_reversal_time_num = times_num[i]
-                limit_active = False
-                liquidated = True  # prevent further signals this bar
-            elif bars_elapsed >= limit_expiry_bars:
-                # Expired — cancel
-                limit_active = False
+        # # DISABLED: Limit order fill check (cushion logic removed)
+        # # All entries now execute instantly at close price on signal bar
 
         # --- Session end: force exit and block new entries ---
         session_ended = False
@@ -715,7 +677,7 @@ def _run_signals_nb(
             angle_ready = True
 
         # --- BUY signals ---
-        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked and not limit_active:
+        if pos != 1 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
             if pos == 2 and reversal_blocked:
                 pending_buy = False
             else:
@@ -772,24 +734,16 @@ def _run_signals_nb(
                             if prev_purple_slope < 0.0 and prev_blue_slope < 0.0:
                                 buy_triggered = False
                     if buy_triggered:
-                        if cushion_points > 0.0:
-                            # Defer to limit order — fill check happens on subsequent bars
-                            limit_active = True
-                            limit_direction = 1  # buy
-                            limit_price = close - cushion_points
-                            limit_signal_bar = i
-                            limit_from_pos = pos
-                            limit_from_entry = entry_price
+                        # Instant fill at close price (cushion logic removed)
+                        if pos == 2: session_pl += (entry_price - close) * contracts_remaining
+                        sig_type[i] = 1; sig_price[i] = close
+                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else:
-                            if pos == 2: session_pl += (entry_price - close) * contracts_remaining
-                            sig_type[i] = 1; sig_price[i] = close
-                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                            else:
-                                pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                                last_reversal_time_num = times_num[i]
+                            pos = 1; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            last_reversal_time_num = times_num[i]
 
         # --- SELL signals ---
-        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked and not limit_active:
+        if pos != 2 and sig_type[i] == 0 and not liquidated and angle_ready and not entries_blocked:
             if pos == 1 and reversal_blocked:
                 pending_sell = False
             else:
@@ -846,21 +800,13 @@ def _run_signals_nb(
                             if prev_purple_slope > 0.0 and prev_blue_slope > 0.0:
                                 sell_triggered = False
                     if sell_triggered:
-                        if cushion_points > 0.0:
-                            # Defer to limit order — fill check happens on subsequent bars
-                            limit_active = True
-                            limit_direction = 2  # sell
-                            limit_price = close + cushion_points
-                            limit_signal_bar = i
-                            limit_from_pos = pos
-                            limit_from_entry = entry_price
+                        # Instant fill at close price (cushion logic removed)
+                        if pos == 1: session_pl += (close - entry_price) * contracts_remaining
+                        sig_type[i] = 2; sig_price[i] = close
+                        if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
                         else:
-                            if pos == 1: session_pl += (close - entry_price) * contracts_remaining
-                            sig_type[i] = 2; sig_price[i] = close
-                            if is_last: pos = 0; entry_price = 0.0; entry_time_num = 0.0
-                            else:
-                                pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
-                                last_reversal_time_num = times_num[i]
+                            pos = 2; entry_price = close; entry_time_num = times_num[i]; entry_time_idx = i; first_trade_done = True; partial_taken = False; contracts_remaining = 2; trail_anchor_p = -1e30; trail_anchor_t = 0.0
+                            last_reversal_time_num = times_num[i]
 
         # Track cumulative 2-contract P/L (realized + unrealized on remaining contracts)
         if pos == 0 or entry_price == 0.0:
