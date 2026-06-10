@@ -1030,7 +1030,7 @@ class IBDataBridge:
             for ev in bar_fills:
                 side = ev["signal"]
                 price = float(ev["fill_price"])
-                qty = 2  # default
+                qty = 1 if ev.get("is_partial_tp", False) else 2
 
                 if side == "BUY":
                     df.at[idx, "signal"] = "BUY"
