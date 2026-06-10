@@ -452,7 +452,7 @@ class ChartPlotter:
                 # Use fill_price if available (actual IB fill), else buy_price (theoretical)
                 if has_order_status and order_status == "filled" and pd.notna(row.get("fill_price")):
                     price = float(row["fill_price"])
-                    label_prefix = "FILLED" if not is_liq else "LIQ"
+                    label_prefix = "LIQ" if is_liq else "BUY"
                     face_color = "#00aa00"  # darker green for confirmed fill
                     edge_color = "#005500"
                 else:
@@ -488,7 +488,7 @@ class ChartPlotter:
                 # Use fill_price if available (actual IB fill), else sell_price (theoretical)
                 if has_order_status and order_status == "filled" and pd.notna(row.get("fill_price")):
                     price = float(row["fill_price"])
-                    label_prefix = "FILLED" if not is_liq else "LIQ"
+                    label_prefix = "LIQ" if is_liq else "SELL"
                     face_color = "#cc0000"  # darker red for confirmed fill
                     edge_color = "#660000"
                 else:

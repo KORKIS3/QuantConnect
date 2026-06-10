@@ -303,6 +303,7 @@ class IBDataBridge:
         self._current_date: Optional[str] = None
         self._last_minute: Optional[str] = None
         self._live_chart: Optional[_LiveChartWindow] = None
+        self._ib_chart: Optional[_LiveChartWindow] = None  # IB fills view
         self._raw_wb: Optional[Workbook] = None
         self._raw_ws = None
         self._raw_path: Optional[str] = None
@@ -645,6 +646,7 @@ class IBDataBridge:
 
         # Parse today's IB logs to reconstruct full trade history (handles restarts)
         self._seed_events_from_logs()
+        self._seeded_event_count = len(self._order_events)  # mark where seeded events end
 
     def _on_portfolio_update(self, item) -> None:
         """Called by IB on every fill - keeps _ib_position in sync with real fills."""
@@ -898,6 +900,9 @@ class IBDataBridge:
         if self._live_chart is not None:
             self._live_chart.close()
             self._live_chart = None
+        if self._ib_chart is not None:
+            self._ib_chart.close()
+            self._ib_chart = None
 
         # Save tracking CSV.
         try:
@@ -983,6 +988,101 @@ class IBDataBridge:
         # Always use 1-minute bars — matches the backtest data format
         return _agg(df, "1min")
 
+    def _build_ib_view_df(self, algo_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Build a DataFrame with IB's actual fills overlaid on the same OHLC data.
+        Only uses fills from the current session (excludes seeded history from old logs).
+        """
+        import numpy as np
+        # Only use events from this session (after seeded ones)
+        seeded_count = getattr(self, '_seeded_event_count', 0)
+        session_events = self._order_events[seeded_count:]
+        
+        if algo_df is None or algo_df.empty:
+            return None
+
+        df = algo_df.copy()
+        # Clear algo signals — replace with IB actuals
+        df["signal"] = ""
+        df["buy_price"] = np.nan
+        df["sell_price"] = np.nan
+        df["position"] = "flat"
+        df["pl"] = 0.0
+        if "session_pl" in df.columns:
+            df["session_pl"] = 0.0
+
+        # Replay actual IB fills
+        ib_position = 0
+        entry_price = 0.0
+        realized_pl = 0.0
+
+        # Build fill map from session events only (only filled orders)
+        fill_map = {}
+        for ev in session_events:
+            if ev.get("status") != "filled" and ev.get("fill_price") is None:
+                continue
+            fill_price = ev.get("fill_price")
+            if fill_price is None or fill_price == 0:
+                continue
+            bar_time = ev["time"].floor("min")
+            if bar_time not in fill_map:
+                fill_map[bar_time] = []
+            fill_map[bar_time].append(ev)
+
+        for idx in df.index:
+            bar_fills = fill_map.get(idx, [])
+            for ev in bar_fills:
+                side = ev["signal"]
+                price = float(ev["fill_price"])
+                qty = 2  # default
+
+                if side == "BUY":
+                    df.at[idx, "signal"] = "BUY"
+                    df.at[idx, "buy_price"] = price
+                    if ib_position < 0:
+                        realized_pl += (entry_price - price) * abs(ib_position)
+                        ib_position += qty
+                        if ib_position > 0:
+                            entry_price = price
+                    elif ib_position == 0:
+                        ib_position = qty
+                        entry_price = price
+                    else:
+                        ib_position += qty
+                else:  # SELL
+                    df.at[idx, "signal"] = "SELL"
+                    df.at[idx, "sell_price"] = price
+                    if ib_position > 0:
+                        realized_pl += (price - entry_price) * ib_position
+                        ib_position -= qty
+                        if ib_position < 0:
+                            entry_price = price
+                    elif ib_position == 0:
+                        ib_position = -qty
+                        entry_price = price
+                    else:
+                        ib_position -= qty
+
+            # Set position
+            if ib_position > 0:
+                df.at[idx, "position"] = "long"
+            elif ib_position < 0:
+                df.at[idx, "position"] = "short"
+            else:
+                df.at[idx, "position"] = "flat"
+
+            # P/L
+            unrealized = 0.0
+            close = df.at[idx, "Close"]
+            if ib_position > 0:
+                unrealized = (close - entry_price) * ib_position
+            elif ib_position < 0:
+                unrealized = (entry_price - close) * abs(ib_position)
+            df.at[idx, "pl"] = realized_pl + unrealized
+            if "session_pl" in df.columns:
+                df.at[idx, "session_pl"] = realized_pl + unrealized
+
+        return df
+
     def _update_live_chart(self, filter_to_session: bool = True, lookback_minutes: int = 0, force: bool = False) -> None:
         """Resample bars to 1-min, run the algo, and refresh the live chart window.
         
@@ -1021,7 +1121,9 @@ class IBDataBridge:
 
         log.info("[LiveChart] algo done — %d rows, updating chart ...", len(algo_df))
         
-        # Clear signals/position/P&L before signal guard time — those are backfill artifacts
+        # Chart 1: pure algo signals/P&L from connection time forward only.
+        # Zero out everything before signal guard so chart starts at 0.
+        # Chart 2 (IB View) shows actual IB fills via _build_ib_view_df.
         if self._last_signal_ts is not None and not algo_df.empty:
             guard_mask = algo_df.index < self._last_signal_ts
             if guard_mask.any():
@@ -1035,94 +1137,34 @@ class IBDataBridge:
                     algo_df.loc[guard_mask, "partial_tp"] = False
                 if "is_spike_exit" in algo_df.columns:
                     algo_df.loc[guard_mask, "is_spike_exit"] = False
-
-        # Override ALL signals/P&L with IB reality
-        # The algo shows theoretical instant fills, but IB may have expired them.
-        # When no fills have happened, chart should show flat/zero.
-        if not algo_df.empty:
-            # Build set of timestamps where signals actually filled on IB
-            filled_times = set()
-            for evt in self._order_events:
-                if evt["status"] == "filled" and evt.get("fill_time") is not None:
-                    filled_times.add(evt["fill_time"].floor("min"))
-                elif evt["status"] == "filled":
-                    filled_times.add(evt["time"].floor("min"))
-
-            # Clear ALL algo signals that didn't result in IB fills
-            for ts in algo_df.index:
-                sig = algo_df.at[ts, "signal"] if "signal" in algo_df.columns else ""
-                if sig in ("BUY", "SELL"):
-                    ts_min = ts.floor("min") if hasattr(ts, 'floor') else ts
-                    if ts_min not in filled_times:
-                        algo_df.at[ts, "signal"] = ""
-                        algo_df.at[ts, "buy_price"] = pd.NA
-                        algo_df.at[ts, "sell_price"] = pd.NA
-                        if "partial_tp" in algo_df.columns:
-                            algo_df.at[ts, "partial_tp"] = False
-
-            # Inject signal markers for filled events (so chart shows them)
-            for evt in self._order_events:
-                if evt["status"] != "filled":
-                    continue
-                fill_t = evt.get("fill_time") or evt["time"]
-                fill_t_min = fill_t.floor("min")
-                fill_p = evt.get("fill_price") or evt["limit_price"]
-                # Find the closest bar in algo_df
-                if fill_t_min in algo_df.index:
-                    target_ts = fill_t_min
-                else:
-                    # Find nearest bar
-                    diffs = abs(algo_df.index - fill_t_min)
-                    target_ts = algo_df.index[diffs.argmin()]
-                algo_df.at[target_ts, "signal"] = evt["signal"]
-                algo_df.at[target_ts, "order_status"] = "filled"
-                algo_df.at[target_ts, "fill_price"] = fill_p
-                algo_df.at[target_ts, "limit_price"] = evt.get("limit_price", fill_p)
-                if evt["signal"] == "BUY":
-                    algo_df.at[target_ts, "buy_price"] = fill_p
-                else:
-                    algo_df.at[target_ts, "sell_price"] = fill_p
-
-            # Recompute position and P/L from only filled events
-            algo_df["position"] = "flat"
-            algo_df["pl"] = 0.0
-            algo_df["session_pl"] = 0.0
-            if "partial_tp" in algo_df.columns:
-                algo_df["partial_tp"] = False
-            if "is_spike_exit" in algo_df.columns:
-                algo_df["is_spike_exit"] = False
-            pos = "flat"
-            entry_p = 0.0
-            realized = 0.0
-            for evt in self._order_events:
-                if evt["status"] != "filled":
-                    continue
-                fill_t = evt.get("fill_time") or evt["time"]
-                fill_t_min = fill_t.floor("min")
-                fill_p = evt.get("fill_price") or evt["limit_price"]
-                if evt["signal"] == "BUY":
-                    if pos == "short" and entry_p > 0:
-                        realized += entry_p - fill_p
-                    pos = "flat" if evt.get("is_liquidation") else "long"
-                    entry_p = 0.0 if evt.get("is_liquidation") else fill_p
-                elif evt["signal"] == "SELL":
-                    if pos == "long" and entry_p > 0:
-                        realized += fill_p - entry_p
-                    pos = "flat" if evt.get("is_liquidation") else "short"
-                    entry_p = 0.0 if evt.get("is_liquidation") else fill_p
-                # Apply position from this fill time onward
-                mask = algo_df.index >= fill_t_min
-                algo_df.loc[mask, "position"] = pos
-
-            # Use IB's reported P/L directly (authoritative source)
-            # Convert from USD to points: MYM multiplier is $0.50/pt
-            ib_realized_pts = self._ib_realized_pnl / 0.5
-            ib_unrealized_pts = self._ib_unrealized_pnl / 0.5
-            ib_total_pts = self._ib_total_pnl / 0.5
-            algo_df["pl"] = ib_total_pts
-            algo_df["session_pl"] = ib_total_pts
-            algo_df["ib_realized_pl"] = ib_realized_pts
-            algo_df["ib_unrealized_pl"] = ib_unrealized_pts
+                # Recompute post-guard P/L from scratch (starts at 0, ignores pre-guard entries)
+                post_guard = ~guard_mask
+                if post_guard.any():
+                    _pos = 0  # 0=flat, 1=long, -1=short
+                    _entry_p = 0.0
+                    _realized = 0.0
+                    _new_pl = []
+                    for _idx in algo_df.loc[post_guard].index:
+                        _sig = str(algo_df.at[_idx, "signal"]).strip()
+                        _close = float(algo_df.at[_idx, "Close"])
+                        if _sig == "BUY":
+                            if _pos == -1 and _entry_p > 0:
+                                _realized += (_entry_p - _close) * 2
+                            _pos = 1
+                            _entry_p = _close
+                        elif _sig == "SELL":
+                            if _pos == 1 and _entry_p > 0:
+                                _realized += (_close - _entry_p) * 2
+                            _pos = -1
+                            _entry_p = _close
+                        _unrealized = 0.0
+                        if _pos == 1 and _entry_p > 0:
+                            _unrealized = (_close - _entry_p) * 2
+                        elif _pos == -1 and _entry_p > 0:
+                            _unrealized = (_entry_p - _close) * 2
+                        _new_pl.append(_realized + _unrealized)
+                    algo_df.loc[post_guard, "session_pl"] = _new_pl
+                    algo_df.loc[post_guard, "pl"] = _new_pl
 
         if self._live_chart is None:
             self._live_chart = _LiveChartWindow(
@@ -1137,9 +1179,35 @@ class IBDataBridge:
             if (self._live_chart._plotter is not None and
                     getattr(self._live_chart._plotter, '_refresh_callback', None) is None):
                 self._live_chart._plotter._refresh_callback = self._update_live_chart
+            if self._live_chart._plotter is not None:
+                try:
+                    self._live_chart._plotter.fig.canvas.manager.set_window_title(
+                        f"Algo View (What algo would do) — {self._current_date}")
+                except Exception:
+                    pass
             log.info("[LiveChart] chart updated OK  bars=%d", len(algo_df))
         except Exception as exc:
             log.error("[LiveChart] update error: %s", exc)
+
+        # --- IB View chart (actual fills) ---
+        try:
+            ib_df = self._build_ib_view_df(algo_df)
+            if ib_df is not None:
+                if self._ib_chart is None:
+                    self._ib_chart = _LiveChartWindow(
+                        target_date=self._current_date,
+                        start_time=self.start_time,
+                        end_time=self.end_time,
+                    )
+                self._ib_chart.update(ib_df, headless=not self.show_plot)
+                if self._ib_chart._plotter is not None:
+                    try:
+                        self._ib_chart._plotter.fig.canvas.manager.set_window_title(
+                            f"IB View (Actual Fills) — {self._current_date}")
+                    except Exception:
+                        pass
+        except Exception as exc:
+            log.error("[IB Chart] update error: %s", exc)
 
     # -- bar handler ----------------------------------------------------------
 
@@ -1262,6 +1330,8 @@ class IBDataBridge:
         """Called every 200 ms by ib_insync to keep the chart window responsive."""
         if self._live_chart is not None and self.show_plot:
             self._live_chart.pump()
+        if self._ib_chart is not None and self.show_plot:
+            self._ib_chart.pump()
         self._ib.setTimeout(0.2)
 
     # -- raw 5-second Excel log ----------------------------------------------
@@ -1319,25 +1389,23 @@ class IBDataBridge:
             log.error("[TrackingCSV] run_trading_algo error: %s", exc)
             return
 
-        # Overlay actual IB order events onto the algo DataFrame
+        # Overlay actual IB order events onto the algo DataFrame as SEPARATE columns.
+        # Keep algo's own signal/position/pl columns intact.
         algo_df["order_status"] = ""
         algo_df["limit_price"] = pd.NA
         algo_df["fill_price"] = pd.NA
         
-        # CLEAR all theoretical signals — only filled IB events will be re-injected
-        algo_df["signal"] = ""
-        algo_df["buy_price"] = pd.NA
-        algo_df["sell_price"] = pd.NA
-        
-        # Build actual position/P&L from IB fills only
+        # Build IB position/P&L tracking as SEPARATE columns (don't override algo)
         ib_position = "flat"
         ib_entry_price = 0.0
         ib_realized_pl = 0.0
         ib_positions = []
         ib_pls = []
+        ib_signals = []
+        ib_buy_prices = []
+        ib_sell_prices = []
         
         # Index order events by their signal time for fast lookup
-        # Use lists since multiple events can share the same minute
         from collections import defaultdict
         filled_events = defaultdict(list)
         expired_events = defaultdict(list)
@@ -1352,22 +1420,21 @@ class IBDataBridge:
                 pending_events[ts_key].append(evt)
         
         for ts in algo_df.index:
-            # Check if this bar has an IB order event
-            # Round to minute for matching
             ts_min = ts.floor("min")
+            ib_sig = ""
+            ib_buy_p = pd.NA
+            ib_sell_p = pd.NA
             
             if ts_min in filled_events:
-                # Use last fill event for this minute (most recent state)
                 evt = filled_events[ts_min][-1]
                 algo_df.at[ts, "order_status"] = "filled"
                 algo_df.at[ts, "limit_price"] = evt["limit_price"]
                 algo_df.at[ts, "fill_price"] = evt["fill_price"]
-                # Re-inject the signal since we cleared all above
-                algo_df.at[ts, "signal"] = evt["signal"]
+                ib_sig = evt["signal"]
                 if evt["signal"] == "BUY":
-                    algo_df.at[ts, "buy_price"] = evt["fill_price"] or evt["limit_price"]
+                    ib_buy_p = evt["fill_price"] or evt["limit_price"]
                 else:
-                    algo_df.at[ts, "sell_price"] = evt["fill_price"] or evt["limit_price"]
+                    ib_sell_p = evt["fill_price"] or evt["limit_price"]
                 
                 # Process ALL fills for this minute for P/L tracking
                 for fill_evt in filled_events[ts_min]:
@@ -1411,14 +1478,18 @@ class IBDataBridge:
             
             ib_positions.append(ib_position)
             ib_pls.append(ib_realized_pl + unrealized)
+            ib_signals.append(ib_sig)
+            ib_buy_prices.append(ib_buy_p)
+            ib_sell_prices.append(ib_sell_p)
         
-        # Override position and P/L with IB actuals
-        if self._order_events:
-            algo_df["ib_position"] = ib_positions
-            # Override session_pl with fill-based P/L (raw points, no commissions)
-            algo_df["session_pl"] = ib_pls
-        # IB-reported P/L (authoritative, in USD)
-        ib_realized_pts = self._ib_realized_pnl / 0.5  # USD -> points (MYM $0.50/pt)
+        # Add IB columns WITHOUT overriding algo's own signal/position/session_pl
+        algo_df["ib_position"] = ib_positions
+        algo_df["ib_session_pl"] = ib_pls
+        algo_df["ib_signal"] = ib_signals
+        algo_df["ib_buy_price"] = ib_buy_prices
+        algo_df["ib_sell_price"] = ib_sell_prices
+        # IB-reported P/L (authoritative, in USD converted to points)
+        ib_realized_pts = self._ib_realized_pnl / 0.5
         ib_unrealized_pts = self._ib_unrealized_pnl / 0.5
         ib_total_pts = self._ib_total_pnl / 0.5
         algo_df["ib_realized_pl"] = ib_realized_pts
@@ -1578,7 +1649,14 @@ class IBDataBridge:
 
         log.info("[RayEngine] SIGNAL=%s  target=%d  ib_pos=%d  price=%.2f  time=%s",
                  current_signal, target_contracts, self._ib_position, price, current_time.strftime('%H:%M'))
-        self._place_order(action, liquidate=is_liquidation, partial_tp=is_partial)
+        # Pass algo's target position so _place_order calculates correct qty for reversals
+        if target_contracts > 0:
+            algo_target = "long"
+        elif target_contracts < 0:
+            algo_target = "short"
+        else:
+            algo_target = "flat"
+        self._place_order(action, liquidate=is_liquidation, partial_tp=is_partial, algo_target_position=algo_target)
         self._pending_target = target_contracts
         self._last_signal_ts = current_time
 
@@ -1603,15 +1681,6 @@ class IBDataBridge:
         if liquidate or (not partial_tp and self._ib_position != 0):
             self._cancel_bracket_orders()
 
-        # Determine current position size from algo's last known state (not IB's stale position)
-        current_pos = 0
-        if self._last_result is not None and not self._last_result.empty:
-            pos = str(self._last_result["position"].iloc[-1])
-            if pos == "long":
-                current_pos = 2
-            elif pos == "short":
-                current_pos = -2
-
         # Refresh position from IB before calculating qty to avoid stale estimates
         try:
             positions = self._ib.positions()
@@ -1625,6 +1694,9 @@ class IBDataBridge:
                     break
         except Exception as exc:
             log.warning("[PositionSync] Could not refresh position before order: %s", exc)
+
+        # Determine current position size from IB's confirmed position (just refreshed)
+        current_pos = self._ib_position
 
         # Calculate quantity — USE ALGO'S TARGET POSITION, NOT IB'S STALE POSITION
         nc = self.config.num_contracts
