@@ -946,6 +946,21 @@ def run_trading_algo_fast(
 
     result["orange_ray"] = orange_vals
     result["partial_tp"] = partial_tp_arr  # True on bars where partial TP fired
+    # Derive partial_tp_signal from position: long->SELL, short->BUY
+    _pt_signals = []
+    for i in range(n):
+        if partial_tp_arr[i]:
+            pos = result["position"].iloc[i]
+            if pos == "long":
+                _pt_signals.append("PT_SELL")
+            elif pos == "short":
+                _pt_signals.append("PT_BUY")
+            else:
+                _pt_signals.append("")
+        else:
+            _pt_signals.append("")
+    result["partial_tp_signal"] = _pt_signals
+    result["partial_tp_price"] = [float(closes_arr[i]) if partial_tp_arr[i] else float("nan") for i in range(n)]
     result["yellow_ray"] = yellow_vals
     result["purple_ray"] = purple_vals
     result["blue_ray"]   = blue_vals
