@@ -1602,6 +1602,18 @@ class IBDataBridge:
 
         # Skip duplicate signals — only act on NEW signals (different timestamp from last)
         if current_signal not in ("BUY", "SELL"):
+            # --- Check for partial TP even when no BUY/SELL signal ---
+            if last_row.get("partial_tp", False) and self._ib_position != 0:
+                if self._last_partial_tp_ts is None or current_time > self._last_partial_tp_ts:
+                    # Partial TP fired - close 1 contract
+                    if self._ib_position > 0:
+                        pt_action = "SELL"
+                    else:
+                        pt_action = "BUY"
+                    log.info("[PartialTP] FIRING  ib_pos=%d  action=%s  time=%s",
+                             self._ib_position, pt_action, current_time.strftime("%H:%M"))
+                    self._place_order(pt_action, partial_tp=True, algo_target_position="partial")
+                    self._last_partial_tp_ts = current_time
             return
         if self._last_signal_ts is not None and current_time <= self._last_signal_ts:
             return
