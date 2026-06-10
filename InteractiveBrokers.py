@@ -57,7 +57,6 @@ from ib_insync import IB, BarData, Contract, Future, MarketOrder, LimitOrder, St
 from openpyxl import Workbook
 
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
-from belief_engine_pinball import PinballEngine, PinballConfig
 from ReOrgMain import run_live_session
 from plotFigure import ChartPlotter
 from Emailer import send_session_summary, send_trade_alert, send_connection_failure_alert
@@ -318,8 +317,6 @@ class IBDataBridge:
         self._pending_order_time: Optional[float] = None  # timestamp when pending order was set
         self._pending_target: int = 0  # target position the pending order is working toward
         self._last_position_check: Optional[float] = None  # last time we validated position size
-        self._pinball: PinballEngine = PinballEngine(PinballConfig())  # Pinball overlay
-        self._pinball_last_action: str = "HOLD"  # last Pinball decision
         
         # # DISABLED: TP/SL bracket order management (removed — using signal exits only)
         # self._tp_sl_enabled: bool = True
