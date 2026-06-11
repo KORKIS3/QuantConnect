@@ -98,7 +98,7 @@ _IB_LIVE_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live")
 # ---------------------------------------------------------------------------
 
 def resolve_ym_front_month(ib: IB) -> Contract:
-    """Query IB for all active MYM (Micro E-mini Dow) contracts and return the front month.
+    """Query IB for all active YM (E-mini Dow) contracts and return the front month.
 
     Uses ``reqContractDetails`` so IB returns every listed expiry, then
     filters to contracts whose last trade date is today or later and sorts
@@ -106,10 +106,10 @@ def resolve_ym_front_month(ib: IB) -> Contract:
     """
     from datetime import date
 
-    base = Future(symbol="MYM", exchange="CBOT", currency="USD")
+    base = Future(symbol="YM", exchange="CBOT", currency="USD")
     details = ib.reqContractDetails(base)
     if not details:
-        raise RuntimeError("No MYM contract details returned by IB.")
+        raise RuntimeError("No YM contract details returned by IB.")
 
     today = date.today().strftime("%Y%m%d")
     active = [
@@ -118,7 +118,7 @@ def resolve_ym_front_month(ib: IB) -> Contract:
         if d.contract.lastTradeDateOrContractMonth >= today
     ]
     if not active:
-        raise RuntimeError("No active (non-expired) MYM contracts found.")
+        raise RuntimeError("No active (non-expired) YM contracts found.")
 
     active.sort(key=lambda c: c.lastTradeDateOrContractMonth)
     return active[0]
@@ -1672,7 +1672,7 @@ class IBDataBridge:
     # -- order execution ------------------------------------------------------
 
     def _place_order(self, action: str, liquidate: bool = False, partial_tp: bool = False, algo_target_position: str = "flat") -> None:
-        """Submit a market order for MYM contracts.
+        """Submit a market order for YM contracts.
 
         - Entry (flat → long/short): 2 contracts
         - Partial TP: 1 contract (close half)
