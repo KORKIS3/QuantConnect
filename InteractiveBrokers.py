@@ -762,6 +762,16 @@ class IBDataBridge:
         if self._contract is None:
             raise RuntimeError("Call connect() before start().")
 
+        # Clear any stale FRED_STOP file from a previous session so it can't
+        # kill today's run before we even start receiving bars.
+        _stop_file = os.path.join(_IB_LIVE_ROOT, "FRED_STOP")
+        if os.path.exists(_stop_file):
+            try:
+                os.remove(_stop_file)
+                log.info("[Start] Removed stale FRED_STOP file from previous session.")
+            except Exception:
+                pass
+
         # Always set the dynamic window from wall-clock now.
         if not self._window_set:
             self._apply_dynamic_window(None)
@@ -888,7 +898,11 @@ class IBDataBridge:
             try:
                 os.makedirs(self.image_root, exist_ok=True)
                 img_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}.jpg")
-                self._live_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+                # Prefer IB View (actual fills), fall back to Algo View
+                if self._ib_chart is not None and self._ib_chart._plotter is not None:
+                    self._ib_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+                else:
+                    self._live_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
                 saved_image_path = img_path
                 log.info("[Session] chart image saved: %s", img_path)
             except Exception as exc:
@@ -1272,7 +1286,11 @@ class IBDataBridge:
                     self.image_root,
                     f"YM_{bar_date}_{current_hour:02d}00_snapshot.jpg"
                 )
-                self._live_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
+                # Prefer IB View (actual fills), fall back to Algo View
+                if self._ib_chart is not None and self._ib_chart._plotter is not None:
+                    self._ib_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
+                else:
+                    self._live_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
                 self._last_hourly_save = current_hour
                 log.info("[Snapshot] hourly chart saved: %s", snap_path)
             except Exception as exc:
