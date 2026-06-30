@@ -1147,12 +1147,13 @@ class IBDataBridge:
         # Chart 1: pure algo signals/P&L from connection time forward only.
         # Only apply the guard if Fred connected LATE (after 9:32 ET).
         # Normal on-time starts (9:28-9:30) show all signals without blanking.
+        # When late, blank only signals BEFORE connection time (not the advancing _last_signal_ts).
         # Chart 2 (IB View) shows actual IB fills via _build_ib_view_df.
         _conn = getattr(self, '_connection_time', None)
         _connected_late = (_conn is not None and
                            (_conn.hour > 9 or (_conn.hour == 9 and _conn.minute >= 32)))
-        if _connected_late and self._last_signal_ts is not None and not algo_df.empty:
-            guard_mask = algo_df.index < self._last_signal_ts
+        if _connected_late and _conn is not None and not algo_df.empty:
+            guard_mask = algo_df.index < _conn
             if guard_mask.any():
                 algo_df.loc[guard_mask, "signal"] = ""
                 algo_df.loc[guard_mask, "buy_price"] = pd.NA
