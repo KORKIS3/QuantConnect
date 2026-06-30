@@ -1016,6 +1016,7 @@ class IBDataBridge:
         df["signal"] = ""
         df["buy_price"] = np.nan
         df["sell_price"] = np.nan
+        df["partial_tp"] = False
         df["position"] = "flat"
         df["pl"] = 0.0
         if "session_pl" in df.columns:
@@ -1044,13 +1045,23 @@ class IBDataBridge:
             for ev in bar_fills:
                 side = ev["signal"]
                 price = float(ev["fill_price"])
-                qty = 1 if ev.get("is_partial_tp", False) else 2
+                is_partial = ev.get("is_partial_tp", False)
+                qty = 1 if is_partial else 2
 
-                if side == "BUY":
+                if is_partial:
+                    # Mark as partial TP — gold diamond marker, not a BUY/SELL triangle
+                    df.at[idx, "partial_tp"] = True
+                elif side == "BUY":
                     df.at[idx, "signal"] = "BUY"
                     df.at[idx, "buy_price"] = price
+                else:  # SELL
+                    df.at[idx, "signal"] = "SELL"
+                    df.at[idx, "sell_price"] = price
+
+                # Position math applies to all fills (including partial TPs)
+                if side == "BUY":
                     if ib_position < 0:
-                        realized_pl += (entry_price - price) * abs(ib_position)
+                        realized_pl += (entry_price - price) * min(qty, abs(ib_position))
                         ib_position += qty
                         if ib_position > 0:
                             entry_price = price
@@ -1060,10 +1071,8 @@ class IBDataBridge:
                     else:
                         ib_position += qty
                 else:  # SELL
-                    df.at[idx, "signal"] = "SELL"
-                    df.at[idx, "sell_price"] = price
                     if ib_position > 0:
-                        realized_pl += (price - entry_price) * ib_position
+                        realized_pl += (price - entry_price) * min(qty, ib_position)
                         ib_position -= qty
                         if ib_position < 0:
                             entry_price = price
