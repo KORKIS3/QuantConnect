@@ -899,14 +899,18 @@ class IBDataBridge:
         if self._live_chart is not None and self._live_chart._plotter is not None:
             try:
                 os.makedirs(self.image_root, exist_ok=True)
-                img_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}.jpg")
-                # Prefer IB View (actual fills), fall back to Algo View
+                # Save Algo View
+                algo_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}_algo.jpg")
+                self._live_chart._plotter.fig.savefig(algo_path, dpi=150, bbox_inches="tight")
+                log.info("[Session] algo chart saved: %s", algo_path)
+                # Save IB View
                 if self._ib_chart is not None and self._ib_chart._plotter is not None:
-                    self._ib_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
+                    ib_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}_ib.jpg")
+                    self._ib_chart._plotter.fig.savefig(ib_path, dpi=150, bbox_inches="tight")
+                    saved_image_path = ib_path
+                    log.info("[Session] IB chart saved: %s", ib_path)
                 else:
-                    self._live_chart._plotter.fig.savefig(img_path, dpi=150, bbox_inches="tight")
-                saved_image_path = img_path
-                log.info("[Session] chart image saved: %s", img_path)
+                    saved_image_path = algo_path
             except Exception as exc:
                 log.error("[Session] image save error: %s", exc)
 
@@ -1299,15 +1303,21 @@ class IBDataBridge:
                 self._live_chart._plotter is not None):
             try:
                 os.makedirs(self.image_root, exist_ok=True)
-                snap_path = os.path.join(
+                # Save Algo View snapshot
+                algo_snap_path = os.path.join(
                     self.image_root,
-                    f"YM_{bar_date}_{current_hour:02d}00_snapshot.jpg"
+                    f"YM_{bar_date}_{current_hour:02d}00_algo_snapshot.jpg"
                 )
-                # Prefer IB View (actual fills), fall back to Algo View
+                self._live_chart._plotter.fig.savefig(algo_snap_path, dpi=150, bbox_inches="tight")
+                log.info("[Snapshot] algo chart saved: %s", algo_snap_path)
+                # Save IB View snapshot
                 if self._ib_chart is not None and self._ib_chart._plotter is not None:
-                    self._ib_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
-                else:
-                    self._live_chart._plotter.fig.savefig(snap_path, dpi=150, bbox_inches="tight")
+                    ib_snap_path = os.path.join(
+                        self.image_root,
+                        f"YM_{bar_date}_{current_hour:02d}00_ib_snapshot.jpg"
+                    )
+                    self._ib_chart._plotter.fig.savefig(ib_snap_path, dpi=150, bbox_inches="tight")
+                    log.info("[Snapshot] IB chart saved: %s", ib_snap_path)
                 self._last_hourly_save = current_hour
                 log.info("[Snapshot] hourly chart saved: %s", snap_path)
             except Exception as exc:
