@@ -311,6 +311,7 @@ class IBDataBridge:
         self._session_start_dt = None
         self._last_hourly_save: Optional[int] = None  # tracks last hour we saved a snapshot
         self._last_signal_ts: Optional[pd.Timestamp] = None   # last signal we acted on
+        self._connection_time: Optional[pd.Timestamp] = None  # when Fred actually connected
         self._last_partial_tp_ts: Optional[pd.Timestamp] = None  # last partial TP we acted on
         self._ib_position: int = 0  # actual IB position: +2=long, -2=short, 0=flat
         self._pending_order: bool = False  # True while an order is placed but not yet confirmed
@@ -782,6 +783,7 @@ class IBDataBridge:
         # Set _last_signal_ts to NOW so backfilled historical signals never trigger orders.
         # Only signals that arrive AFTER this point will place orders.
         self._last_signal_ts = pd.Timestamp.now(tz=_EST)
+        self._connection_time = self._last_signal_ts  # remember when Fred actually connected
         self._last_partial_tp_ts = self._last_signal_ts
         log.info("[Start] Signal guard set to %s — backfill signals will not place orders.",
                  self._last_signal_ts.strftime("%H:%M:%S"))
@@ -960,6 +962,7 @@ class IBDataBridge:
         self._session_start_dt = None
         self._last_hourly_save = None
         self._last_signal_ts = None
+        self._connection_time = None
         self._last_partial_tp_ts = None
         self._pending_order = False
         self._pending_order_time = None
@@ -1142,9 +1145,13 @@ class IBDataBridge:
         log.info("[LiveChart] algo done — %d rows, updating chart ...", len(algo_df))
         
         # Chart 1: pure algo signals/P&L from connection time forward only.
-        # Zero out everything before signal guard so chart starts at 0.
+        # Only apply the guard if Fred connected LATE (after 9:32 ET).
+        # Normal on-time starts (9:28-9:30) show all signals without blanking.
         # Chart 2 (IB View) shows actual IB fills via _build_ib_view_df.
-        if self._last_signal_ts is not None and not algo_df.empty:
+        _conn = getattr(self, '_connection_time', None)
+        _connected_late = (_conn is not None and
+                           (_conn.hour > 9 or (_conn.hour == 9 and _conn.minute >= 32)))
+        if _connected_late and self._last_signal_ts is not None and not algo_df.empty:
             guard_mask = algo_df.index < self._last_signal_ts
             if guard_mask.any():
                 algo_df.loc[guard_mask, "signal"] = ""
