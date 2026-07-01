@@ -3,7 +3,7 @@ cd /d C:\Users\Administrator\source\repos\KORKIS3\Fred-Production
 
 :: Pull latest production code
 echo Pulling latest production...
-git pull scott production -q
+git pull origin production -q
 
 echo ==========================================
 echo   Fred Multi - Account 1 + Mirror

@@ -34,7 +34,9 @@ print(f"Running chart for {date} {start_t}-{end_t} ({len(df)} bars)...")
 config = AlgoConfig(
     warmup_minutes=7, steep_angle_threshold=90.0, proximity_points=4.0,
     min_reversal_minutes=0, min_entry_angle=0.0, partial_tp_pts=50.0,
-    wm_shield_distance=0.0, swing_anchor_threshold=25.0,
+    spike_profit_pts=100.0, spike_profit_bars=9, wm_shield_distance=0.0,
+    swing_anchor_threshold=10.0, num_contracts=2, cushion_points=0.0,
+    limit_expiry_bars=5,
 )
 
 algo_df = run_trading_algo_fast(df, date, start_t, end_t, config=config)
