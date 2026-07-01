@@ -459,6 +459,7 @@ class IBDataBridge:
                 "fill_time": fill_time,
                 "is_liquidation": is_liquidation,
                 "is_partial_tp": False,
+                "qty": int(fill["qty"]),
             })
         
         if entry_price > 0:
@@ -634,6 +635,7 @@ class IBDataBridge:
                             "fill_time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")),
                             "is_liquidation": False,
                             "is_partial_tp": False,
+                            "qty": abs(pos_size),
                         })
                         self._entry_price = entry_p
                         log.info("[Connect] Seeded _order_events: %s %d @ %.0f (from IB portfolio)",
@@ -711,6 +713,7 @@ class IBDataBridge:
                             "fill_time": pd.Timestamp.now(tz=pytz.timezone("US/Eastern")),
                             "is_liquidation": True,
                             "is_partial_tp": False,
+                            "qty": abs(old_pos),
                         })
                         
                         send_trade_alert(
@@ -1053,7 +1056,8 @@ class IBDataBridge:
                 side = ev["signal"]
                 price = float(ev["fill_price"])
                 is_partial = ev.get("is_partial_tp", False)
-                qty = 1 if is_partial else 2
+                # Use actual qty from order event; fall back to 1 for partial, 2 for full
+                qty = ev.get("qty", 1 if is_partial else 2)
 
                 if is_partial:
                     # Mark as partial TP — gold diamond marker, not a BUY/SELL triangle
@@ -1068,10 +1072,13 @@ class IBDataBridge:
                 # Position math applies to all fills (including partial TPs)
                 if side == "BUY":
                     if ib_position < 0:
-                        realized_pl += (entry_price - price) * min(qty, abs(ib_position))
+                        close_qty = min(qty, abs(ib_position))
+                        realized_pl += (entry_price - price) * close_qty
                         ib_position += qty
                         if ib_position > 0:
                             entry_price = price
+                        elif ib_position == 0:
+                            entry_price = 0.0
                     elif ib_position == 0:
                         ib_position = qty
                         entry_price = price
@@ -1079,10 +1086,13 @@ class IBDataBridge:
                         ib_position += qty
                 else:  # SELL
                     if ib_position > 0:
-                        realized_pl += (price - entry_price) * min(qty, ib_position)
+                        close_qty = min(qty, ib_position)
+                        realized_pl += (price - entry_price) * close_qty
                         ib_position -= qty
                         if ib_position < 0:
                             entry_price = price
+                        elif ib_position == 0:
+                            entry_price = 0.0
                     elif ib_position == 0:
                         ib_position = -qty
                         entry_price = price
@@ -1819,6 +1829,7 @@ class IBDataBridge:
             "fill_time": None,
             "is_liquidation": liquidate,
             "is_partial_tp": partial_tp,
+            "qty": qty,
         })
 
         # NOTE: _ib_position is now updated by _on_portfolio_update() on fill confirmation,
