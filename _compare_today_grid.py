@@ -2,7 +2,12 @@
 Columns: Time | Algo CSV | Backtest | IB Live | IB Fills (validation)
 Rows: every minute that has a signal/fill in ANY column.
 Outputs to both console and Excel.
+
+Usage: python _compare_today_grid.py [date]
+       python _compare_today_grid.py 2026-07-01
+       (defaults to today if no date given)
 """
+import sys
 import pandas as pd
 import os, pytz
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
@@ -12,12 +17,22 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 _EST = pytz.timezone("US/Eastern")
 _DATA_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")
 
-# --- Load live tracking CSV ---
-live_path = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "tracking", "YM_tracking_DUO158495_2026-06-30_0930.csv")
+# Target date — from command line or default
+TARGET_DATE = sys.argv[1] if len(sys.argv) > 1 else "2026-07-01"
+
+# --- Find live tracking CSV for this date ---
+_TRACKING_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "tracking")
+# Search for matching file
+tracking_files = [f for f in os.listdir(_TRACKING_DIR) if TARGET_DATE in f and f.endswith(".csv")]
+if not tracking_files:
+    print(f"ERROR: No tracking CSV found for {TARGET_DATE} in {_TRACKING_DIR}")
+    sys.exit(1)
+live_path = os.path.join(_TRACKING_DIR, sorted(tracking_files)[0])
+print(f"Using tracking CSV: {live_path}")
 live = pd.read_csv(live_path, index_col=0, parse_dates=True)
 
 # --- Run backtest ---
-fpath = os.path.join(_DATA_ROOT, "CBOT_MINI_YM1_2026-06-30.csv")
+fpath = os.path.join(_DATA_ROOT, f"CBOT_MINI_YM1_{TARGET_DATE}.csv")
 df = pd.read_csv(fpath, index_col=0, parse_dates=True)
 df.index = pd.to_datetime(df.index, utc=True).tz_convert(_EST)
 config = AlgoConfig(
@@ -25,13 +40,17 @@ config = AlgoConfig(
     min_reversal_minutes=0, min_entry_angle=0.0, partial_tp_pts=50.0,
     wm_shield_distance=0.0, swing_anchor_threshold=10.0, cushion_points=40.0, limit_expiry_bars=5,
 )
-day_start = pd.Timestamp("2026-06-30 09:30", tz=_EST)
-day_end = pd.Timestamp("2026-06-30 16:59", tz=_EST)
+day_start = pd.Timestamp(f"{TARGET_DATE} 09:30", tz=_EST)
+day_end = pd.Timestamp(f"{TARGET_DATE} 16:59", tz=_EST)
 day_data = df[(df.index >= day_start) & (df.index <= day_end)]
-bt = run_trading_algo_fast(day_data, "2026-06-30", "09:30", "17:00", config=config)
+bt = run_trading_algo_fast(day_data, TARGET_DATE, "09:30", "17:00", config=config)
 
 # --- Parse IB fills from validation report (with qty) ---
-val_report = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "validation", "2026-06-30", "validation_report_2026-06-30.txt")
+val_report = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "validation", TARGET_DATE, f"validation_report_{TARGET_DATE}.txt")
+if not os.path.exists(val_report):
+    print(f"Validation report not found: {val_report}")
+    print("Running end_of_day_validation.py to generate it...")
+    os.system(f"python end_of_day_validation.py {TARGET_DATE}")
 with open(val_report) as f:
     content = f.read()
 in_fills = False
@@ -142,13 +161,13 @@ all_times.update(ib_fill_events.keys())
 _CHART_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "charts")
 snapshot_times = set()
 for h in [10, 11, 12, 13, 14, 15, 16]:
-    snap = f"YM_2026-06-30_{h:02d}00_snapshot.jpg"
+    snap = f"YM_{TARGET_DATE}_{h:02d}00_snapshot.jpg"
     if os.path.exists(os.path.join(_CHART_ROOT, snap)):
-        snapshot_times.add(pd.Timestamp(f"2026-06-30 {h:02d}:00", tz=_EST))
+        snapshot_times.add(pd.Timestamp(f"{TARGET_DATE} {h:02d}:00", tz=_EST))
 
 # --- Print grid ---
 print("=" * 130)
-print("FULL GRID: Every event across all sources (2026-06-30)")
+print(f"FULL GRID: Every event across all sources ({TARGET_DATE})")
 print("=" * 130)
 print()
 
@@ -230,7 +249,7 @@ print("-" * 100)
 
 hours = ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "16:58"]
 for hour in hours:
-    cutoff = pd.Timestamp(f"2026-06-30 {hour}", tz=_EST)
+    cutoff = pd.Timestamp(f"{TARGET_DATE} {hour}", tz=_EST)
 
     # Algo CSV
     algo_slice = live[live.index <= str(cutoff)]
@@ -247,7 +266,7 @@ for hour in hours:
 
     # Chart
     h_int = int(hour.split(":")[0])
-    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_2026-06-30_{h_int:02d}00_snapshot.jpg"))
+    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_{TARGET_DATE}_{h_int:02d}00_snapshot.jpg"))
     snap_str = "YES" if snap_exists else ""
 
     print(f"{hour:<8} | {a_pl:>+12.0f} pts | {b_pl:>+12.0f} pts | {ib_pl_val:>+12.0f} pts | {snap_str:<8} | {a_pos:<10} | {ib_pos:<10}")
@@ -305,7 +324,7 @@ section_mid = Border(left=Side(style="thin"), right=Side(style="thin"),
                      top=Side(style="thin"), bottom=Side(style="thin"))
 
 # Headers - Row 1: Section group headers (bold, merged look)
-section_headers = ["", "ALGO CSV", "", "", "", "", "", "", "BACKTEST", "", "", "", "", "", "", "IB LIVE", "", "", "", "", "", "", "IB FILLS", "", "", "", "IB LIVE SNAPSHOT", "", "", "", "", ""]
+section_headers = ["", "ALGO CSV", "", "", "", "", "", "", "BACKTEST", "", "", "", "", "", "", "IB LIVE", "", "", "", "", "", "", "IB FILLS", "", "", "", "OCR CHART P/L", "", ""]
 for col, h in enumerate(section_headers, 1):
     cell = ws1.cell(row=1, column=col, value=h)
     cell.font = Font(bold=True, size=12)
@@ -323,7 +342,7 @@ headers = ["Time",
            "",                                                      # V: blank
            "Side+Qty", "Price", "Chart",                           # W-Y: IB Fills
            "",                                                      # Z: blank
-           "Trade Time", "Signal", "Fill Price", "Qty", "Chg", "Session P/L"]  # AA-AF: Snapshot
+           "Hour", "Chart P/L (IB)", "Chart P/L (Algo)"]           # AA-AC: OCR from charts
 for col, h in enumerate(headers, 1):
     cell = ws1.cell(row=2, column=col, value=h)
     if h:
@@ -338,24 +357,111 @@ ws1.merge_cells("B1:G1")   # ALGO CSV
 ws1.merge_cells("I1:N1")   # BACKTEST
 ws1.merge_cells("P1:U1")   # IB LIVE
 ws1.merge_cells("W1:Y1")   # IB FILLS
-ws1.merge_cells("AA1:AF1") # IB LIVE SNAPSHOT
+ws1.merge_cells("AA1:AC1") # OCR CHART P/L
 
 # Blank separator columns - make them narrow
-for sep_col in [8, 15, 22, 26, 30]:  # H, O, V, Z
+for sep_col in [8, 15, 22, 26]:  # H, O, V, Z
     ws1.column_dimensions[get_column_letter(sep_col)].width = 2
 
 # Build snapshot hour lookup: which snapshot does each trade time fall into
 def get_snapshot_hour(ts):
     """Return the snapshot hour this trade would appear in."""
-    snap_hours_ts = [pd.Timestamp(f"2026-06-30 {h}", tz=_EST)
+    snap_hours_ts = [pd.Timestamp(f"{TARGET_DATE} {h}", tz=_EST)
                      for h in ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]]
     for sh in snap_hours_ts:
         if ts <= sh:
             return sh.strftime("%H:%M")
     return "16:00+"
 
-# Build snapshot trade lookup: keyed by minute timestamp
+# Build IB Live Snapshot trade lookup from ib_ columns in CSV + OCR from chart images
+import pytesseract
+from PIL import Image
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+def ocr_chart_pl(img_path):
+    """Extract P/L from chart snapshot stats box via OCR."""
+    try:
+        img = Image.open(img_path)
+        w, h = img.size
+        import re
+        # Try multiple crop regions (stats box position varies with bar count)
+        crops = [
+            (int(w * 0.82), int(h * 0.35), w, int(h * 0.58)),  # tight
+            (int(w * 0.82), int(h * 0.25), w, int(h * 0.65)),  # broader
+        ]
+        for crop_box in crops:
+            stats = img.crop(crop_box)
+            text = pytesseract.image_to_string(stats)
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # Match "P/L: +28 a" format
+                m = re.search(r"P/L:\s*([+-]?\d+)", line)
+                if m:
+                    return int(m.group(1))
+                # Match "+0 —" or "-181 ¥" or "-754 0" (standalone P/L line)
+                # Exclude lines with "pts" (those are Range/Chg values)
+                if "pts" in line or "Range" in line or "Chg" in line or "Low" in line or "High" in line:
+                    continue
+                m = re.match(r"^([+-]?\d+)\s+\S{1,3}$", line)
+                if m:
+                    val = int(m.group(1))
+                    if abs(val) < 10000:
+                        return val
+        return None
+    except Exception:
+        return None
+
+# OCR the hourly snapshots for chart P/L (both IB and Algo)
+_CHART_ROOT_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "charts")
+snapshot_chart_pl = {}      # hour -> IB P/L from chart image
+snapshot_algo_chart_pl = {} # hour -> Algo P/L from chart image
+target_date = TARGET_DATE
+
+for h in ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]:
+    h_int = int(h.split(":")[0])
+    # IB snapshot
+    ib_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_ib_snapshot.jpg")
+    generic_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_snapshot.jpg")
+    img_path = ib_img if os.path.exists(ib_img) else generic_img
+    if os.path.exists(img_path):
+        pl_val = ocr_chart_pl(img_path)
+        if pl_val is not None:
+            snapshot_chart_pl[h] = pl_val
+
+    # Algo snapshot
+    algo_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_algo_snapshot.jpg")
+    if os.path.exists(algo_img):
+        pl_val = ocr_chart_pl(algo_img)
+        if pl_val is not None:
+            snapshot_algo_chart_pl[h] = pl_val
+
+print(f"OCR chart P/L (IB snapshots): {snapshot_chart_pl}")
+print(f"OCR chart P/L (Algo snapshots): {snapshot_algo_chart_pl}")
+
+# Build snapshot_trades from IB columns (actual IB fills, not algo signals)
 snapshot_trades = {}
+ib_sig_rows_snap = live[(live["ib_signal"].notna()) & (live["ib_signal"] != "") & (live["ib_signal"] != "flat")]
+for idx, row in ib_sig_rows_snap.iterrows():
+    ts = pd.Timestamp(idx).floor("min")
+    sig = row["ib_signal"]
+    if sig == "BUY":
+        price = row.get("ib_buy_price", row["Close"])
+    else:
+        price = row.get("ib_sell_price", row["Close"])
+    if pd.isna(price):
+        price = row["Close"]
+    spl = float(row.get("ib_session_pl", 0))
+    snapshot_trades[ts] = {
+        "time": str(idx)[0:19],
+        "signal": sig,
+        "price": float(price),
+        "session_pl": spl,
+    }
+
+# Build Algo Live Snapshot trades (from algo signal columns — what the algo chart shows)
+algo_snapshot_trades = {}
 for idx, row in live.iterrows():
     ts = pd.Timestamp(idx).floor("min")
     sig = row.get("signal", "")
@@ -369,7 +475,7 @@ for idx, row in live.iterrows():
         if pd.isna(price):
             price = row["Close"]
         spl = float(row.get("session_pl", 0))
-        snapshot_trades[ts] = {
+        algo_snapshot_trades[ts] = {
             "time": str(idx)[0:19],
             "signal": sig_str,
             "price": float(price),
@@ -380,7 +486,7 @@ for idx, row in live.iterrows():
         if pd.isna(tp_price):
             tp_price = row["Close"]
         spl = float(row.get("session_pl", 0))
-        snapshot_trades[ts] = {
+        algo_snapshot_trades[ts] = {
             "time": str(idx)[0:19],
             "signal": f"TP ({ptp_sig})",
             "price": float(tp_price),
@@ -502,24 +608,21 @@ for ts in sorted(all_times):
 
     # Col 26 = blank separator
 
-    # IB Live Snapshot (cols 27-32: Trade Time, Signal, Fill Price, Qty, Chg, Session P/L)
-    if ts in snapshot_trades:
-        st = snapshot_trades[ts]
-        qty = 1 if "TP" in st["signal"] else 2
-        ws1.cell(row=row_num, column=27, value=st["time"]).border = section_left
-        ws1.cell(row=row_num, column=28, value=st["signal"]).border = section_mid
-        ws1.cell(row=row_num, column=29, value=st["price"]).border = section_mid
-        ws1.cell(row=row_num, column=30, value=qty).border = section_mid
-        chg = st["session_pl"] - snap_prev_pl
-        ws1.cell(row=row_num, column=31, value=chg).border = section_mid
-        ws1.cell(row=row_num, column=31).font = Font(bold=True, color="006100" if chg >= 0 else "9C0006")
-        snap_prev_pl = st["session_pl"]
-        ws1.cell(row=row_num, column=32, value=st["session_pl"]).border = section_right
-        fill = buy_fill if st["signal"] == "BUY" else (tp_fill if "TP" in st["signal"] else sell_fill)
-        for c in range(27, 33):
-            ws1.cell(row=row_num, column=c).fill = fill
+    # OCR Chart P/L (cols 27-29: Hour, IB Chart P/L, Algo Chart P/L)
+    time_hhmm = ts.strftime("%H:%M")
+    if time_hhmm in snapshot_chart_pl or time_hhmm in snapshot_algo_chart_pl:
+        ws1.cell(row=row_num, column=27, value=time_hhmm).border = section_left
+        ws1.cell(row=row_num, column=27).font = Font(bold=True)
+        ib_ocr = snapshot_chart_pl.get(time_hhmm, "")
+        algo_ocr = snapshot_algo_chart_pl.get(time_hhmm, "")
+        ws1.cell(row=row_num, column=28, value=ib_ocr).border = section_mid
+        ws1.cell(row=row_num, column=29, value=algo_ocr).border = section_right
+        if isinstance(ib_ocr, (int, float)) and ib_ocr != 0:
+            ws1.cell(row=row_num, column=28).font = Font(bold=True, color="006100" if ib_ocr >= 0 else "9C0006")
+        if isinstance(algo_ocr, (int, float)) and algo_ocr != 0:
+            ws1.cell(row=row_num, column=29).font = Font(bold=True, color="006100" if algo_ocr >= 0 else "9C0006")
     else:
-        for c in range(27, 33):
+        for c in range(27, 30):
             ws1.cell(row=row_num, column=c).border = thin_border
 
     row_num += 1
@@ -534,13 +637,10 @@ ws1.cell(row=row_num, column=14, value=bt_running_pl).border = thick_border
 ws1.cell(row=row_num, column=14).font = Font(bold=True, size=11)
 ws1.cell(row=row_num, column=21, value=ib_running_pl).border = thick_border
 ws1.cell(row=row_num, column=21).font = Font(bold=True, size=11)
-snap_final = float(live["session_pl"].iloc[-1])
-ws1.cell(row=row_num, column=32, value=snap_final).border = thick_border
-ws1.cell(row=row_num, column=32).font = Font(bold=True, size=11)
 
 # Auto-width columns and freeze header
-#        A   B   C    D   E   F    G    H  I   J    K   L   M    N    O  P   Q    R   S   T    U    V  W    X    Y   Z  AA   AB  AC  AD   AE   AF
-col_widths = [8, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 10, 10, 7, 2, 20, 8, 10, 5, 8, 10]
+#        A   B   C    D   E   F    G    H  I   J    K   L   M    N    O  P   Q    R   S   T    U    V  W    X    Y   Z  AA   AB  AC
+col_widths = [8, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 10, 10, 7, 2, 8, 12, 12]
 from openpyxl.utils import get_column_letter
 for i, w in enumerate(col_widths, 1):
     ws1.column_dimensions[get_column_letter(i)].width = w
@@ -557,7 +657,7 @@ for col, h in enumerate(hourly_headers, 1):
     cell.border = thin_border
 
 for r, hour in enumerate(hours, 2):
-    cutoff = pd.Timestamp(f"2026-06-30 {hour}", tz=_EST)
+    cutoff = pd.Timestamp(f"{TARGET_DATE} {hour}", tz=_EST)
     algo_slice = live[live.index <= str(cutoff)]
     a_pl = float(algo_slice["session_pl"].iloc[-1]) if not algo_slice.empty else 0
     a_pos = algo_slice["position"].iloc[-1] if not algo_slice.empty else "flat"
@@ -566,7 +666,7 @@ for r, hour in enumerate(hours, 2):
     ib_pl_v = float(algo_slice["ib_session_pl"].iloc[-1]) if (not algo_slice.empty and "ib_session_pl" in algo_slice.columns) else 0
     ib_pos_v = algo_slice["ib_position"].iloc[-1] if (not algo_slice.empty and "ib_position" in algo_slice.columns) else "flat"
     h_int = int(hour.split(":")[0])
-    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_2026-06-30_{h_int:02d}00_snapshot.jpg"))
+    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_{TARGET_DATE}_{h_int:02d}00_snapshot.jpg"))
 
     ws2.cell(row=r, column=1, value=hour).border = thin_border
     ws2.cell(row=r, column=2, value=a_pl).border = thin_border
@@ -634,7 +734,7 @@ for col, h in enumerate(snap_headers, 1):
 snapshot_hours_full = ["09:30", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]
 row_num_snap = 2
 for hour in snapshot_hours_full:
-    cutoff = pd.Timestamp(f"2026-06-30 {hour}", tz=_EST)
+    cutoff = pd.Timestamp(f"{TARGET_DATE} {hour}", tz=_EST)
     sliced = live[live.index <= str(cutoff)]
     if sliced.empty:
         continue
@@ -652,9 +752,9 @@ for hour in snapshot_hours_full:
     h_int = int(hour.split(":")[0])
     m_int = int(hour.split(":")[1])
     if hour == "09:30":
-        img_name = "YM_2026-06-30_0930.jpg"
+        img_name = f"YM_{TARGET_DATE}_0930.jpg"
     else:
-        img_name = f"YM_2026-06-30_{h_int:02d}{m_int:02d}_snapshot.jpg"
+        img_name = f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}_snapshot.jpg"
     img_exists = os.path.exists(os.path.join(_CHART_ROOT, img_name))
 
     ws4.cell(row=row_num_snap, column=1, value=hour).border = thin_border
@@ -711,7 +811,7 @@ for col, h in enumerate(trade_headers, 1):
 row_num_snap += 1
 
 for hour in snapshot_hours_full:
-    cutoff = pd.Timestamp(f"2026-06-30 {hour}", tz=_EST)
+    cutoff = pd.Timestamp(f"{TARGET_DATE} {hour}", tz=_EST)
     sliced = live[live.index <= str(cutoff)]
     if sliced.empty:
         continue
@@ -722,7 +822,7 @@ for hour in snapshot_hours_full:
     # Only show NEW trades since previous snapshot
     prev_hour_idx = snapshot_hours_full.index(hour) - 1
     if prev_hour_idx >= 0:
-        prev_cutoff = pd.Timestamp(f"2026-06-30 {snapshot_hours_full[prev_hour_idx]}", tz=_EST)
+        prev_cutoff = pd.Timestamp(f"{TARGET_DATE} {snapshot_hours_full[prev_hour_idx]}", tz=_EST)
         new_signals = signals_slice[signals_slice.index > str(prev_cutoff)]
     else:
         new_signals = signals_slice
@@ -787,7 +887,7 @@ for col in range(1, 11):
 ws4.freeze_panes = "A2"
 
 # Save
-output_path = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "validation", "2026-06-30", "comparison_grid_2026-06-30.xlsx")
+output_path = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "validation", TARGET_DATE, f"comparison_grid_{TARGET_DATE}.xlsx")
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 wb.save(output_path)
 print(f"\n\nExcel saved: {output_path}")

@@ -902,6 +902,23 @@ class IBDataBridge:
         if self._live_chart is not None and self._live_chart._plotter is not None:
             try:
                 os.makedirs(self.image_root, exist_ok=True)
+
+                # Refresh Y-axis to the full session's actual high/low range
+                # before saving — ylim is only set once at chart creation.
+                def _refresh_ylim(plotter):
+                    if plotter is None or plotter.data is None or plotter.data.empty:
+                        return
+                    try:
+                        y_min = float(plotter.data["y_min"].iloc[-1])
+                        y_max = float(plotter.data["y_max"].iloc[-1])
+                        plotter.ax.set_ylim(y_min, y_max)
+                    except Exception as exc:
+                        log.warning("[Session] ylim refresh failed: %s", exc)
+
+                _refresh_ylim(self._live_chart._plotter)
+                if self._ib_chart is not None:
+                    _refresh_ylim(self._ib_chart._plotter)
+
                 # Save Algo View
                 algo_path = os.path.join(self.image_root, f"YM_{self._current_date}_{self.start_time.replace(':','')}_algo.jpg")
                 self._live_chart._plotter.fig.savefig(algo_path, dpi=150, bbox_inches="tight")
@@ -1313,6 +1330,24 @@ class IBDataBridge:
                 self._live_chart._plotter is not None):
             try:
                 os.makedirs(self.image_root, exist_ok=True)
+
+                # Refresh Y-axis to the current session's actual high/low range
+                # before saving — ylim is only set once at chart creation and
+                # goes stale as price makes new highs/lows through the day.
+                def _refresh_ylim(plotter):
+                    if plotter is None or plotter.data is None or plotter.data.empty:
+                        return
+                    try:
+                        y_min = float(plotter.data["y_min"].iloc[-1])
+                        y_max = float(plotter.data["y_max"].iloc[-1])
+                        plotter.ax.set_ylim(y_min, y_max)
+                    except Exception as exc:
+                        log.warning("[Snapshot] ylim refresh failed: %s", exc)
+
+                _refresh_ylim(self._live_chart._plotter)
+                if self._ib_chart is not None:
+                    _refresh_ylim(self._ib_chart._plotter)
+
                 # Save Algo View snapshot
                 algo_snap_path = os.path.join(
                     self.image_root,
@@ -1329,7 +1364,7 @@ class IBDataBridge:
                     self._ib_chart._plotter.fig.savefig(ib_snap_path, dpi=150, bbox_inches="tight")
                     log.info("[Snapshot] IB chart saved: %s", ib_snap_path)
                 self._last_hourly_save = current_hour
-                log.info("[Snapshot] hourly chart saved: %s", snap_path)
+                log.info("[Snapshot] hourly chart saved for hour=%d", current_hour)
             except Exception as exc:
                 log.error("[Snapshot] save error: %s", exc)
 
