@@ -1,4 +1,4 @@
-"""InteractiveBrokers.py
+d"""InteractiveBrokers.py
 
 IB data bridge for the YM E-mini Futures trendline strategy.
 
@@ -318,6 +318,7 @@ class IBDataBridge:
         self._pending_order_time: Optional[float] = None  # timestamp when pending order was set
         self._pending_target: int = 0  # target position the pending order is working toward
         self._last_position_check: Optional[float] = None  # last time we validated position size
+        self._mid_session_reconcile_pending: bool = False  # True on first algo cycle after mid-session restart
         
         # # DISABLED: TP/SL bracket order management (removed — using signal exits only)
         # self._tp_sl_enabled: bool = True
@@ -603,6 +604,7 @@ class IBDataBridge:
                     elif self._ib_position != 0:
                         log.info("[Connect] Mid-session restart — keeping position %d (after 9:30)",
                                  self._ib_position)
+                        self._mid_session_reconcile_pending = True
                     else:
                         log.info("[Connect] Account is FLAT — ready to trade")
                     break
@@ -1272,6 +1274,9 @@ class IBDataBridge:
 
     def _on_realtime_bar(self, bars, has_new_bar: bool) -> None:
         """Handle each new 5-second real-time bar from reqRealTimeBars."""
+        import time as _time
+        self._last_bar_received_time = _time.time()  # heartbeat: mark bar arrival
+        
         if self._session_ended:
             return
         # Check for external stop signal (e.g. from _flatten_position.py)
@@ -1414,7 +1419,49 @@ class IBDataBridge:
     # -- Tkinter pump ---------------------------------------------------------
 
     def _on_timeout(self, elapsed: float) -> None:
-        """Called every 200 ms by ib_insync to keep the chart window responsive."""
+        """Called every 200 ms by ib_insync to keep the chart window responsive.
+        
+        Also monitors for stale connections: if no real-time bar has arrived
+        for 30+ seconds during market hours, the IB connection is likely dead.
+        Exit with non-zero code so the watchdog can restart us.
+        """
+        import time as _time
+        
+        # Heartbeat: detect stale connection
+        now = _time.time()
+        if not hasattr(self, "_last_bar_received_time"):
+            self._last_bar_received_time = now
+            self._stale_warned = False
+        
+        seconds_since_bar = now - self._last_bar_received_time
+        
+        # Only trigger during active session (after first bar received and before session end)
+        if (self._session_bars and not self._session_ended and seconds_since_bar > 30):
+            if not self._stale_warned:
+                log.warning("[Heartbeat] No bar received for %.0f seconds — connection may be stale",
+                            seconds_since_bar)
+                self._stale_warned = True
+            
+            # After 60 seconds of no bars, assume connection is dead — exit for watchdog restart
+            if seconds_since_bar > 60:
+                log.error("[Heartbeat] NO BARS FOR 60+ SECONDS — CONNECTION DEAD. Exiting for watchdog restart.")
+                log.error("[Heartbeat] Last bar was at %s, now is %s",
+                          self._last_bar_received_time, now)
+                # Save tracking CSV one last time before exit
+                try:
+                    self._save_tracking_csv()
+                except Exception:
+                    pass
+                # Disconnect and exit with error code for watchdog
+                try:
+                    self._ib.disconnect()
+                except Exception:
+                    pass
+                import sys
+                sys.exit(1)
+        elif seconds_since_bar <= 10:
+            self._stale_warned = False
+        
         if self._live_chart is not None and self.show_plot:
             self._live_chart.pump()
         if self._ib_chart is not None and self.show_plot:
@@ -1688,6 +1735,57 @@ class IBDataBridge:
                     log.error("[EMERGENCY] Failed to flatten excess position: %s", exc)
 
         # Skip duplicate signals — only act on NEW signals (different timestamp from last)
+        
+        # --- Mid-session restart reconciliation (runs ONCE on first algo cycle) ---
+        # Must happen BEFORE the signal check because the restart bar likely has no signal.
+        # Queries IB directly for the REAL position, then compares to the algo's intended
+        # position (derived from full backfill history) and places an order to align.
+        if self._mid_session_reconcile_pending:
+            self._mid_session_reconcile_pending = False
+            nc = self.config.num_contracts
+            
+            # Query IB for the REAL current position (ground truth)
+            real_ib_pos = 0
+            try:
+                positions = self._ib.positions()
+                for p in positions:
+                    if p.contract.symbol in ("YM", "MYM"):
+                        real_ib_pos = int(p.position)
+                        break
+                self._ib_position = real_ib_pos  # sync our internal tracker
+                log.info("[Reconcile] IB real position: %d", real_ib_pos)
+            except Exception as exc:
+                log.error("[Reconcile] Could not query IB position: %s", exc)
+                real_ib_pos = self._ib_position  # fallback to cached
+            
+            # Determine what position the algo says we SHOULD hold
+            algo_pos_str = str(last_row.get("position", "flat")).lower()
+            if algo_pos_str == "long":
+                algo_target = nc
+            elif algo_pos_str == "short":
+                algo_target = -nc
+            else:
+                algo_target = 0
+            
+            log.info("[Reconcile] Algo says position should be: %s (%d contracts). IB has: %d",
+                     algo_pos_str, algo_target, real_ib_pos)
+            
+            if algo_target != real_ib_pos:
+                # Determine action needed to move from current IB pos to algo target
+                if algo_target > real_ib_pos:
+                    reconcile_action = "BUY"
+                    reconcile_target_str = "long"
+                else:
+                    reconcile_action = "SELL"
+                    reconcile_target_str = "short" if algo_target < 0 else "flat"
+                log.info("[Reconcile] MISMATCH — placing %s to move from %d to %d",
+                         reconcile_action, real_ib_pos, algo_target)
+                self._place_order(reconcile_action, algo_target_position=reconcile_target_str)
+                self._last_signal_ts = current_time
+                return
+            else:
+                log.info("[Reconcile] Positions match — no action needed")
+        
         if current_signal not in ("BUY", "SELL"):
             # --- Check for partial TP even when no BUY/SELL signal ---
             if last_row.get("partial_tp", False) and self._ib_position != 0:
