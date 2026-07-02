@@ -1,6 +1,17 @@
 @echo off
 cd /d C:\Users\Administrator\source\repos\KORKIS3\Fred-Production
 
+:: Kill any stale Fred python processes from previous sessions
+:: (prevents zombie processes from holding positions overnight)
+echo Killing any stale Fred processes...
+for /f "tokens=2" %%i in ('tasklist /FI "IMAGENAME eq python.exe" /FO CSV ^| findstr /i "python"') do (
+    wmic process where "ProcessId=%%~i" get CommandLine 2>nul | findstr /i "InteractiveBrokers\|run_fred" >nul && (
+        echo   Killing PID %%~i
+        taskkill /PID %%~i /F >nul 2>&1
+    )
+)
+timeout /t 2 /nobreak >nul
+
 :: Pull latest production code
 echo Pulling latest production...
 git pull origin production -q
