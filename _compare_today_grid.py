@@ -13,6 +13,7 @@ import os, pytz
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import chart_ocr
 
 _EST = pytz.timezone("US/Eastern")
 _DATA_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "2YearsData", "full_day")
@@ -158,11 +159,27 @@ all_times.update(ib_live_events.keys())
 all_times.update(ib_fill_events.keys())
 
 # --- Chart snapshots available ---
-_CHART_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "charts")
+_CHART_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "charts")
+
+def _find_snapshot(hour_str):
+    """Return True if a chart snapshot image exists for this HH:MM hour.
+
+    Checks today's kind-suffixed naming (algo/ib) first, then falls back to
+    the older plain "_snapshot.jpg" naming and the bare session-open naming
+    (e.g. "YM_<date>_0930.jpg").
+    """
+    h_int, m_int = (int(x) for x in hour_str.split(":"))
+    candidates = [
+        f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}_algo_snapshot.jpg",
+        f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}_ib_snapshot.jpg",
+        f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}_snapshot.jpg",
+        f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}.jpg",
+    ]
+    return any(os.path.exists(os.path.join(_CHART_ROOT, name)) for name in candidates)
+
 snapshot_times = set()
 for h in [10, 11, 12, 13, 14, 15, 16]:
-    snap = f"YM_{TARGET_DATE}_{h:02d}00_snapshot.jpg"
-    if os.path.exists(os.path.join(_CHART_ROOT, snap)):
+    if _find_snapshot(f"{h:02d}:00"):
         snapshot_times.add(pd.Timestamp(f"{TARGET_DATE} {h:02d}:00", tz=_EST))
 
 # --- Print grid ---
@@ -265,8 +282,7 @@ for hour in hours:
     ib_pos = algo_slice["ib_position"].iloc[-1] if (not algo_slice.empty and "ib_position" in algo_slice.columns) else "flat"
 
     # Chart
-    h_int = int(hour.split(":")[0])
-    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_{TARGET_DATE}_{h_int:02d}00_snapshot.jpg"))
+    snap_exists = _find_snapshot(hour)
     snap_str = "YES" if snap_exists else ""
 
     print(f"{hour:<8} | {a_pl:>+12.0f} pts | {b_pl:>+12.0f} pts | {ib_pl_val:>+12.0f} pts | {snap_str:<8} | {a_pos:<10} | {ib_pos:<10}")
@@ -324,7 +340,21 @@ section_mid = Border(left=Side(style="thin"), right=Side(style="thin"),
                      top=Side(style="thin"), bottom=Side(style="thin"))
 
 # Headers - Row 1: Section group headers (bold, merged look)
-section_headers = ["", "ALGO CSV", "", "", "", "", "", "", "BACKTEST", "", "", "", "", "", "", "IB LIVE", "", "", "", "", "", "", "IB FILLS", "", "", "", "OCR CHART P/L", "", ""]
+# Columns: A(1) blank | B-G(2-7) ALGO CSV | H(8) sep | I-N(9-14) BACKTEST | O(15) sep |
+#          P-U(16-21) IB LIVE | V(22) sep | W-Y(23-25) IB FILLS | Z(26) sep |
+#          AA-AF(27-32) OCR ALGO CHART | AG(33) sep | AH-AM(34-39) OCR IB CHART |
+#          AN(40) sep | AO-AQ(41-43) OCR CHART P/L
+section_headers = (
+    ["", "ALGO CSV", "", "", "", "", "", ""] +      # 1-8
+    ["BACKTEST", "", "", "", "", "", ""] +           # 9-15
+    ["IB LIVE", "", "", "", "", "", ""] +            # 16-22
+    ["IB FILLS", "", "", ""] +                       # 23-26
+    ["OCR ALGO CHART", "", "", "", "", ""] +         # 27-32
+    [""] +                                             # 33 (AG sep)
+    ["OCR IB CHART", "", "", "", "", ""] +           # 34-39
+    [""] +                                             # 40 (AN sep)
+    ["OCR CHART P/L", "", ""]                        # 41-43
+)
 for col, h in enumerate(section_headers, 1):
     cell = ws1.cell(row=1, column=col, value=h)
     cell.font = Font(bold=True, size=12)
@@ -342,7 +372,11 @@ headers = ["Time",
            "",                                                      # V: blank
            "Side+Qty", "Price", "Chart",                           # W-Y: IB Fills
            "",                                                      # Z: blank
-           "Hour", "Chart P/L (IB)", "Chart P/L (Algo)"]           # AA-AC: OCR from charts
+           "Snap Hour", "Time", "Signal", "Price", "Chg", "Total P/L",  # AA-AF: OCR Algo Chart
+           "",                                                      # AG: blank
+           "Snap Hour", "Time", "Signal", "Price", "Chg", "Total P/L",  # AH-AM: OCR IB Chart
+           "",                                                      # AN: blank
+           "Hour", "Chart P/L (IB)", "Chart P/L (Algo)"]           # AO-AQ: OCR chart P/L
 for col, h in enumerate(headers, 1):
     cell = ws1.cell(row=2, column=col, value=h)
     if h:
@@ -357,152 +391,172 @@ ws1.merge_cells("B1:G1")   # ALGO CSV
 ws1.merge_cells("I1:N1")   # BACKTEST
 ws1.merge_cells("P1:U1")   # IB LIVE
 ws1.merge_cells("W1:Y1")   # IB FILLS
-ws1.merge_cells("AA1:AC1") # OCR CHART P/L
+ws1.merge_cells("AA1:AF1") # OCR ALGO CHART
+ws1.merge_cells("AH1:AM1") # OCR IB CHART
+ws1.merge_cells("AO1:AQ1") # OCR CHART P/L
 
 # Blank separator columns - make them narrow
-for sep_col in [8, 15, 22, 26]:  # H, O, V, Z
+for sep_col in [8, 15, 22, 26, 33, 40]:  # H, O, V, Z, AG, AN
     ws1.column_dimensions[get_column_letter(sep_col)].width = 2
 
-# Build snapshot hour lookup: which snapshot does each trade time fall into
-def get_snapshot_hour(ts):
-    """Return the snapshot hour this trade would appear in."""
-    snap_hours_ts = [pd.Timestamp(f"{TARGET_DATE} {h}", tz=_EST)
-                     for h in ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]]
-    for sh in snap_hours_ts:
-        if ts <= sh:
-            return sh.strftime("%H:%M")
-    return "16:00+"
+# Extract trade markers directly from the chart snapshot images (OCR).
+# The OCR ALGO CHART / OCR IB CHART columns are populated purely from
+# what the eye can read off the snapshot JPEGs — no CSV data mixed in.
+ocr_algo_by_hour = chart_ocr.extract_markers_for_date(TARGET_DATE, kind="algo")
+ocr_ib_by_hour = chart_ocr.extract_markers_for_date(TARGET_DATE, kind="ib")
 
-# Build IB Live Snapshot trade lookup from ib_ columns in CSV + OCR from chart images
+
+def _dedup_and_compute_pl(by_hour):
+    """Flatten hour->markers into a chronological series (deduped by
+    minute+kind+price), compute running P/L, and return a
+    {minute: (snap_hour, marker)} lookup for the grid.
+    """
+    seen = set()
+    unique = []  # (snap_hour, marker), ordered by minute
+    for snap_hour in sorted(by_hour.keys()):
+        for m in by_hour[snap_hour]:
+            if not m.minute or m.price is None:
+                continue
+            key = (m.minute, m.kind, m.price)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((snap_hour, m))
+    unique.sort(key=lambda pair: pair[1].minute)
+    # Feed markers (in chronological order) through the P/L simulator.
+    chart_ocr.compute_running_pl([m for _, m in unique])
+    return {m.minute: (snap_hour, m) for snap_hour, m in unique}
+
+
+ocr_algo_by_minute = _dedup_and_compute_pl(ocr_algo_by_hour)
+ocr_ib_by_minute = _dedup_and_compute_pl(ocr_ib_by_hour)
+
+# Add every OCR-detected minute to all_times so it gets its own grid row
+# even if no other source fired that minute.
+for minute in list(ocr_algo_by_minute.keys()) + list(ocr_ib_by_minute.keys()):
+    try:
+        ts = pd.Timestamp(f"{TARGET_DATE} {minute}", tz=_EST)
+        all_times.add(ts)
+    except Exception:
+        pass
+
+# Legacy OCR of chart stats box (Position, P/L, Sigs counts) — kept for
+# the OCR CHART P/L columns.
 import pytesseract
 from PIL import Image
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+import re as _re
+
 def ocr_chart_pl(img_path):
     """Extract P/L from chart snapshot stats box via OCR."""
+    stats = ocr_chart_stats(img_path)
+    return stats.get("pl") if stats else None
+
+
+_POS_ALIASES = {
+    "long": "long",
+    "short": "short", "snort": "short", "ehort": "short", "shorl": "short",
+    "flat": "flat",
+}
+
+def ocr_chart_stats(img_path):
+    """Read the Pos / P-L / Sigs lines off a chart snapshot's stats box via OCR.
+
+    Returns a dict with keys: pos, pl, buys, sells (any may be None if not
+    found), or None if the image can't be opened. Reads pixels directly from
+    the JPG — no CSV/tracking data involved. The crop targets just the
+    Pos/P-L/Sigs block (skips Open/Close/High/Low/Range) and is upscaled 3x
+    since the source text is small and tesseract struggles with it at native
+    resolution.
+    """
     try:
         img = Image.open(img_path)
         w, h = img.size
-        import re
-        # Try multiple crop regions (stats box position varies with bar count)
-        crops = [
-            (int(w * 0.82), int(h * 0.35), w, int(h * 0.58)),  # tight
-            (int(w * 0.82), int(h * 0.25), w, int(h * 0.65)),  # broader
-        ]
-        for crop_box in crops:
-            stats = img.crop(crop_box)
-            text = pytesseract.image_to_string(stats)
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                # Match "P/L: +28 a" format
-                m = re.search(r"P/L:\s*([+-]?\d+)", line)
-                if m:
-                    return int(m.group(1))
-                # Match "+0 —" or "-181 ¥" or "-754 0" (standalone P/L line)
-                # Exclude lines with "pts" (those are Range/Chg values)
-                if "pts" in line or "Range" in line or "Chg" in line or "Low" in line or "High" in line:
-                    continue
-                m = re.match(r"^([+-]?\d+)\s+\S{1,3}$", line)
-                if m:
-                    val = int(m.group(1))
-                    if abs(val) < 10000:
-                        return val
-        return None
+        crop = img.crop((int(w * 0.82), int(h * 0.35), w, int(h * 0.65)))
+
+        result = {"pos": None, "pl": None, "buys": None, "sells": None}
+
+        # Two OCR passes at different scale/psm read different lines more
+        # reliably — psm 6 (uniform block) nails Pos/P-L, psm 11 (sparse
+        # text) nails the Sigs line, which psm 6 sometimes corrupts (e.g.
+        # misreading "9S" as "95S").
+        text_block = pytesseract.image_to_string(
+            crop.resize((crop.width * 3, crop.height * 3)), config="--psm 6")
+        text_sparse = pytesseract.image_to_string(
+            crop.resize((crop.width * 5, crop.height * 5)), config="--psm 11")
+
+        # Position — tolerate common OCR misreads of "short"
+        m = _re.search(r"\b(long|short|flat|snort|ehort|shorl)\b", text_block, _re.IGNORECASE)
+        if m:
+            result["pos"] = _POS_ALIASES.get(m.group(1).lower())
+
+        # P/L — first signed integer in this crop (Pos/Sigs lines have none).
+        # Tolerate a stray space between the sign and digits (OCR artifact).
+        m = _re.search(r"([+-])\s?(\d{1,6})", text_block)
+        if m:
+            result["pl"] = int(m.group(1) + m.group(2))
+
+        # Signals — "Sigs: 2B 2S" (tolerant of missing colon / OCR noise)
+        # Prefer the sparse-text pass; fall back to the block pass.
+        m = _re.search(r"(\d{1,3})\s*B\D{0,6}?(\d{1,3})\s*S", text_sparse)
+        if not m:
+            m = _re.search(r"(\d{1,3})\s*B\D{0,6}?(\d{1,3})\s*S", text_block)
+        if m:
+            result["buys"] = int(m.group(1))
+            result["sells"] = int(m.group(2))
+
+        return result
     except Exception:
         return None
 
-# OCR the hourly snapshots for chart P/L (both IB and Algo)
-_CHART_ROOT_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live", "charts")
-snapshot_chart_pl = {}      # hour -> IB P/L from chart image
-snapshot_algo_chart_pl = {} # hour -> Algo P/L from chart image
+# OCR the hourly snapshots for full stats (Position, P/L, Buy/Sell signal
+# counts) — read directly off the JPG pixels, not from the tracking CSV.
+_CHART_ROOT_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "charts")
+snapshot_chart_pl = {}      # hour -> IB P/L from chart image (kept for backward compat)
+snapshot_algo_chart_pl = {} # hour -> Algo P/L from chart image (kept for backward compat)
+ocr_ib_stats = {}           # hour -> {"pos","pl","buys","sells"} from IB snapshot image
+ocr_algo_stats = {}         # hour -> {"pos","pl","buys","sells"} from Algo snapshot image
 target_date = TARGET_DATE
 
 for h in ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]:
-    h_int = int(h.split(":")[0])
-    # IB snapshot
-    ib_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_ib_snapshot.jpg")
-    generic_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_snapshot.jpg")
+    h_int, m_int = int(h.split(":")[0]), int(h.split(":")[1])
+
+    # IB snapshot — prefer today's kind-suffixed naming, fall back to older naming
+    ib_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}{m_int:02d}_ib_snapshot.jpg")
+    generic_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}{m_int:02d}_snapshot.jpg")
     img_path = ib_img if os.path.exists(ib_img) else generic_img
     if os.path.exists(img_path):
-        pl_val = ocr_chart_pl(img_path)
-        if pl_val is not None:
-            snapshot_chart_pl[h] = pl_val
+        stats = ocr_chart_stats(img_path)
+        if stats:
+            ocr_ib_stats[h] = stats
+            if stats.get("pl") is not None:
+                snapshot_chart_pl[h] = stats["pl"]
 
     # Algo snapshot
-    algo_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}00_algo_snapshot.jpg")
+    algo_img = os.path.join(_CHART_ROOT_PATH, f"YM_{target_date}_{h_int:02d}{m_int:02d}_algo_snapshot.jpg")
     if os.path.exists(algo_img):
-        pl_val = ocr_chart_pl(algo_img)
-        if pl_val is not None:
-            snapshot_algo_chart_pl[h] = pl_val
+        stats = ocr_chart_stats(algo_img)
+        if stats:
+            ocr_algo_stats[h] = stats
+            if stats.get("pl") is not None:
+                snapshot_algo_chart_pl[h] = stats["pl"]
 
 print(f"OCR chart P/L (IB snapshots): {snapshot_chart_pl}")
 print(f"OCR chart P/L (Algo snapshots): {snapshot_algo_chart_pl}")
-
-# Build snapshot_trades from IB columns (actual IB fills, not algo signals)
-snapshot_trades = {}
-ib_sig_rows_snap = live[(live["ib_signal"].notna()) & (live["ib_signal"] != "") & (live["ib_signal"] != "flat")]
-for idx, row in ib_sig_rows_snap.iterrows():
-    ts = pd.Timestamp(idx).floor("min")
-    sig = row["ib_signal"]
-    if sig == "BUY":
-        price = row.get("ib_buy_price", row["Close"])
-    else:
-        price = row.get("ib_sell_price", row["Close"])
-    if pd.isna(price):
-        price = row["Close"]
-    spl = float(row.get("ib_session_pl", 0))
-    snapshot_trades[ts] = {
-        "time": str(idx)[0:19],
-        "signal": sig,
-        "price": float(price),
-        "session_pl": spl,
-    }
-
-# Build Algo Live Snapshot trades (from algo signal columns — what the algo chart shows)
-algo_snapshot_trades = {}
-for idx, row in live.iterrows():
-    ts = pd.Timestamp(idx).floor("min")
-    sig = row.get("signal", "")
-    ptp_sig = row.get("partial_tp_signal", "")
-    if pd.notna(sig) and sig != "":
-        sig_str = str(sig).upper()
-        if sig_str == "SELL":
-            price = row.get("sell_price", row["Close"])
-        else:
-            price = row["Close"]
-        if pd.isna(price):
-            price = row["Close"]
-        spl = float(row.get("session_pl", 0))
-        algo_snapshot_trades[ts] = {
-            "time": str(idx)[0:19],
-            "signal": sig_str,
-            "price": float(price),
-            "session_pl": spl,
-        }
-    elif pd.notna(ptp_sig) and ptp_sig != "" and ptp_sig is not False:
-        tp_price = row.get("partial_tp_price", row["Close"])
-        if pd.isna(tp_price):
-            tp_price = row["Close"]
-        spl = float(row.get("session_pl", 0))
-        algo_snapshot_trades[ts] = {
-            "time": str(idx)[0:19],
-            "signal": f"TP ({ptp_sig})",
-            "price": float(tp_price),
-            "session_pl": spl,
-        }
+print(f"OCR full stats (IB): {ocr_ib_stats}")
+print(f"OCR full stats (Algo): {ocr_algo_stats}")
 
 # Data rows
 # Track running P/L for each source
 algo_running_pl = 0.0
 bt_running_pl = 0.0
 ib_running_pl = 0.0
-snap_running_pl = 0.0
 algo_prev_pl = 0.0
 bt_prev_pl = 0.0
 ib_prev_pl = 0.0
-snap_prev_pl = 0.0
+
+
 
 row_num = 3
 for ts in sorted(all_times):
@@ -608,24 +662,77 @@ for ts in sorted(all_times):
 
     # Col 26 = blank separator
 
-    # OCR Chart P/L (cols 27-29: Hour, IB Chart P/L, Algo Chart P/L)
+    # OCR ALGO CHART (cols 27-32: Snap Hour, Time, Signal, Price, Chg, Total P/L)
+    time_key = ts.strftime("%H:%M")
+    algo_hit = ocr_algo_by_minute.get(time_key)
+    if algo_hit is not None:
+        snap_hour, m = algo_hit
+        ws1.cell(row=row_num, column=27, value=snap_hour).border = section_left
+        ws1.cell(row=row_num, column=28, value=m.minute or "").border = section_mid
+        ws1.cell(row=row_num, column=29, value=m.kind).border = section_mid
+        ws1.cell(row=row_num, column=30, value=m.price if m.price is not None else "?").border = section_mid
+        chg = m.change if m.change is not None else ""
+        ws1.cell(row=row_num, column=31, value=chg).border = section_mid
+        if isinstance(chg, (int, float)):
+            ws1.cell(row=row_num, column=31).font = Font(bold=True, color="006100" if chg >= 0 else "9C0006")
+        total = m.total_pl if m.total_pl is not None else ""
+        ws1.cell(row=row_num, column=32, value=total).border = section_right
+        if isinstance(total, (int, float)):
+            ws1.cell(row=row_num, column=32).font = Font(bold=True)
+        fill = buy_fill if m.kind == "BUY" else (tp_fill if m.kind == "TP" else sell_fill)
+        for c in range(27, 33):
+            ws1.cell(row=row_num, column=c).fill = fill
+    else:
+        for c in range(27, 33):
+            ws1.cell(row=row_num, column=c).border = section_mid
+
+    # Col 33 (AG) = blank separator
+
+    # OCR IB CHART (cols 34-39: Snap Hour, Time, Signal, Price, Chg, Total P/L)
+    ib_hit = ocr_ib_by_minute.get(time_key)
+    if ib_hit is not None:
+        snap_hour, m = ib_hit
+        ws1.cell(row=row_num, column=34, value=snap_hour).border = section_left
+        ws1.cell(row=row_num, column=35, value=m.minute or "").border = section_mid
+        ws1.cell(row=row_num, column=36, value=m.kind).border = section_mid
+        ws1.cell(row=row_num, column=37, value=m.price if m.price is not None else "?").border = section_mid
+        chg = m.change if m.change is not None else ""
+        ws1.cell(row=row_num, column=38, value=chg).border = section_mid
+        if isinstance(chg, (int, float)):
+            ws1.cell(row=row_num, column=38).font = Font(bold=True, color="006100" if chg >= 0 else "9C0006")
+        total = m.total_pl if m.total_pl is not None else ""
+        ws1.cell(row=row_num, column=39, value=total).border = section_right
+        if isinstance(total, (int, float)):
+            ws1.cell(row=row_num, column=39).font = Font(bold=True)
+        fill = buy_fill if m.kind == "BUY" else (tp_fill if m.kind == "TP" else sell_fill)
+        for c in range(34, 40):
+            ws1.cell(row=row_num, column=c).fill = fill
+    else:
+        for c in range(34, 40):
+            ws1.cell(row=row_num, column=c).border = section_mid
+
+    # Col 40 (AN) = blank separator
+
+    # OCR Chart P/L (cols 41-43: Hour, IB Chart P/L, Algo Chart P/L)
     time_hhmm = ts.strftime("%H:%M")
     if time_hhmm in snapshot_chart_pl or time_hhmm in snapshot_algo_chart_pl:
-        ws1.cell(row=row_num, column=27, value=time_hhmm).border = section_left
-        ws1.cell(row=row_num, column=27).font = Font(bold=True)
+        ws1.cell(row=row_num, column=41, value=time_hhmm).border = section_left
+        ws1.cell(row=row_num, column=41).font = Font(bold=True)
         ib_ocr = snapshot_chart_pl.get(time_hhmm, "")
         algo_ocr = snapshot_algo_chart_pl.get(time_hhmm, "")
-        ws1.cell(row=row_num, column=28, value=ib_ocr).border = section_mid
-        ws1.cell(row=row_num, column=29, value=algo_ocr).border = section_right
+        ws1.cell(row=row_num, column=42, value=ib_ocr).border = section_mid
+        ws1.cell(row=row_num, column=43, value=algo_ocr).border = section_right
         if isinstance(ib_ocr, (int, float)) and ib_ocr != 0:
-            ws1.cell(row=row_num, column=28).font = Font(bold=True, color="006100" if ib_ocr >= 0 else "9C0006")
+            ws1.cell(row=row_num, column=42).font = Font(bold=True, color="006100" if ib_ocr >= 0 else "9C0006")
         if isinstance(algo_ocr, (int, float)) and algo_ocr != 0:
-            ws1.cell(row=row_num, column=29).font = Font(bold=True, color="006100" if algo_ocr >= 0 else "9C0006")
+            ws1.cell(row=row_num, column=43).font = Font(bold=True, color="006100" if algo_ocr >= 0 else "9C0006")
     else:
-        for c in range(27, 30):
+        for c in range(41, 44):
             ws1.cell(row=row_num, column=c).border = thin_border
 
     row_num += 1
+
+
 
 # Final P/L totals row
 row_num += 1
@@ -639,8 +746,8 @@ ws1.cell(row=row_num, column=21, value=ib_running_pl).border = thick_border
 ws1.cell(row=row_num, column=21).font = Font(bold=True, size=11)
 
 # Auto-width columns and freeze header
-#        A   B   C    D   E   F    G    H  I   J    K   L   M    N    O  P   Q    R   S   T    U    V  W    X    Y   Z  AA   AB  AC
-col_widths = [8, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 10, 10, 7, 2, 8, 12, 12]
+#        A   B   C    D   E   F    G    H  I   J    K   L   M    N    O  P   Q    R   S   T    U    V  W    X    Y   Z  AA  AB   AC  AD  AE  AF  AG  AH  AI  AJ  AK  AL  AM  AN  AO  AP  AQ
+col_widths = [8, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 8, 10, 5, 9, 8, 10, 2, 10, 10, 7, 2, 9, 7, 6, 7, 7, 10, 2, 9, 7, 6, 7, 7, 10, 2, 8, 12, 12]
 from openpyxl.utils import get_column_letter
 for i, w in enumerate(col_widths, 1):
     ws1.column_dimensions[get_column_letter(i)].width = w
@@ -665,8 +772,7 @@ for r, hour in enumerate(hours, 2):
     b_pl = float(bt_slice["session_pl"].iloc[-1]) if not bt_slice.empty else 0
     ib_pl_v = float(algo_slice["ib_session_pl"].iloc[-1]) if (not algo_slice.empty and "ib_session_pl" in algo_slice.columns) else 0
     ib_pos_v = algo_slice["ib_position"].iloc[-1] if (not algo_slice.empty and "ib_position" in algo_slice.columns) else "flat"
-    h_int = int(hour.split(":")[0])
-    snap_exists = os.path.exists(os.path.join(_CHART_ROOT, f"YM_{TARGET_DATE}_{h_int:02d}00_snapshot.jpg"))
+    snap_exists = _find_snapshot(hour)
 
     ws2.cell(row=r, column=1, value=hour).border = thin_border
     ws2.cell(row=r, column=2, value=a_pl).border = thin_border
@@ -721,9 +827,18 @@ for col in range(1, 5):
 # --- Sheet 4: Chart Snapshot Details ---
 ws4 = wb.create_sheet("Chart Snapshots")
 
-# Header
+# Visually-verified stats box readouts, extracted by loading each hourly
+# algo/ib snapshot image via the chart-snapshots MCP server and reading the
+# on-chart stats box directly (position, P/L, buy/sell signal counts).
+# This is a ground-truth check against the CSV-derived columns below —
+# populate/refresh this dict whenever new snapshots are reviewed.
+# Header — "OCR ..." columns are read directly from the chart image pixels
+# via ocr_chart_stats() above (position, P/L, buy/sell signal counts from
+# the on-chart stats box), independent of the tracking CSV.
 snap_headers = ["Hour", "Image?", "Algo Position", "Algo P/L", "IB Position", "IB P/L",
-                "Signals", "Buys", "Sells", "Close Price"]
+                "Signals", "Buys", "Sells", "Close Price",
+                "OCR Algo Pos", "OCR Algo P/L", "OCR Algo Sigs (B/S)",
+                "OCR IB Pos", "OCR IB P/L", "OCR IB Sigs (B/S)"]
 for col, h in enumerate(snap_headers, 1):
     cell = ws4.cell(row=1, column=col, value=h)
     cell.font = header_font_white
@@ -749,13 +864,7 @@ for hour in snapshot_hours_full:
     ib_pl_snap = float(last_row.get("ib_session_pl", 0)) if "ib_session_pl" in sliced.columns else 0
     close_p = float(last_row["Close"])
 
-    h_int = int(hour.split(":")[0])
-    m_int = int(hour.split(":")[1])
-    if hour == "09:30":
-        img_name = f"YM_{TARGET_DATE}_0930.jpg"
-    else:
-        img_name = f"YM_{TARGET_DATE}_{h_int:02d}{m_int:02d}_snapshot.jpg"
-    img_exists = os.path.exists(os.path.join(_CHART_ROOT, img_name))
+    img_exists = _find_snapshot(hour)
 
     ws4.cell(row=row_num_snap, column=1, value=hour).border = thin_border
     ws4.cell(row=row_num_snap, column=2, value="YES" if img_exists else "NO").border = thin_border
@@ -768,11 +877,34 @@ for hour in snapshot_hours_full:
     ws4.cell(row=row_num_snap, column=9, value=n_sells).border = thin_border
     ws4.cell(row=row_num_snap, column=10, value=close_p).border = thin_border
 
-    # Highlight position mismatch
+    # OCR-verified stats read directly from the chart image pixels
+    algo_ocr_s = ocr_algo_stats.get(hour) or {}
+    ib_ocr_s = ocr_ib_stats.get(hour) or {}
+    algo_ocr_sigs = (f"{algo_ocr_s['buys']}B {algo_ocr_s['sells']}S"
+                      if algo_ocr_s.get("buys") is not None else "")
+    ib_ocr_sigs = (f"{ib_ocr_s['buys']}B {ib_ocr_s['sells']}S"
+                   if ib_ocr_s.get("buys") is not None else "")
+    ws4.cell(row=row_num_snap, column=11, value=algo_ocr_s.get("pos", "")).border = thin_border
+    ws4.cell(row=row_num_snap, column=12, value=algo_ocr_s.get("pl", "")).border = thin_border
+    ws4.cell(row=row_num_snap, column=13, value=algo_ocr_sigs).border = thin_border
+    ws4.cell(row=row_num_snap, column=14, value=ib_ocr_s.get("pos", "")).border = thin_border
+    ws4.cell(row=row_num_snap, column=15, value=ib_ocr_s.get("pl", "")).border = thin_border
+    ws4.cell(row=row_num_snap, column=16, value=ib_ocr_sigs).border = thin_border
+
+    # Highlight position mismatch (CSV-derived positions)
     if str(algo_pos) != str(ib_pos_val):
         warn_fill_snap = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
         for c in range(1, 11):
             ws4.cell(row=row_num_snap, column=c).fill = warn_fill_snap
+
+    # Flag when OCR-read position disagrees with CSV-derived position
+    # (image ground truth vs. tracking CSV) — separate highlight color
+    if algo_ocr_s.get("pos") and str(algo_pos).lower() != algo_ocr_s["pos"]:
+        ws4.cell(row=row_num_snap, column=11).fill = PatternFill(
+            start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    if ib_ocr_s.get("pos") and str(ib_pos_val).lower() != ib_ocr_s["pos"]:
+        ws4.cell(row=row_num_snap, column=14).fill = PatternFill(
+            start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 
     row_num_snap += 1
 
@@ -882,8 +1014,8 @@ ws4.cell(row=row_num_snap, column=5, value=float(live["session_pl"].iloc[-1])).b
 ws4.cell(row=row_num_snap, column=5).font = Font(bold=True, size=12)
 row_num_snap += 1
 
-for col in range(1, 11):
-    ws4.column_dimensions[chr(64 + col)].width = 18
+for col in range(1, 17):
+    ws4.column_dimensions[get_column_letter(col)].width = 18
 ws4.freeze_panes = "A2"
 
 # Save
