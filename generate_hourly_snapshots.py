@@ -239,6 +239,28 @@ def save_chart(df: pd.DataFrame, target_date: str, end_time: str, out_path: str,
         plotter.ax_top.set_xlim(x_start, x_end)
 
     plotter.update_plot(len(df) - 1)
+
+    # Center Y-axis around the visible window's price range (not full session)
+    window_df = df[(df.index >= x_start) & (df.index <= x_end)]
+    if not window_df.empty:
+        current_price = float(window_df["Close"].iloc[-1])
+        padding = 100.0
+        y_lo = current_price - padding
+        y_hi = current_price + padding
+        # Expand to include rays and recent highs/lows within the window
+        ray_cols = ["purple_ray", "blue_ray", "orange_ray", "yellow_ray"]
+        for col in ray_cols:
+            if col in window_df.columns:
+                vals = window_df[col].dropna()
+                if not vals.empty:
+                    y_lo = min(y_lo, float(vals.min()) - 20)
+                    y_hi = max(y_hi, float(vals.max()) + 20)
+        if "High" in window_df.columns:
+            y_hi = max(y_hi, float(window_df["High"].max()) + 10)
+        if "Low" in window_df.columns:
+            y_lo = min(y_lo, float(window_df["Low"].min()) - 10)
+        plotter.ax.set_ylim(y_lo, y_hi)
+
     # dpi=300 doubles the pixel dimensions vs. the previous dpi=150,
     # yielding ~4372x2588 images so the on-chart text (BUY/SELL/TP box
     # labels, prices, timestamps) OCRs cleanly.

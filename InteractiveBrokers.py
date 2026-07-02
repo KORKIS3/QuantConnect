@@ -1,4 +1,4 @@
-d"""InteractiveBrokers.py
+"""InteractiveBrokers.py
 
 IB data bridge for the YM E-mini Futures trendline strategy.
 
@@ -1336,16 +1336,35 @@ class IBDataBridge:
             try:
                 os.makedirs(self.image_root, exist_ok=True)
 
-                # Refresh Y-axis to the current session's actual high/low range
-                # before saving — ylim is only set once at chart creation and
-                # goes stale as price makes new highs/lows through the day.
+                # Refresh Y-axis: center around current price with padding so the
+                # snapshot is readable (not squished to the full session range).
+                # Uses ±100 points from current price, expanded if rays extend further.
                 def _refresh_ylim(plotter):
                     if plotter is None or plotter.data is None or plotter.data.empty:
                         return
                     try:
-                        y_min = float(plotter.data["y_min"].iloc[-1])
-                        y_max = float(plotter.data["y_max"].iloc[-1])
-                        plotter.ax.set_ylim(y_min, y_max)
+                        current_price = float(plotter.data["Close"].iloc[-1])
+                        padding = 100.0  # base padding in points above/below current price
+                        
+                        # Check if any rays extend beyond the base padding
+                        ray_cols = ["purple_ray", "blue_ray", "orange_ray", "yellow_ray"]
+                        ray_min = current_price - padding
+                        ray_max = current_price + padding
+                        for col in ray_cols:
+                            if col in plotter.data.columns:
+                                ray_val = plotter.data[col].iloc[-1]
+                                if pd.notna(ray_val):
+                                    ray_min = min(ray_min, float(ray_val) - 20)
+                                    ray_max = max(ray_max, float(ray_val) + 20)
+                        
+                        # Also include recent highs/lows (last 30 bars) so wicks aren't clipped
+                        recent = plotter.data.tail(30)
+                        if "High" in recent.columns:
+                            ray_max = max(ray_max, float(recent["High"].max()) + 10)
+                        if "Low" in recent.columns:
+                            ray_min = min(ray_min, float(recent["Low"].min()) - 10)
+                        
+                        plotter.ax.set_ylim(ray_min, ray_max)
                     except Exception as exc:
                         log.warning("[Snapshot] ylim refresh failed: %s", exc)
 
