@@ -240,7 +240,7 @@ def _fit_trendlines_nb(high, low, close):
         den += (i - x_mean) ** 2
     slope = num / den if den != 0 else 0.0
     intercept = c_mean - slope * x_mean
-    # Find pivots
+    # Find pivots 
     upper_pivot = 0; lower_pivot = 0; max_diff = -1e30; min_diff = 1e30
     for i in range(n):
         line_val = slope * i + intercept
@@ -846,10 +846,23 @@ def run_trading_algo_fast(
     cfg = config or AlgoConfig()
     n = len(full_data)
 
+    # Anchor the warmup cutoff to the *session start time* (from the
+    # target_date + start_time args), NOT full_data.index[0]. In live
+    # mode index[0] is still 09:30 even when the algo re-runs mid-session
+    # with only a few bars, so anchoring to full_data.index[0] gave a
+    # different absolute cutoff between batch and live callers using the
+    # same config. Pin to the absolute session time so every invocation
+    # converges on the same answer regardless of how many bars are
+    # currently in view.
+    #
+    # NOTE: `warmup_minutes=N` means the first bar eligible to fire a
+    # signal is start_time + N minutes. E.g. start=09:30, warmup=8 means
+    # signals allowed from 09:38 onward.
+    session_start = pd.Timestamp(f"{target_date} {start_time}:00", tz=est)
     if cfg.warmup_minutes is not None:
-        cutoff_time = full_data.index[0] + pd.Timedelta(minutes=cfg.warmup_minutes)
+        cutoff_time = session_start + pd.Timedelta(minutes=cfg.warmup_minutes)
     else:
-        cutoff_time = pd.Timestamp(f"{target_date} {start_time}:00", tz=est) + pd.Timedelta(minutes=8)
+        cutoff_time = session_start + pd.Timedelta(minutes=8)
 
     # --- Extract numpy arrays ONCE ---
     highs_arr  = full_data["High"].values.astype(np.float64)
@@ -867,10 +880,14 @@ def run_trading_algo_fast(
     x_per_unit = _x_range / _ax_w_in
     y_per_unit = _y_range / _ax_h_in
 
-    # Find cutoff index
+    # Find cutoff index — the first bar AFTER cutoff_time (strictly
+    # later, not equal). With cutoff_time = session_start + warmup,
+    # a warmup of N means the first signal-eligible bar is at
+    # session_start + N + 1 minutes (i.e. warmup=7 -> first signal
+    # can fire on the 09:38 close).
     cutoff_idx = 0
     for i in range(n):
-        if times_idx[i] >= cutoff_time:
+        if times_idx[i] > cutoff_time:
             cutoff_idx = i; break
 
     # --- Compute ALL rays via Numba ---
