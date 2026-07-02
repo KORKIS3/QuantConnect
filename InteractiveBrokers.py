@@ -1290,6 +1290,8 @@ class IBDataBridge:
             self._session_ended = True
             self._on_session_end()
             self._ib.disconnect()
+            import sys
+            sys.exit(0)
             return
         if not bars:
             return
@@ -1428,6 +1430,8 @@ class IBDataBridge:
                 self._on_session_end()
                 self._ib.sleep(3)  # ensure flatten order is processed before disconnect
                 self._ib.disconnect()
+                import sys
+                sys.exit(0)
         except Exception as exc:
             log.error("[OnBar] auto-end check error: %s", exc)
 
