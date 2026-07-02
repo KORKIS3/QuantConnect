@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "Analyze New Chart Snapshot",
+  "description": "When a new hourly chart snapshot JPG is saved by Fred, ask the agent to open and analyze it",
+  "version": "1",
+  "when": {
+    "type": "fileCreated",
+    "patterns": [
+      "C:/Users/Administrator/Desktop/IB_Live/charts/*.jpg"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A new chart snapshot was just saved. Read the image file that was just created and analyze it: check the stats box for P/L, position, and signal count, and note the visible price range on the Y-axis to confirm the chart isn't showing stale/off-screen data. Report what you find."
+  },
+  "workspaceFolderName": "QuantConnect",
+  "shortName": "chart-snapshot-analyze"
+}

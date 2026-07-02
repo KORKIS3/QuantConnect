@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "chart-snapshots": {
+      "command": "node",
+      "args": ["mcp-servers/chart-snapshots/index.js"],
+      "env": {
+        "CHARTS_DIR": "C:\\Users\\Administrator\\Desktop\\charts"
+      },
+      "disabled": false,
+      "autoApprove": ["list_snapshots", "get_snapshot", "get_latest_snapshot"]
+    }
+  }
+}

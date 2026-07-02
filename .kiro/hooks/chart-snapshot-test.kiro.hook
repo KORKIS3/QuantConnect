@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Test Chart Snapshot Analysis",
+  "description": "Manually triggered test - analyzes one specific chart snapshot image to verify if the agent can see visual chart content via hooks",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Read the image file at C:\\Users\\Administrator\\Desktop\\IB_Live\\charts\\YM_2026-07-01_1100_algo_snapshot.jpg and analyze it: report the P/L, position, and signal count shown in the stats box, and describe the visible price range and whether any price action appears to render outside the visible Y-axis range."
+  }
+}
