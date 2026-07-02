@@ -45,3 +45,10 @@ TestResults/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node
+node_modules/
+
+# Kiro local state (keep hooks/settings/steering shared, ignore agent runtime state)
+.kiro/history/
+.kiro/logs/
