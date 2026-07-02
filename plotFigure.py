@@ -105,6 +105,10 @@ class ChartPlotter:
         self.end_time = end_time
         self.output_dir = output_dir
         self.batch_mode = batch_mode
+        # Set by callers that want a minimal chart with only BUY/SELL/TP
+        # markers (no per-bar High/Low/Close labels, no legend) — used
+        # for OCR-friendly hourly snapshot images.
+        self.markers_only = False
         self.state = _StateCompat(self.data)
 
         self.current_frame = 0
@@ -168,7 +172,11 @@ class ChartPlotter:
 
         self.ax.set_ylabel("Price", fontsize=12)
         self.ax.set_xlabel("Time (ET)", fontsize=12)
-        self.ax.legend(loc="upper left", fontsize=9, framealpha=0.7)
+        # Skip the legend for OCR snapshot images so it doesn't cover
+        # top-left BUY/SELL/TP boxes. Other batch-mode callers (live
+        # chart monitor, ReOrgMain) still get the legend.
+        if not getattr(self, "markers_only", False):
+            self.ax.legend(loc="upper left", fontsize=9, framealpha=0.7)
         self.ax.grid(True, alpha=0.25, linestyle="--")
         self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=_EST))
         plt.setp(self.ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
@@ -364,6 +372,10 @@ class ChartPlotter:
         if len(current_data) == 0:
             return
 
+        # Skip per-bar High/Low/Close labels for OCR snapshot images.
+        if getattr(self, "markers_only", False):
+            return
+
         for time, row in current_data.iterrows():
             t = time.strftime("%H:%M")
             ann = self.ax.annotate(
@@ -465,6 +477,8 @@ class ChartPlotter:
                     edge_color = "darkgreen"
 
                 label = label_prefix + "\n" + str(int(price))
+                if getattr(self, "markers_only", False):
+                    label += "\n" + ts.strftime("%H:%M")
                 marker, = self.ax.plot(ts, price, marker="^", markersize=12,
                                        color=face_color, markeredgecolor=edge_color,
                                        markeredgewidth=1.5, zorder=10)
@@ -501,6 +515,8 @@ class ChartPlotter:
                     edge_color = "darkred"
 
                 label = label_prefix + "\n" + str(int(price))
+                if getattr(self, "markers_only", False):
+                    label += "\n" + ts.strftime("%H:%M")
                 marker, = self.ax.plot(ts, price, marker="v", markersize=12,
                                        color=face_color, markeredgecolor=edge_color,
                                        markeredgewidth=1.5, zorder=10)
@@ -527,8 +543,11 @@ class ChartPlotter:
                                        color="gold", markeredgecolor="darkorange",
                                        markeredgewidth=1.5, zorder=11)
                 self.signal_markers["tp"].append(marker)
+                tp_label = f"TP\n{int(tp_price)}"
+                if getattr(self, "markers_only", False):
+                    tp_label += "\n" + ts.strftime("%H:%M")
                 ann = self.ax.annotate(
-                    f"TP\n{int(tp_price)}", xy=(ts, tp_price), xytext=(18, 0),
+                    tp_label, xy=(ts, tp_price), xytext=(18, 0),
                     textcoords="offset points",
                     ha="left", va="center", fontsize=7, color="white", fontweight="bold",
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="darkorange", alpha=0.9,
