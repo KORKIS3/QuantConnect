@@ -280,7 +280,6 @@ class IBDataBridge:
             spike_profit_pts=100.0,
             spike_profit_bars=9,
             wm_shield_distance=0.0,
-            swing_anchor_threshold=10.0,
             num_contracts=2,
             cushion_points=0.0,   # DISABLED: was 40.0 — now instant market fills
             limit_expiry_bars=5,
