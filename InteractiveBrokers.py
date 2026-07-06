@@ -721,7 +721,7 @@ class IBDataBridge:
                             action=action,
                             price=exit_price,
                             qty=abs(old_pos),
-                            session_pl=self._ib_total_pnl / 0.5,
+                            session_pl=self._ib_realized_pnl / 5.0,
                             target_date=self._current_date or "",
                             position="flat",
                             order_type=f"BRACKET {exit_type} ({pl_pts:+.0f} pts)",
@@ -741,7 +741,8 @@ class IBDataBridge:
                     fill_price = float(item.marketPrice) if item.marketPrice else 0.0
                     action = "BUY" if new_pos > old_pos else "SELL"
                     qty = abs(new_pos - old_pos)
-                    session_pl = self._ib_total_pnl / 0.5  # USD -> points
+                    # Session P/L in POINTS: IB realized P/L (USD) / multiplier
+                    session_pl = self._ib_realized_pnl / 5.0
                     position = "long" if new_pos > 0 else ("short" if new_pos < 0 else "flat")
                     order_type = "ENTRY/REVERSAL" if new_pos != 0 else "EXIT"
                     send_trade_alert(
