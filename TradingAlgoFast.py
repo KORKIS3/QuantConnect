@@ -68,6 +68,7 @@ class AlgoConfig:
     first_entry_trend_filter: bool = False # block first entry against both slopes
     cushion_points: float = 0.0           # DISABLED: was for limit order cushion
     limit_expiry_bars: int = 5            # DISABLED: was for limit order expiry
+    swing_anchor_threshold: float = 10.0  # COMPAT: accepted but ignored (old regression param)
 
 
 # ---------------------------------------------------------------------------
