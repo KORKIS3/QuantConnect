@@ -102,6 +102,9 @@ def _process_day(fname, quick=False):
         day_data  = df[(df.index >= day_start) & (df.index <= day_end)]
         end_str   = "10:30" if quick else "17:00"
         end_times = ["10:30"] if quick else DAY_END_TIMES
+        # Guard: skip days without full session data (holidays, early closes)
+        if not quick and len(day_data) < 400:
+            return target_date, result
         # Guard: skip days with zero or negative prices (causes Numba heap corruption)
         if (day_data[["Open","High","Low","Close"]] <= 0).any().any():
             return target_date, result
