@@ -28,7 +28,7 @@ def trading_days(start, end):
 
 
 def download_all(port):
-    from ib_insync import IB, Future
+    from ib_async import IB, Future
     ib = IB(); ib.connect("127.0.0.1", port, clientId=50, timeout=120)
     # Get all YM contracts including expired for front-month mapping
     base = Future(symbol="YM", exchange="CBOT", currency="USD", includeExpired=True)

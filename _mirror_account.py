@@ -27,7 +27,7 @@ if sys.version_info >= (3, 10):
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-from ib_insync import IB, Future, MarketOrder
+from ib_async import IB, Future, MarketOrder
 import logging
 
 # Setup logging to file

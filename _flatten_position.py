@@ -1,7 +1,7 @@
 """_flatten_position.py -- Emergency flatten: closes all open YM/MYM positions."""
 import asyncio
 asyncio.set_event_loop(asyncio.new_event_loop())
-from ib_insync import IB, MarketOrder, util
+from ib_async import IB, MarketOrder, util
 import time
 
 util.logToConsole()

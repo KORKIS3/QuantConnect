@@ -2,7 +2,7 @@
 
 IB data bridge for the YM E-mini Futures trendline strategy.
 
-Connects to TWS or IB Gateway via ib_insync, subscribes to the front-month
+Connects to TWS or IB Gateway via ib_async, subscribes to the front-month
 YM contract, and hands each bar to TradingAlgo.run_trading_algo() -- the
 same engine used by ReOrgMain and RunAllDays.
 
@@ -27,7 +27,7 @@ Quick start
 
 from __future__ import annotations
 
-# Fix for Python 3.14 asyncio event loop issue with ib_insync
+# Fix for Python 3.14 asyncio event loop issue with ib_async
 import asyncio
 import sys
 if sys.version_info >= (3, 10):
@@ -53,7 +53,7 @@ else:
 
 import pandas as pd
 import pytz
-from ib_insync import IB, BarData, Contract, Future, MarketOrder, LimitOrder, StopOrder, util
+from ib_async import IB, BarData, Contract, Future, MarketOrder, LimitOrder, StopOrder, util
 from openpyxl import Workbook
 
 from TradingAlgoFast import AlgoConfig, run_trading_algo_fast as run_trading_algo
@@ -85,9 +85,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Also capture ib_insync internal logs to the same file
-logging.getLogger("ib_insync").setLevel(logging.DEBUG)
-logging.getLogger("ib_insync.wrapper").setLevel(logging.DEBUG)
+# Also capture ib_async internal logs to the same file
+logging.getLogger("ib_async").setLevel(logging.DEBUG)
+logging.getLogger("ib_async.wrapper").setLevel(logging.DEBUG)
 
 _EST = pytz.timezone("US/Eastern")
 _IB_LIVE_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "IB_Live")
@@ -131,7 +131,7 @@ def resolve_ym_front_month(ib: IB) -> Contract:
 class _LiveChartWindow:
     """Non-blocking matplotlib window that redraws on each completed minute bar.
 
-    Uses ``plt.ion()`` so the figure stays open while ib_insync's event loop
+    Uses ``plt.ion()`` so the figure stays open while ib_async's event loop
     continues to run.  Call ``update()`` whenever a new per-minute algo
     DataFrame is ready; call ``close()`` when the session ends.
     """
@@ -575,14 +575,14 @@ class IBDataBridge:
                         
                         # Flatten the position
                         if self._ib_position > 0:
-                            from ib_insync import MarketOrder
+                            from ib_async import MarketOrder
                             order = MarketOrder("SELL", abs(self._ib_position))
                             order.tif = "DAY"
                             trade = self._ib.placeOrder(self._contract, order)
                             log.info("[Connect] Placed SELL %d to flatten long position", abs(self._ib_position))
                             self._ib.sleep(3)
                         elif self._ib_position < 0:
-                            from ib_insync import MarketOrder
+                            from ib_async import MarketOrder
                             order = MarketOrder("BUY", abs(self._ib_position))
                             order.tif = "DAY"
                             trade = self._ib.placeOrder(self._contract, order)
@@ -1442,7 +1442,7 @@ class IBDataBridge:
     # -- Tkinter pump ---------------------------------------------------------
 
     def _on_timeout(self, elapsed: float) -> None:
-        """Called every 200 ms by ib_insync to keep the chart window responsive.
+        """Called every 200 ms by ib_async to keep the chart window responsive.
         
         Also monitors for stale connections: if no real-time bar has arrived
         for 30+ seconds during market hours, the IB connection is likely dead.
@@ -2120,7 +2120,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    util.logToConsole(logging.WARNING)   # suppress ib_insync verbose output
+    util.logToConsole(logging.WARNING)   # suppress ib_async verbose output
 
     args = _build_parser().parse_args()
 

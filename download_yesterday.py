@@ -21,7 +21,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import pytz
-from ib_insync import IB, Future
+from ib_async import IB, Future
 
 logging.basicConfig(
     level=logging.INFO,

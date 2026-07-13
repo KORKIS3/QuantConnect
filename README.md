@@ -1,7 +1,7 @@
 ﻿# YM Futures Trendline Strategy — Interactive Brokers Bridge
 
 Real-time trading system for the YM E-mini Dow Jones futures contract.
-Connects to TWS or IB Gateway via **ib_insync**, streams 5-second bars,
+Connects to TWS or IB Gateway via **ib_async**, streams 5-second bars,
 runs the trendline algorithm on each bar, and redraws a live chart every minute.
 
 ---
@@ -26,7 +26,7 @@ IB Gateway / TWS
 ## Prerequisites
 
 ```bash
-pip install ib_insync pandas pytz matplotlib numpy
+pip install ib_async pandas pytz matplotlib numpy
 ```
 
 **TWS / IB Gateway setup:**
